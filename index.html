@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>pi web</title>
+    <meta name="theme-color" content="#1a1a1a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="pi" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
   </head>
   <body>
     <div id="tokenOverlay" class="tokenOverlay" hidden>
@@ -20,7 +26,29 @@
         </button>
         <span id="statusTitle" class="statusTitle"></span>
         <span id="statusPath" class="statusPath"></span>
+        <button id="gitButton" class="iconButton statusBarButton" type="button" aria-label="Git" title="Git">
+          <span data-icon="git-branch"></span>
+        </button>
       </div>
+
+      <aside id="gitPanel" class="gitPanel" aria-label="Git" hidden>
+        <div class="gitPanelHeader">
+          <h2>Git</h2>
+          <div class="gitTabs" role="tablist" aria-label="Git views">
+            <button id="gitStatusTab" type="button" class="gitTab active">Status</button>
+            <button id="gitGraphTab" type="button" class="gitTab">Graph</button>
+          </div>
+          <button id="gitCloseButton" class="iconButton" type="button" aria-label="Close Git" title="Close Git">×</button>
+        </div>
+        <div class="gitPanelBody">
+          <div id="gitPrimaryPane" class="gitPrimaryPane"></div>
+          <div id="gitDetailPane" class="gitDetailPane"></div>
+        </div>
+        <div class="gitPanelFooter">
+          <span id="gitFooter" class="gitFooterText"></span>
+          <button id="gitSyncButton" type="button" class="gitSyncButton">⟳ Sync</button>
+        </div>
+      </aside>
 
       <section id="messages" class="messages" aria-live="polite"></section>
 

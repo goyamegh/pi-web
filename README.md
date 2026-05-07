@@ -6,6 +6,8 @@ A small local/Tailscale web UI for [`@mariozechner/pi-coding-agent`](https://www
 
 The app is TypeScript end-to-end:
 
+- Git panel: inspect repo status, browse commit history, view per-file and per-commit diffs, and sync with `fetch` + rebase pull
+- Shared diff viewer: side-by-side or stacked layouts with intraline highlighting, used by both edit tool cards and Git diffs
 - `supervisor.ts` is a small stable dev supervisor that owns the public port and restarts the app server safely
 - `server.ts` is the restartable Pi API/WebSocket server, run directly with `tsx`
 - `src/main.ts` is the Vite frontend with HMR
@@ -57,6 +59,15 @@ The README references the same deterministic Playwright visual snapshots used by
 <picture>
   <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/hero-showcase-mobile.png">
   <img alt="pi-web diff review" src="tests/e2e/visual.spec.ts-snapshots/diff-review-desktop.png">
+</picture>
+
+### Git status, graph, and commit diffs
+
+The Git button in the header opens a responsive Git panel. Desktop uses a split master/detail layout; mobile switches between status, graph, diff, and commit detail views.
+
+<picture>
+  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/git-diff-viewer-mobile.png">
+  <img alt="pi-web Git commit diff viewer" src="tests/e2e/visual.spec.ts-snapshots/git-diff-viewer-desktop.png">
 </picture>
 
 ![pi-web mobile sessions](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png)

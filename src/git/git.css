@@ -1,0 +1,95 @@
+.gitPanel {
+  position: fixed;
+  inset: 36px max(16px, calc((100vw - 1100px) / 2 + 16px)) 16px auto;
+  z-index: 20;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(920px, calc(100vw - 32px));
+  background: color-mix(in srgb, var(--panel) 97%, black);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(0,0,0,.45);
+  overflow: hidden;
+}
+.gitPanel[hidden] { display: none; }
+.gitPanelHeader, .gitPanelFooter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.gitPanelHeader h2 { margin: 0; font-size: 14px; }
+.gitPanelHeader .iconButton { margin-left: auto; }
+.gitTabs { display: flex; gap: 4px; }
+.gitTab, .gitSyncButton, .gitBackButton {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.gitTab.active, .gitTab:hover, .gitSyncButton:hover, .gitBackButton:hover, .statusBarButton.active { color: var(--text); border-color: var(--accent); }
+.gitPanelBody { min-height: 0; display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); }
+.gitPrimaryPane, .gitDetailPane { min-width: 0; min-height: 0; overflow: auto; padding: 12px; }
+.gitPrimaryPane { border-right: 1px solid var(--border); }
+.gitPanelFooter { border-top: 1px solid var(--border); border-bottom: 0; justify-content: space-between; color: var(--muted); font-size: 12px; }
+.gitFooterText { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gitStatusGroup h3 { margin: 10px 0 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.gitFileItem, .gitCommitItem { width: 100%; display: flex; gap: 8px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--text); padding: 8px; text-align: left; cursor: pointer; font: inherit; line-height: 1.35; }
+.gitFileItem:hover, .gitFileItem.selected, .gitCommitItem:hover, .gitCommitItem.selected { background: var(--panel-2); border-color: var(--border); }
+.gitStatusBadge { flex: 0 0 auto; min-width: 28px; color: var(--accent); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gitStatusBadge.deleted, .gitDiffLine.del { color: var(--danger); }
+.gitStatusBadge.untracked, .gitStatusBadge.added, .gitDiffLine.add { color: #86efac; }
+.gitStatusBadge.conflicted { color: #fbbf24; }
+.gitFilePath { overflow-wrap: anywhere; font-size: 13px; }
+.gitDetailHeader { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.gitDetailHeader h3 { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.gitEmpty { color: var(--muted); padding: 16px; }
+.gitPatchFile { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 10px; background: #071018; }
+.gitPatchFile summary { cursor: pointer; padding: 8px 10px; background: var(--panel-2); color: var(--text); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.gitPatchFile .diffTable { min-width: 0; }
+.gitPatchMeta .diffCode { color: var(--muted); background: rgba(125,211,252,.06); }
+.gitCommitList { display: grid; gap: 6px; }
+.gitCommitItem { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; height: auto; min-height: 58px; margin: 0; appearance: none; -webkit-appearance: none; white-space: normal; overflow: visible; }
+.gitCommitRail { width: 18px; align-self: stretch; position: relative; flex: 0 0 18px; }
+.gitCommitRail::before { content: ""; position: absolute; top: -9px; bottom: -9px; left: 8px; width: 2px; background: var(--border); }
+.gitCommitDot { position: absolute; top: 8px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); border: 2px solid var(--panel); }
+.gitCommitBody { display: grid; min-width: 0; grid-auto-rows: min-content; gap: 4px; }
+.gitCommitSubject, .gitCommitMeta, .gitCommitRefs { display: block; position: static; min-width: 0; }
+.gitCommitSubject { font-size: 13px; overflow-wrap: anywhere; line-height: 1.35; }
+.gitCommitMeta, .gitCommitRefs { color: var(--muted); font-size: 11px; line-height: 1.3; }
+.gitCommitRefs { color: #fde68a; }
+.gitCommitDetails { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--panel-2); }
+.gitCommitDetails h4 { margin: 0 0 8px; }
+.gitCommitDetails code { display: block; overflow: auto; color: var(--accent); overflow-wrap: anywhere; white-space: normal; }
+.gitSectionTitle { margin: 14px 0 8px; font-size: 13px; color: var(--muted); }
+.gitCommitFiles { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-bottom: 12px; }
+.gitCommitFile { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; padding: 7px 9px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.gitCommitFile:last-child { border-bottom: 0; }
+.gitCommitFileStatus { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gitCommitFilePath { min-width: 0; overflow-wrap: anywhere; }
+.gitCommitFileStats { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+@media (max-width: 760px) {
+  .gitPanel { inset: 0; width: auto; border: 0; border-radius: 0; z-index: 100; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  .gitPanelHeader { padding: max(10px, env(safe-area-inset-top)) 10px 10px; gap: 8px; }
+  .gitPanelHeader h2 { font-size: 13px; }
+  .gitPanelHeader .iconButton { width: 34px; min-width: 34px; min-height: 34px; }
+  .gitTabs { flex: 1 1 auto; justify-content: center; }
+  .gitTab { flex: 1 1 0; max-width: 96px; }
+  .gitPanelBody { display: block; overflow: hidden; }
+  .gitPrimaryPane, .gitDetailPane { height: 100%; overflow: auto; padding: 10px; font-size: 14px; }
+  .gitCommitList { gap: 8px; }
+  .gitCommitItem { height: auto; min-height: 0; padding: 10px 8px; }
+  .gitCommitBody { gap: 5px; }
+  .gitCommitSubject { font-size: 14px; line-height: 1.35; }
+  .gitCommitMeta, .gitCommitRefs { font-size: 12px; line-height: 1.3; }
+  .gitCommitRail::before { top: -12px; bottom: -12px; }
+  .gitPrimaryPane { border-right: 0; }
+  .gitDetailPane { display: none; }
+  .gitPanel[data-view="diff"] .gitPrimaryPane, .gitPanel[data-view="commit"] .gitPrimaryPane { display: none; }
+  .gitPanel[data-view="diff"] .gitDetailPane, .gitPanel[data-view="commit"] .gitDetailPane { display: block; }
+  .gitPanelFooter { padding: 8px 10px max(8px, env(safe-area-inset-bottom)); }
+  .gitSyncButton { flex: 0 0 auto; }
+}

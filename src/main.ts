@@ -1,8 +1,12 @@
 import "./style.css";
+import "./components/diff.css";
+import "./git/git.css";
 import "highlight.js/styles/github-dark.css";
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { Check, Columns2, CornerDownRight, createElement, Copy, Download, ExternalLink, Gauge, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, Rows2, SendHorizontal, Square, X } from "lucide";
+import { Check, CornerDownRight, createElement, Copy, Download, ExternalLink, Gauge, GitBranch, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, SendHorizontal, Square, X } from "lucide";
+import { renderEditDiff } from "./components/editDiff.js";
+import { initGitPanel } from "./git/panel.js";
 
 function syncAppHeight() {
   const height = window.visualViewport?.height || window.innerHeight;
@@ -238,6 +242,8 @@ const attachmentsEl = requiredElement<HTMLDivElement>("#attachments");
 const modelSelectEl = requiredElement<HTMLSelectElement>("#modelSelect");
 const thinkingSelectEl = requiredElement<HTMLSelectElement>("#thinkingSelect");
 const thinkingButton = requiredElement<HTMLButtonElement>("#thinkingButton");
+const gitButton = requiredElement<HTMLButtonElement>("#gitButton");
+const gitPanel = requiredElement<HTMLElement>("#gitPanel");
 
 const requestIdle = window.requestIdleCallback || ((callback: IdleRequestCallback) => window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 1));
 const markdownRenderObserver = "IntersectionObserver" in window
@@ -309,6 +315,7 @@ let attachedImages: ImageAttachment[] = [];
 const iconNodes = {
   "corner-down-right": CornerDownRight,
   gauge: Gauge,
+  "git-branch": GitBranch,
   "key-round": KeyRound,
   menu: Menu,
   paperclip: Paperclip,
@@ -740,166 +747,6 @@ function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<str
   card.append(header);
 }
 
-interface EditHunk { oldText: string; newText: string; }
-type DiffOp = "same" | "del" | "add";
-interface LineDiff { op: DiffOp; oldLine?: string; newLine?: string; }
-
-function asText(value: unknown) { return typeof value === "string" ? value : value == null ? "" : String(value); }
-function splitLines(text: unknown) {
-  const value = asText(text);
-  return value === "" ? [""] : value.split("\n");
-}
-function tokenize(text: unknown) {
-  const value = asText(text);
-  return value.match(/\s+|\w+|[^\s\w]+/g) || [""];
-}
-function normalizeEditHunks(edits: unknown): EditHunk[] {
-  if (!Array.isArray(edits)) return [];
-  return edits
-    .filter((hunk): hunk is Record<string, unknown> => !!hunk && typeof hunk === "object")
-    .map((hunk) => ({ oldText: asText(hunk.oldText), newText: asText(hunk.newText) }));
-}
-
-function lcsPairs<T>(a: T[], b: T[]) {
-  const dp = Array.from({ length: a.length + 1 }, () => Array<number>(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) {
-    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-  }
-  const pairs: Array<[number, number]> = [];
-  for (let i = 0, j = 0; i < a.length && j < b.length;) {
-    if (a[i] === b[j]) { pairs.push([i++, j++]); }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
-  }
-  return pairs;
-}
-
-function lineDiff(oldText: unknown, newText: unknown): LineDiff[] {
-  const oldLines = splitLines(oldText);
-  const newLines = splitLines(newText);
-  const pairs = lcsPairs(oldLines, newLines);
-  const out: LineDiff[] = [];
-  let oi = 0, ni = 0;
-  for (const [oldMatch, newMatch] of pairs) {
-    while (oi < oldMatch || ni < newMatch) {
-      if (oi < oldMatch && ni < newMatch) out.push({ op: "del", oldLine: oldLines[oi++] }, { op: "add", newLine: newLines[ni++] });
-      else if (oi < oldMatch) out.push({ op: "del", oldLine: oldLines[oi++] });
-      else out.push({ op: "add", newLine: newLines[ni++] });
-    }
-    out.push({ op: "same", oldLine: oldLines[oi++], newLine: newLines[ni++] });
-  }
-  while (oi < oldLines.length || ni < newLines.length) {
-    if (oi < oldLines.length && ni < newLines.length) out.push({ op: "del", oldLine: oldLines[oi++] }, { op: "add", newLine: newLines[ni++] });
-    else if (oi < oldLines.length) out.push({ op: "del", oldLine: oldLines[oi++] });
-    else out.push({ op: "add", newLine: newLines[ni++] });
-  }
-  return out;
-}
-
-function appendWordDiff(cell: HTMLElement, oldLine: unknown, newLine: unknown, side: "old" | "new") {
-  const oldTokens = tokenize(oldLine), newTokens = tokenize(newLine);
-  const matches = new Set(lcsPairs(oldTokens, newTokens).map(([i, j]) => side === "old" ? i : j));
-  const tokens = side === "old" ? oldTokens : newTokens;
-  tokens.forEach((token, i) => {
-    const span = document.createElement("span");
-    span.textContent = token;
-    if (!matches.has(i)) span.className = `diffWord diffWord--${side === "old" ? "del" : "add"}`;
-    cell.append(span);
-  });
-}
-
-function appendDiffLine(table: HTMLTableElement, op: DiffOp, oldLine = "", newLine = "") {
-  const tr = document.createElement("tr");
-  tr.className = `diffLine diffLine--${op}`;
-  const oldGutter = document.createElement("td");
-  oldGutter.className = "diffGutter";
-  oldGutter.textContent = op === "add" ? "" : op === "same" ? " " : "-";
-  const oldCell = document.createElement("td");
-  oldCell.className = "diffCode diffCode--old";
-  const newGutter = document.createElement("td");
-  newGutter.className = "diffGutter";
-  newGutter.textContent = op === "del" ? "" : op === "same" ? " " : "+";
-  const newCell = document.createElement("td");
-  newCell.className = "diffCode diffCode--new";
-  if (op === "del") oldCell.textContent = oldLine;
-  else if (op === "add") newCell.textContent = newLine;
-  else { oldCell.textContent = oldLine; newCell.textContent = newLine; }
-  tr.append(oldGutter, oldCell, newGutter, newCell);
-  table.append(tr);
-}
-
-function renderEditDiff(card: HTMLDivElement, args: Record<string, unknown>) {
-  const edits = normalizeEditHunks(args.edits);
-  if (edits.length === 0) return;
-
-  const toolbar = document.createElement("div");
-  toolbar.className = "diffToolbar";
-  const label = document.createElement("span");
-  label.textContent = `${edits.length} edit${edits.length === 1 ? "" : "s"}`;
-  const layout = document.createElement("button");
-  layout.type = "button";
-  layout.className = "diffLayoutToggle";
-  layout.setAttribute("aria-label", "Switch to top/bottom diff view");
-  layout.title = "Switch to top/bottom diff view";
-  layout.append(createElement(Rows2, { "aria-hidden": "true" }));
-  toolbar.append(label, layout);
-
-  const container = document.createElement("div");
-  container.className = "diffContainer diffContainer--sideBySide";
-  layout.addEventListener("click", () => {
-    const stacked = container.classList.toggle("diffContainer--stacked");
-    container.classList.toggle("diffContainer--sideBySide", !stacked);
-    layout.replaceChildren(createElement(stacked ? Columns2 : Rows2, { "aria-hidden": "true" }));
-    const label = stacked ? "Switch to side-by-side diff view" : "Switch to top/bottom diff view";
-    layout.setAttribute("aria-label", label);
-    layout.title = label;
-  });
-
-  edits.forEach((hunk, i) => {
-    if (i > 0) {
-      const sep = document.createElement("div");
-      sep.className = "diffSep";
-      container.append(sep);
-    }
-    const table = document.createElement("table");
-    table.className = "diffTable";
-    lineDiff(hunk.oldText, hunk.newText).forEach((line, index, lines) => {
-      if (line.op === "del" && lines[index + 1]?.op === "add") {
-        const add = lines[index + 1];
-        const tr = document.createElement("tr");
-        tr.className = "diffLine diffLine--changed";
-        const oldGutter = document.createElement("td"); oldGutter.className = "diffGutter"; oldGutter.textContent = "-";
-        const oldCell = document.createElement("td"); oldCell.className = "diffCode diffCode--old";
-        const newGutter = document.createElement("td"); newGutter.className = "diffGutter"; newGutter.textContent = "+";
-        const newCell = document.createElement("td"); newCell.className = "diffCode diffCode--new";
-        appendWordDiff(oldCell, line.oldLine || "", add.newLine || "", "old");
-        appendWordDiff(newCell, line.oldLine || "", add.newLine || "", "new");
-        tr.append(oldGutter, oldCell, newGutter, newCell);
-        table.append(tr);
-      } else if (!(line.op === "add" && lines[index - 1]?.op === "del")) {
-        appendDiffLine(table, line.op, line.oldLine, line.newLine);
-      }
-    });
-    container.append(table);
-  });
-
-  const totalLines = edits.reduce((n, h) => n + splitLines(h.oldText).length + splitLines(h.newText).length, 0);
-  const collapsible = totalLines > 20;
-  if (collapsible) container.classList.add("collapsed");
-  card.append(toolbar, container);
-
-  if (collapsible) {
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "messageToggle";
-    toggle.textContent = "Show more";
-    toggle.addEventListener("click", () => {
-      const isCollapsed = container.classList.toggle("collapsed");
-      toggle.textContent = isCollapsed ? "Show more" : "Show less";
-    });
-    card.append(toggle);
-  }
-}
-
 function addToolCard(toolName: string, args: Record<string, unknown>): HTMLDivElement {
   const card = document.createElement("div");
   card.className = "toolCard toolCard--running";
@@ -1264,6 +1111,7 @@ setIcon(sessionButton, "menu");
 setIcon(attachButton, "paperclip");
 setIcon(primaryButton, "send-horizontal");
 setIcon(expandButton, "maximize-2");
+setIcon(gitButton, "git-branch");
 
 let editorExpanded = false;
 expandButton.addEventListener("click", () => {
@@ -1276,6 +1124,7 @@ expandButton.addEventListener("click", () => {
 });
 setIcon(stopButton, "square");
 updateQueueToggle();
+initGitPanel({ button: gitButton, panel: gitPanel, apiHeaders });
 updatePrimaryAction();
 refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
 connect();

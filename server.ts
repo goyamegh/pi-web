@@ -2,6 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { extname, join, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
@@ -30,6 +32,7 @@ const artifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
 const webUiContextFile = join(appDir, "contexts", "web-ui.md");
 const noSession = process.env.PI_WEB_NO_SESSION === "1";
 const mockMode = process.env.PI_WEB_MOCK === "1";
+const execFileAsync = promisify(execFile);
 
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -133,6 +136,108 @@ function simplifyModel(model: any) {
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
   };
+}
+
+async function git(args: string[], timeout = 15_000) {
+  return execFileAsync("git", args, { cwd: piCwd, timeout, maxBuffer: 10 * 1024 * 1024 });
+}
+
+async function isGitRepo() {
+  try { await git(["rev-parse", "--is-inside-work-tree"]); return true; } catch { return false; }
+}
+
+function gitLabel(indexStatus: string, worktreeStatus: string) {
+  if (indexStatus === "?" && worktreeStatus === "?") return "untracked";
+  if (indexStatus === "U" || worktreeStatus === "U" || indexStatus === "A" && worktreeStatus === "A" || indexStatus === "D" && worktreeStatus === "D") return "conflicted";
+  if (indexStatus === "R" || worktreeStatus === "R") return "renamed";
+  if (indexStatus === "A" || worktreeStatus === "A") return "added";
+  if (indexStatus === "D" || worktreeStatus === "D") return "deleted";
+  if (indexStatus !== " " && indexStatus !== "?") return "staged";
+  return "modified";
+}
+
+function parseStatusLine(line: string) {
+  const indexStatus = line[0] || " ";
+  const worktreeStatus = line[1] || " ";
+  const rawPath = line.slice(3);
+  const renamed = rawPath.includes(" -> ");
+  const [oldPath, path] = renamed ? rawPath.split(" -> ") : [undefined, rawPath];
+  return { path: path || rawPath, oldPath, indexStatus, worktreeStatus, label: gitLabel(indexStatus, worktreeStatus), staged: indexStatus !== " " && indexStatus !== "?" };
+}
+
+async function gitStatus() {
+  if (!await isGitRepo()) return { ok: true, isRepo: false, ahead: 0, behind: 0, files: [] };
+  const [{ stdout: root }, { stdout: branchOut }, { stdout: porcelain }, upstreamResult, defaultResult] = await Promise.all([
+    git(["rev-parse", "--show-toplevel"]),
+    git(["branch", "--show-current"]).catch(() => ({ stdout: "" })),
+    git(["status", "--porcelain=v1", "-b"]),
+    git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).catch(() => ({ stdout: "" })),
+    git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).catch(() => ({ stdout: "" })),
+  ]);
+  const lines = porcelain.trimEnd().split("\n").filter(Boolean);
+  const header = lines[0] || "";
+  const ahead = Number(header.match(/ahead (\d+)/)?.[1] || 0);
+  const behind = Number(header.match(/behind (\d+)/)?.[1] || 0);
+  const trackedFiles = lines.slice(1).map(parseStatusLine).filter((file) => file.label !== "untracked");
+  const { stdout: untrackedOut } = await git(["ls-files", "--others", "--exclude-standard"]).catch(() => ({ stdout: "" }));
+  const untrackedFiles = untrackedOut.split("\n").map((path) => path.trim()).filter(Boolean).map((path) => ({
+    path,
+    indexStatus: "?",
+    worktreeStatus: "?",
+    label: "untracked",
+    staged: false,
+  }));
+  return {
+    ok: true,
+    isRepo: true,
+    root: root.trim(),
+    branch: branchOut.trim(),
+    upstream: upstreamResult.stdout.trim(),
+    defaultRemoteBranch: defaultResult.stdout.trim(),
+    ahead,
+    behind,
+    files: [...trackedFiles, ...untrackedFiles],
+  };
+}
+
+function safeGitPath(path: string) {
+  if (!path || path.startsWith("/") || path.includes("..") || path.includes("\0")) throw new Error("Invalid path");
+  return path;
+}
+
+function parseCommit(entry: string) {
+  const [hash = "", shortHash = "", parents = "", author = "", date = "", refs = "", subject = ""] = entry.split("\x1f");
+  return { hash, shortHash, parents: parents ? parents.split(" ").filter(Boolean) : [], author, date, refs: refs ? refs.split(", ").filter(Boolean) : [], subject };
+}
+
+async function gitLog() {
+  if (!await isGitRepo()) return { ok: true, isRepo: false, commits: [] };
+  const { stdout } = await git(["log", "--all", "-n", "200", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s%x1e"]);
+  const commits = stdout.split("\x1e").map((entry) => entry.trim()).filter(Boolean).map(parseCommit);
+  return { ok: true, isRepo: true, commits };
+}
+
+async function gitCommitDetails(hash: string) {
+  if (!await isGitRepo()) throw new Error("Not a Git repository");
+  if (!/^[a-f0-9]{7,40}$/i.test(hash)) throw new Error("Invalid commit hash");
+  const [{ stdout: commitOut }, { stdout: nameOut }, { stdout: numstatOut }, { stdout: diff }] = await Promise.all([
+    git(["show", "-s", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s", hash]),
+    git(["show", "--name-status", "--format=", hash]),
+    git(["show", "--numstat", "--format=", hash]),
+    git(["show", "--format=", "--patch", "--find-renames", hash]),
+  ]);
+  const stats = new Map<string, { additions?: number; deletions?: number }>();
+  for (const line of numstatOut.split("\n").filter(Boolean)) {
+    const [add, del, ...pathParts] = line.split("\t");
+    const path = pathParts.join("\t");
+    stats.set(path, { additions: Number(add) || 0, deletions: Number(del) || 0 });
+  }
+  const files = nameOut.split("\n").filter(Boolean).map((line) => {
+    const [status, ...parts] = line.split("\t");
+    const path = parts.at(-1) || "";
+    return { path, status, ...(stats.get(path) || {}) };
+  });
+  return { ok: true, commit: parseCommit(commitOut.trim()), files, diff };
 }
 
 // Models confirmed broken with this Copilot integration — tracked at runtime.
@@ -506,6 +611,46 @@ const server = createServer(async (req, res) => {
         session = registerLiveSession(createMockSession());
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
+      }
+
+      if (method === "GET" && url.pathname === "/api/git/status") {
+        return sendJson(res, 200, await gitStatus());
+      }
+
+      if (method === "GET" && url.pathname === "/api/git/log") {
+        return sendJson(res, 200, await gitLog());
+      }
+
+      if (method === "GET" && url.pathname === "/api/git/commit") {
+        try {
+          return sendJson(res, 200, await gitCommitDetails(url.searchParams.get("hash") || ""));
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/git/diff") {
+        if (!await isGitRepo()) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
+        const filePath = safeGitPath(url.searchParams.get("path") || "");
+        const staged = url.searchParams.get("staged") === "1";
+        const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
+        let { stdout } = await git(args);
+        if (!stdout) {
+          const status = await gitStatus() as any;
+          const file = status.files?.find((f: any) => f.path === filePath);
+          if (file?.label === "untracked") stdout = (await git(["diff", "--no-index", "--", "/dev/null", filePath]).catch((error: any) => ({ stdout: error.stdout || "" }))).stdout;
+        }
+        return sendJson(res, 200, { ok: true, path: filePath, staged, diff: stdout });
+      }
+
+      if (method === "POST" && url.pathname === "/api/git/sync") {
+        if (!await isGitRepo()) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
+        const status = await gitStatus() as any;
+        const branch = status.branch;
+        if (!branch) return sendJson(res, 400, { ok: false, error: "Cannot sync detached HEAD" });
+        const fetchResult = await git(["fetch", "--prune", "origin"], 60_000);
+        const pullResult = await git(["pull", "--rebase", "--autostash", "origin", branch], 120_000);
+        return sendJson(res, 200, { ok: true, output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`, status: await gitStatus() });
       }
 
       if (method === "GET" && url.pathname === "/api/state") {
