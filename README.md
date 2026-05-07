@@ -4,9 +4,12 @@ A small local/Tailscale web UI for [`@mariozechner/pi-coding-agent`](https://www
 
 The app is TypeScript end-to-end:
 
-- `server.ts` is the Pi API/WebSocket server, run directly with `tsx`
+- `supervisor.ts` is a small stable dev supervisor that owns the public port and restarts the app server safely
+- `server.ts` is the restartable Pi API/WebSocket server, run directly with `tsx`
 - `src/main.ts` is the Vite frontend with HMR
-- in dev, `server.ts` embeds Vite middleware so API, WebSocket, and HMR run in one process
+- in dev, `server.ts` embeds Vite middleware while `supervisor.ts` proxies API, WebSocket, and HMR traffic
+- `contexts/web-ui.md` is always injected into agent sessions for web UI behavior like image/artifact rendering
+- `AGENTS.md` provides normal project-specific pi instructions when the target cwd is this repo
 
 ## Install
 
@@ -20,11 +23,16 @@ npm install
 npm run dev
 ```
 
-This starts one TypeScript Node process. It serves:
+This starts a stable TypeScript supervisor on `8787` and a restartable child server on `8788`. The public URL still serves:
 
 - Vite frontend with HMR
 - Pi API routes under `/api/*`
 - Pi WebSocket at `/ws`
+
+The supervisor also exposes:
+
+- `POST /api/restart` - restart the child server safely
+- `GET /__supervisor/status` - inspect child PID/generation
 
 Open:
 
@@ -32,7 +40,7 @@ Open:
 http://127.0.0.1:8787
 ```
 
-Edit files under `src/` and Vite will update the UI live. Edit `server.ts` and `tsx --watch` restarts the server.
+Edit files under `src/` and Vite will update the UI live. If the agent edits `server.ts`, call `POST /api/restart` instead of killing the public server; the supervisor stays alive and the browser reconnects.
 
 By default, Pi operates in the directory where you start this server. To point Pi at another project:
 
@@ -100,6 +108,8 @@ http://<machine-name>:8787
 - `PI_WEB_TOKEN` - optional bearer token for API/WebSocket access
 - `PI_WEB_CWD` - project directory Pi should operate in, default current directory
 - `PI_WEB_NO_SESSION=1` - use in-memory sessions only
+- `PI_WEB_CHILD_PORT` - supervised child port, default `8788`
+- `PI_WEB_RESTART_GRACE_MS` - delay between child stop/start, default `250`
 
 ## Security
 
