@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npx playwright install --with-deps
+      - run: npm run test:all
+      - run: npm run build
+
+      - name: Verify tag matches package version
+        run: |
+          node <<'NODE'
+          const { readFileSync } = require('node:fs');
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const tag = process.env.GITHUB_REF_NAME;
+          if (tag !== `v${pkg.version}`) {
+            throw new Error(`Tag ${tag} does not match package version v${pkg.version}`);
+          }
+          NODE
+
+      - name: Pack release archive
+        run: |
+          mkdir -p release
+          npm pack --pack-destination release
+          cd release
+          sha256sum *.tgz > SHA256SUMS.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/*.tgz
+            release/SHA256SUMS.txt

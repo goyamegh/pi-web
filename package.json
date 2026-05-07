@@ -1,9 +1,20 @@
 {
   "name": "pi-web",
   "version": "0.1.0",
-  "private": true,
   "description": "Local/Tailscale web UI for pi coding agent.",
   "type": "module",
+  "bin": {
+    "pi-web": "./bin/pi-web.js"
+  },
+  "files": [
+    "bin/",
+    "contexts/",
+    "dist/",
+    "server/",
+    "server.ts",
+    "supervisor.ts",
+    "README.md"
+  ],
   "scripts": {
     "dev": "PI_WEB_DEV=1 node --import tsx supervisor.ts",
     "dev:server": "PI_WEB_DEV=1 node --import tsx --watch server.ts",
@@ -14,7 +25,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:all": "npm run typecheck && npm run test && npm run test:e2e"
+    "test:all": "npm run typecheck && npm run test && npm run test:e2e",
+    "release:pack": "rm -rf release && npm run build && mkdir -p release && npm pack --pack-destination release"
   },
   "engines": {
     "node": ">=20"

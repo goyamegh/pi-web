@@ -17,9 +17,21 @@ The app is TypeScript end-to-end:
 
 ## Install
 
+For development:
+
 ```bash
 npm install
 ```
+
+From a GitHub release asset:
+
+```bash
+# Download pi-web-<version>.tgz from the release page, then:
+npm install -g ./pi-web-*.tgz
+pi-web
+```
+
+`pi-web` starts the production server on `http://127.0.0.1:8787` by default. It runs Pi in the directory where you call the command; override with `PI_WEB_CWD=/path/to/project pi-web`.
 
 ## Run locally with Vite HMR
 
