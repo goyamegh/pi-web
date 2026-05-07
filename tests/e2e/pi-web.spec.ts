@@ -7,6 +7,24 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe("composer layout", () => {
+  test("status header shows current session title and path", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.locator("#statusBar")).toBeVisible();
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect(page.locator("#statusPath")).toContainText("pi-web");
+  });
+
+  test("new session resets status title", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+
+    await page.locator("#sessionButton").click();
+    await page.locator("#sessionNewButton").click();
+
+    await expect(page.locator("#statusTitle")).toHaveText("New session");
+  });
+
   test("composer controls fit without horizontal overflow", async ({ page }) => {
     await page.goto("/");
     const composer = page.locator("#promptForm");
@@ -24,15 +42,53 @@ test.describe("composer layout", () => {
     expect(sendBox!.x + sendBox!.width).toBeLessThanOrEqual(composerBox!.x + composerBox!.width + 1);
   });
 
-  test("non-send composer action icons are borderless", async ({ page }) => {
+  test("composer action row is flush, 40px tall, and has rounded bottom corners", async ({ page }) => {
     await page.goto("/");
-    for (const selector of ["#thinkingButton", "#queueToggle", "#attachButton"]) {
-      const styles = await page.locator(selector).evaluate((el) => getComputedStyle(el));
-      expect(styles.borderTopColor).toBe("rgba(0, 0, 0, 0)");
-      expect(styles.backgroundColor).toBe("rgba(0, 0, 0, 0)");
-    }
-    const sendBorder = await page.locator("#primaryButton").evaluate((el) => getComputedStyle(el).borderTopColor);
-    expect(sendBorder).not.toBe("rgba(0, 0, 0, 0)");
+
+    const footerBox = await page.locator(".composerFooter").boundingBox();
+    const textAreaBox = await page.locator("#prompt").boundingBox();
+    const modelBox = await page.locator("#modelSelect").boundingBox();
+    const sendBox = await page.locator("#primaryButton").boundingBox();
+    expect(footerBox).toBeTruthy();
+    expect(textAreaBox).toBeTruthy();
+    expect(modelBox).toBeTruthy();
+    expect(sendBox).toBeTruthy();
+
+    expect(footerBox!.height).toBeCloseTo(40, 1);
+    expect(footerBox!.y).toBeCloseTo(textAreaBox!.y + textAreaBox!.height, 1);
+    expect(modelBox!.height).toBeCloseTo(40, 1);
+    expect(sendBox!.height).toBeCloseTo(40, 1);
+
+    const modelRadius = await page.locator("#modelSelect").evaluate((el) => getComputedStyle(el).borderBottomLeftRadius);
+    const sendRadius = await page.locator("#primaryButton").evaluate((el) => getComputedStyle(el).borderBottomRightRadius);
+    expect(modelRadius).toBe("15px");
+    expect(sendRadius).toBe("15px");
+  });
+
+  test("composer focus ring is inset instead of clipped", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#modelSelect").focus();
+    const styles = await page.locator("#modelSelect").evaluate((el) => getComputedStyle(el));
+    expect(styles.outlineStyle).toBe("none");
+    expect(styles.boxShadow).toContain("inset");
+  });
+
+  test("composer expands to fullscreen editor", async ({ page }) => {
+    await page.goto("/");
+    const composer = page.locator("#promptForm");
+    const before = await composer.boundingBox();
+    expect(before).toBeTruthy();
+
+    await composer.hover();
+    await page.locator("#expandButton").click();
+
+    await expect(composer).toHaveClass(/expanded/);
+    const after = await composer.boundingBox();
+    expect(after).toBeTruthy();
+    expect(after!.height).toBeGreaterThan(before!.height * 2);
+
+    await page.locator("#expandButton").click();
+    await expect(composer).not.toHaveClass(/expanded/);
   });
 });
 
@@ -54,11 +110,12 @@ test.describe("sessions drawer", () => {
     await page.goto("/");
     await page.locator("#sessionButton").click();
     await expect(page.locator("#sessionDrawer")).toBeVisible();
+    const drawer = page.locator("#sessionDrawer");
     await expect(page.locator("#sessionNewButton")).toBeVisible();
-    await expect(page.getByText("Current mock session")).toBeVisible();
-    await expect(page.getByText("Older mock session")).toBeVisible();
+    await expect(drawer.getByText("Current mock session")).toBeVisible();
+    await expect(drawer.getByText("Older mock session")).toBeVisible();
 
-    await page.getByText("Older mock session").click();
+    await drawer.getByText("Older mock session").click();
     await expect(page.locator("#sessionDrawer")).toBeHidden();
     await expect(page.getByText("Resumed older session.")).toBeVisible();
 
@@ -84,6 +141,28 @@ test.describe("slash commands", () => {
 });
 
 test.describe("attachments and prompt", () => {
+  test("empty attachment container collapses and populated attachment row has padding", async ({ page }) => {
+    await page.goto("/");
+    const attachments = page.locator("#attachments");
+    await expect(attachments).toHaveCSS("display", "none");
+
+    const file = {
+      name: "tiny.png",
+      mimeType: "image/png",
+      buffer: Buffer.from("iVBORw0KGgo=", "base64"),
+    };
+    await page.locator("#imageInput").setInputFiles(file);
+    await expect(page.locator(".attachmentChip")).toBeVisible();
+    await expect(attachments).toHaveCSS("padding-top", "8px");
+    await expect(attachments).toHaveCSS("padding-right", "8px");
+    await expect(attachments).toHaveCSS("padding-bottom", "8px");
+    await expect(attachments).toHaveCSS("padding-left", "8px");
+
+    const attachmentBg = await attachments.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const composerBg = await page.locator("#promptForm").evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(attachmentBg).toBe(composerBg);
+  });
+
   test("supports image-only prompt and attachment removal", async ({ page }) => {
     await page.goto("/");
     const file = {

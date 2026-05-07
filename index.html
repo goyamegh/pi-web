@@ -14,6 +14,14 @@
       </form>
     </div>
     <main class="app">
+      <div id="statusBar" class="statusBar">
+        <button id="sessionButton" class="iconButton statusBarButton" type="button" aria-label="Sessions" title="Sessions">
+          <span data-icon="menu"></span>
+        </button>
+        <span id="statusTitle" class="statusTitle"></span>
+        <span id="statusPath" class="statusPath"></span>
+      </div>
+
       <section id="messages" class="messages" aria-live="polite"></section>
 
       <div id="sessionBackdrop" class="sessionBackdrop" hidden></div>
@@ -27,14 +35,10 @@
       </aside>
 
       <form id="promptForm" class="composer">
-        <div class="composerMeta">
-          <button id="sessionButton" class="iconButton metaIconButton" type="button" aria-label="Sessions" title="Sessions">
-            <span data-icon="menu"></span>
-          </button>
-          <span class="brand">pi web</span>
-          <p id="meta">Connecting…</p>
-        </div>
         <textarea id="prompt" rows="2" placeholder="Ask pi…"></textarea>
+        <button id="expandButton" class="iconButton expandButton" type="button" aria-label="Expand editor" title="Expand editor">
+          <span data-icon="maximize-2"></span>
+        </button>
         <div id="attachments" class="attachments" aria-live="polite"></div>
         <input id="imageInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
         <div class="composerFooter">

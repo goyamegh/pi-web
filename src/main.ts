@@ -2,7 +2,7 @@ import "./style.css";
 import "highlight.js/styles/github-dark.css";
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { Check, Columns2, CornerDownRight, createElement, Copy, Download, ExternalLink, Gauge, KeyRound, Maximize2, Menu, Paperclip, Route, Rows2, SendHorizontal, Square, X } from "lucide";
+import { Check, Columns2, CornerDownRight, createElement, Copy, Download, ExternalLink, Gauge, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, Rows2, SendHorizontal, Square, X } from "lucide";
 
 function syncAppHeight() {
   const height = window.visualViewport?.height || window.innerHeight;
@@ -215,7 +215,8 @@ function requiredElement<T extends Element>(selector: string): T {
 }
 
 const messagesEl = requiredElement<HTMLDivElement>("#messages");
-const metaEl = requiredElement<HTMLParagraphElement>("#meta");
+const statusTitleEl = requiredElement<HTMLSpanElement>("#statusTitle");
+const statusPathEl = requiredElement<HTMLSpanElement>("#statusPath");
 const formEl = requiredElement<HTMLFormElement>("#promptForm");
 const promptEl = requiredElement<HTMLTextAreaElement>("#prompt");
 const primaryButton = requiredElement<HTMLButtonElement>("#primaryButton");
@@ -224,6 +225,7 @@ const tokenOverlay = requiredElement<HTMLDivElement>("#tokenOverlay");
 const tokenForm = requiredElement<HTMLFormElement>("#tokenForm");
 const tokenInput = requiredElement<HTMLInputElement>("#tokenInput");
 const sessionButton = requiredElement<HTMLButtonElement>("#sessionButton");
+const expandButton = requiredElement<HTMLButtonElement>("#expandButton");
 const sessionDrawer = requiredElement<HTMLElement>("#sessionDrawer");
 const sessionBackdrop = requiredElement<HTMLDivElement>("#sessionBackdrop");
 const sessionCloseButton = requiredElement<HTMLButtonElement>("#sessionCloseButton");
@@ -313,6 +315,8 @@ const iconNodes = {
   route: Route,
   "send-horizontal": SendHorizontal,
   square: Square,
+  "maximize-2": Maximize2,
+  "minimize-2": Minimize2,
   x: X,
 } as const;
 
@@ -532,8 +536,7 @@ function updateMeta(data: any) {
   currentModelKey = modelKey(data.model);
   currentThinkingLevel = data.thinkingLevel || "off";
   currentSessionId = data.sessionId || currentSessionId;
-  const model = currentModelKey || "no model";
-  metaEl.textContent = `${data.cwd} · ${model} · ${currentThinkingLevel}`;
+  statusPathEl.textContent = data.cwd || "";
   updateThinkingButton();
 }
 
@@ -693,7 +696,7 @@ async function refreshState() {
   updateMeta(data);
   isStreaming = Boolean(data.isStreaming);
   updatePrimaryAction();
-  await Promise.all([refreshModels(), refreshMessages()]);
+  await Promise.all([refreshModels(), refreshMessages(), refreshSessionTitle()]);
 }
 
 function toolSubtitle(toolName: string, args: Record<string, unknown>): string {
@@ -987,6 +990,9 @@ function addToolHistoryCard(toolName: string, isError: boolean, result: string, 
 
 function handlePiEvent(event: PiEvent) {
   switch (event.type) {
+    case "session_info_changed":
+      if (event.name !== undefined) statusTitleEl.textContent = event.name || "New session";
+      break;
     case "agent_start":
       isStreaming = true;
       updatePrimaryAction();
@@ -1028,6 +1034,7 @@ function handlePiEvent(event: PiEvent) {
       streamingAssistant = null;
       activeToolCards.clear();
       refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+      refreshSessionTitle();
       break;
     case "thinking_level_changed":
       currentThinkingLevel = event.level || currentThinkingLevel;
@@ -1036,6 +1043,16 @@ function handlePiEvent(event: PiEvent) {
       refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
       break;
   }
+}
+
+async function refreshSessionTitle() {
+  try {
+    const res = await fetch("/api/sessions", { headers: apiHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    const current = (data.sessions || []).find((s: any) => s.isCurrent);
+    statusTitleEl.textContent = current ? sessionTitle(current) : "New session";
+  } catch (_e) { /* best-effort */ }
 }
 
 function connect() {
@@ -1051,6 +1068,7 @@ function connect() {
       if (modelSelectEl.options.length) modelSelectEl.value = currentModelKey;
       if (data.type === "state_changed") {
         refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        refreshSessionTitle();
         if (!sessionDrawer.hidden) refreshSessions().catch(() => undefined);
       }
       return;
@@ -1245,6 +1263,17 @@ tokenForm.addEventListener("submit", (e) => {
 setIcon(sessionButton, "menu");
 setIcon(attachButton, "paperclip");
 setIcon(primaryButton, "send-horizontal");
+setIcon(expandButton, "maximize-2");
+
+let editorExpanded = false;
+expandButton.addEventListener("click", () => {
+  editorExpanded = !editorExpanded;
+  formEl.classList.toggle("expanded", editorExpanded);
+  setIcon(expandButton, editorExpanded ? "minimize-2" : "maximize-2");
+  expandButton.title = editorExpanded ? "Collapse editor" : "Expand editor";
+  expandButton.setAttribute("aria-label", expandButton.title);
+  promptEl.focus();
+});
 setIcon(stopButton, "square");
 updateQueueToggle();
 updatePrimaryAction();

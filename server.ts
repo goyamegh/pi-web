@@ -251,6 +251,7 @@ function currentState() {
     cwd: piCwd,
     sessionFile: session.sessionFile,
     sessionId: session.sessionId,
+    sessionName: session.getSessionName?.(),
     isStreaming: session.isStreaming,
     model: simplifyModel(session.model),
     thinkingLevel: session.thinkingLevel,
@@ -411,6 +412,12 @@ function registerLiveSession(value: any) {
 
     // Track models that fail with model_not_supported and remove them from the list.
     const e = event as any;
+
+    // Broadcast state update when session name changes
+    if (e?.type === "session_info_changed") {
+      broadcast({ type: "state_changed", ...currentState() });
+    }
+
     if (e?.type === "message_end" || e?.type === "turn_end") {
       const msg = e?.message ?? e?.toolResults?.[0];
       const err: string = msg?.errorMessage || msg?.message?.errorMessage || "";

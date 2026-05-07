@@ -31,14 +31,14 @@ body {
 
 .app {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: 100%;
   min-width: 0;
   height: var(--app-height);
   max-width: 1100px;
   margin: 0 auto;
-  padding: 16px 0;
-  gap: 12px;
+  padding: 0 0 16px;
+  gap: 0;
   overflow: hidden;
 }
 
@@ -49,58 +49,66 @@ body {
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: 0 18px 60px rgba(0,0,0,.25);
-  padding: 10px;
-  margin: 0 16px;
+  padding: 0;
+  margin: 8px 16px 0;
 }
 
 p { margin: 0; }
-.composerMeta {
+.statusBar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
-  margin: 0 2px 8px;
+  padding: 0 8px;
+  height: 24px;
+  flex-shrink: 0;
 }
-.brand {
+.statusBarButton {
+  flex: 0 0 auto;
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  border-color: transparent;
+  background: transparent;
+}
+.statusBarButton:hover {
+  border-color: transparent;
+  color: var(--accent);
+}
+.statusBarButton svg {
+  width: 15px;
+  height: 15px;
+}
+.statusTitle {
   flex: 0 0 auto;
   color: var(--text);
-  font-size: 13px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 700;
   letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
 }
-#meta {
+.statusPath {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.metaIconButton {
-  flex: 0 0 auto;
-  width: 28px;
-  min-width: 28px;
-  min-height: 28px;
-  border-color: transparent;
-  background: transparent;
-}
-.metaIconButton:hover {
-  border-color: transparent;
-  color: var(--accent);
-}
-.metaIconButton svg {
-  width: 16px;
-  height: 16px;
 }
 
 .messages {
   min-height: 0;
   overflow: auto;
-  padding: 8px 0;
+  padding: 8px 0 32px;
   display: flex;
   flex-direction: column;
   gap: 0;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 36px, black calc(100% - 36px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 36px, black calc(100% - 36px), transparent 100%);
 }
 
 .message {
@@ -296,24 +304,64 @@ p { margin: 0; }
 .message.error { border-color: var(--danger); color: #fecdd3; }
 
 textarea {
+  display: block;
   width: 100%;
   min-height: 54px;
   max-height: 180px;
   resize: vertical;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 15px 15px 0 0;
   background: var(--panel-2);
   color: var(--text);
-  padding: 10px 12px;
+  padding: 12px 14px;
   outline: none;
   font: inherit;
 }
-textarea:focus { border-color: var(--accent); }
+textarea:focus { border-bottom-color: var(--accent); }
+.expandButton {
+  display: none;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  z-index: 1;
+}
+.expandButton:hover { border-color: transparent; color: var(--accent); }
+.expandButton svg { width: 14px; height: 14px; }
+.composer:hover .expandButton,
+.composer.expanded .expandButton { display: inline-grid; }
+.composer { position: relative; }
+.composer.expanded {
+  position: fixed;
+  inset: 16px;
+  z-index: 10;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+}
+.composer.expanded textarea {
+  flex: 1;
+  max-height: none;
+  resize: none;
+  border-radius: 19px 19px 0 0;
+}
 .attachments {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 6px;
+  margin: 0;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+.attachments:empty {
+  display: none;
 }
 .attachmentChip {
   display: inline-flex;
@@ -351,20 +399,24 @@ textarea:focus { border-color: var(--accent); }
 .composerFooter {
   display: flex;
   min-width: 0;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
+  align-items: stretch;
+  gap: 0;
+  height: 40px;
+  margin-top: 0;
+  padding: 0;
   overflow: hidden;
 }
 button, select {
-  min-height: 34px;
+  height: 40px;
+  min-height: 40px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-top: 0;
+  border-radius: 0;
   background: var(--panel-2);
   color: var(--text);
-  padding: 6px 10px;
+  padding: 4px 8px;
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
 }
 select {
   min-width: 0;
@@ -374,14 +426,19 @@ select {
   flex: 1 1 0;
   width: 0;
   min-width: 0;
+  height: 40px;
+  border-left: 0;
+  border-bottom: 0;
+  border-bottom-left-radius: 15px;
 }
 #thinkingSelect { max-width: 110px; }
 .iconButton {
   display: inline-grid;
-  width: 34px;
-  min-width: 34px;
+  width: 40px;
+  min-width: 40px;
   place-items: center;
   padding: 0;
+  border-bottom: 0;
 }
 .iconButton svg {
   width: 17px;
@@ -390,6 +447,14 @@ select {
 }
 button { cursor: pointer; font-weight: 650; }
 button:hover { border-color: var(--accent); }
+.composer button:focus-visible,
+.composer select:focus-visible,
+.composer textarea:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  position: relative;
+  z-index: 1;
+}
 button:disabled { cursor: default; opacity: .45; }
 button:disabled:hover { border-color: var(--border); }
 .composerFooter .iconButton:not(.primaryAction) {
@@ -401,6 +466,7 @@ button:disabled:hover { border-color: var(--border); }
   color: var(--accent);
 }
 #queueToggle[aria-pressed="true"] { color: var(--accent); }
+#primaryButton { border-bottom-right-radius: 15px; }
 .primaryAction { background: #0f4c75; border-color: #256b97; }
 .dangerAction { background: #5f1824; border-color: #9f2a3d; }
 .dangerAction:hover { border-color: var(--danger); }
@@ -728,14 +794,14 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
   }
 
   .composerFooter .iconButton {
-    width: 30px;
-    min-width: 30px;
-    min-height: 30px;
+    width: 40px;
+    min-width: 40px;
+    min-height: 40px;
   }
 
   .composerFooter .iconButton svg {
-    width: 16px;
-    height: 16px;
+    width: 17px;
+    height: 17px;
   }
 
   .message { max-width: 96%; }
