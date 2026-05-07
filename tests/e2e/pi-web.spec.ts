@@ -158,7 +158,7 @@ test.describe("sessions drawer", () => {
     await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
     await expect(page.locator("#sessionDrawer")).toBeHidden();
-    await expect(page.locator(".message.system", { hasText: "New session" })).toBeVisible();
+    await expect(page.locator(".emptyCwdChooser", { hasText: "Working directory" })).toBeVisible();
   });
 });
 
