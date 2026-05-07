@@ -35,6 +35,19 @@ test.describe("composer layout", () => {
 });
 
 test.describe("sessions drawer", () => {
+  test("shows a spinner for a background running session", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("slow background task");
+    await page.locator("#primaryButton").click();
+    await page.locator("#sessionButton").click();
+    await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
+
+    await page.getByText("Older mock session").click();
+    await page.locator("#sessionButton").click();
+    await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
+    await expect(page.locator(".sessionItem", { hasText: "Older mock session" }).locator(".sessionSpinner")).toHaveCount(0);
+  });
+
   test("opens, lists sessions, resumes an older session, and creates new session", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();

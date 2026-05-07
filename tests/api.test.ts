@@ -123,6 +123,30 @@ describe("pi-web mock API", () => {
     expect(invalidRes.status).toBe(500);
   });
 
+  it("keeps background sessions running when another session is opened", async () => {
+    const promptRes = await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "slow background task" }),
+    });
+    expect(promptRes.status).toBe(202);
+
+    const openRes = await fetch(`${baseUrl}/api/sessions/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "mock-older" }),
+    });
+    expect(openRes.status).toBe(200);
+    expect((await openRes.json()).sessionId).toBe("mock-older");
+
+    const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
+    const current = sessions.sessions.find((item: any) => item.id === "mock-current");
+    const older = sessions.sessions.find((item: any) => item.id === "mock-older");
+    expect(current.runtime.isRunning).toBe(true);
+    expect(older.isCurrent).toBe(true);
+    expect(older.runtime.isRunning).toBe(false);
+  });
+
   it("creates and opens sessions through validated session APIs", async () => {
     const newRes = await fetch(`${baseUrl}/api/sessions/new`, { method: "POST" });
     expect(newRes.status).toBe(200);

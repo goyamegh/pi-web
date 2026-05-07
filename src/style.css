@@ -317,12 +317,31 @@ button:disabled:hover { border-color: var(--border); }
   border-color: var(--accent);
   color: var(--accent);
 }
+.sessionItemTitleRow {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
 .sessionItemTitle {
+  min-width: 0;
   overflow: hidden;
   color: var(--text);
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.sessionSpinner {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: sessionSpin .8s linear infinite;
+}
+@keyframes sessionSpin {
+  to { transform: rotate(360deg); }
 }
 .sessionItemMeta, .sessionEmpty {
   color: var(--muted);

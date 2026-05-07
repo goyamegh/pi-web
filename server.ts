@@ -141,6 +141,20 @@ function simplifyMessage(message: unknown) {
   };
 }
 
+function runtimeForPath(path: string) {
+  const live = liveSessions.get(path)?.session;
+  const isStreaming = Boolean(live?.isStreaming);
+  const isCompacting = Boolean(live?.isCompacting);
+  return {
+    loaded: Boolean(live),
+    isRunning: isStreaming || isCompacting,
+    isStreaming,
+    isCompacting,
+    pendingMessageCount: Number(live?.pendingMessageCount || 0),
+    model: simplifyModel(live?.model),
+  };
+}
+
 function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number]) {
   return {
     id: info.id,
@@ -151,6 +165,7 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     modified: info.modified.toISOString(),
     messageCount: info.messageCount,
     isCurrent: info.path === session.sessionFile,
+    runtime: runtimeForPath(info.path),
   };
 }
 
@@ -248,10 +263,7 @@ async function executeSlashCommand(input: string) {
     case "new":
     case "new-chat":
     case "clear": {
-      if (session.isStreaming) await session.abort();
-      session.clearQueue();
-      session.sessionManager.newSession();
-      session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
+      session = await createNewLiveSession();
       return { message: "New session.", state: currentStateWithThinkingLevels() };
     }
 
@@ -266,10 +278,7 @@ async function executeSlashCommand(input: string) {
 }
 
 async function switchToSessionFile(path: string) {
-  if (session.isStreaming) await session.abort();
-  session.clearQueue();
-  session.sessionManager.setSessionFile(path);
-  session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
+  session = await getOrCreateLiveSession(path);
 }
 
 const mockSessions = [
@@ -297,12 +306,17 @@ const mockSessions = [
   },
 ];
 
-function createMockSession() {
+function createMockSession(path = mockSessions[0].path) {
   const mockModel = { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 };
-  const initialMessages = () => [
-    { role: "user", content: "Can you add image attachments?", timestamp: "2026-05-07T10:00:00Z" },
-    { role: "assistant", content: "Image attachment support is enabled.\n".repeat(60), timestamp: "2026-05-07T10:01:00Z" },
-  ];
+  const initialMessages = () => path === mockSessions[1].path
+    ? [
+      { role: "user", content: "Review the mobile composer layout", timestamp: "2026-05-06T09:00:00Z" },
+      { role: "assistant", content: "Resumed older session.", timestamp: "2026-05-06T09:01:00Z" },
+    ]
+    : [
+      { role: "user", content: "Can you add image attachments?", timestamp: "2026-05-07T10:00:00Z" },
+      { role: "assistant", content: "Image attachment support is enabled.\n".repeat(60), timestamp: "2026-05-07T10:01:00Z" },
+    ];
   const mockMessages = initialMessages();
   const mockSessionManager = {
     newSession() {
@@ -323,8 +337,8 @@ function createMockSession() {
     getSessionDir() { return join(piCwd, ".mock-sessions"); },
   };
   const mockSession: any = {
-    sessionId: "mock-current",
-    sessionFile: mockSessions[0].path,
+    sessionId: mockSessions.find((info) => info.path === path)?.id || "mock-current",
+    sessionFile: path,
     isStreaming: false,
     model: mockModel,
     thinkingLevel: "medium",
@@ -341,8 +355,14 @@ function createMockSession() {
     reload: async () => undefined,
     prompt: async (message: string, options?: { images?: unknown[] }) => {
       mockMessages.push({ role: "user", content: message, timestamp: new Date().toISOString() });
+      const slow = /slow|running/i.test(message);
+      mockSession.isStreaming = true;
+      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_start" } });
+      if (slow) await new Promise((resolve) => setTimeout(resolve, 750));
       mockMessages.push({ role: "assistant", content: `Mock response${options?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
-      broadcast({ type: "state_changed", ...currentState() });
+      mockSession.isStreaming = false;
+      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
+      if (mockSession === session) broadcast({ type: "state_changed", ...currentState() });
     },
     abort: async () => { mockSession.isStreaming = false; },
     clearQueue: () => undefined,
@@ -360,13 +380,9 @@ function createMockSession() {
 
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
-const createdSession = mockMode ? { session: createMockSession(), modelFallbackMessage: undefined } : await createAgentSession({
-  cwd: piCwd,
-  sessionManager: noSession ? SessionManager.inMemory() : SessionManager.create(piCwd),
-  authStorage,
-  modelRegistry,
-});
-const { session, modelFallbackMessage } = createdSession;
+const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
+let session: any;
+let modelFallbackMessage: string | undefined;
 
 const clients = new Set<WebSocket>();
 function broadcast(value: unknown) {
@@ -376,9 +392,62 @@ function broadcast(value: unknown) {
   }
 }
 
-session.subscribe((event: unknown) => {
-  broadcast({ type: "pi_event", event });
-});
+function sessionPathKey(value: any) {
+  return String(value.sessionFile || value.sessionId || "");
+}
+
+function registerLiveSession(value: any) {
+  const key = sessionPathKey(value);
+  if (!key || liveSessions.get(key)?.session === value) return value;
+
+  const unsubscribe = value.subscribe?.((event: unknown) => {
+    const eventSessionFile = value.sessionFile;
+    const eventSessionId = value.sessionId;
+    broadcast({ type: "pi_event", sessionId: eventSessionId, sessionFile: eventSessionFile, event });
+    broadcast({
+      type: "session_runtime_changed",
+      sessionId: eventSessionId,
+      sessionFile: eventSessionFile,
+      runtime: runtimeForPath(eventSessionFile),
+    });
+  });
+  liveSessions.set(key, { session: value, unsubscribe });
+  return value;
+}
+
+async function makeAgentSession(path?: string) {
+  if (mockMode) return { session: createMockSession(path), modelFallbackMessage: undefined };
+
+  const sessionManager = noSession ? SessionManager.inMemory() : SessionManager.create(piCwd);
+  if (path && !noSession) sessionManager.setSessionFile(path);
+  return createAgentSession({
+    cwd: piCwd,
+    sessionManager,
+    authStorage,
+    modelRegistry,
+  });
+}
+
+async function getOrCreateLiveSession(path: string) {
+  const existing = liveSessions.get(path)?.session;
+  if (existing) return existing;
+  const created = await makeAgentSession(path);
+  if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
+  return registerLiveSession(created.session);
+}
+
+async function createNewLiveSession() {
+  const created = await makeAgentSession();
+  if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
+  const value = created.session;
+  value.sessionManager.newSession();
+  value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
+  return registerLiveSession(value);
+}
+
+const createdSession = await makeAgentSession();
+session = registerLiveSession(createdSession.session);
+modelFallbackMessage = createdSession.modelFallbackMessage;
 
 if (modelFallbackMessage) {
   console.warn(modelFallbackMessage);
@@ -395,7 +464,9 @@ const server = createServer(async (req, res) => {
       if (!isAuthorized(req)) return unauthorized(res);
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
-        session.__reset?.();
+        for (const entry of liveSessions.values()) entry.unsubscribe?.();
+        liveSessions.clear();
+        session = registerLiveSession(createMockSession());
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
       }
@@ -483,11 +554,17 @@ const server = createServer(async (req, res) => {
         const imageFileNote = await persistPromptImages(images);
         const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
         const mode = body.mode === "followUp" ? "followUp" : "steer";
-        void session.prompt(promptText, {
-          ...(session.isStreaming ? { streamingBehavior: mode } : {}),
+        const targetSession = session;
+        void targetSession.prompt(promptText, {
+          ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
           ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
         })
-          .catch((error: unknown) => broadcast({ type: "server_error", error: error instanceof Error ? error.message : String(error) }));
+          .catch((error: unknown) => broadcast({
+            type: "server_error",
+            sessionId: targetSession.sessionId,
+            sessionFile: targetSession.sessionFile,
+            error: error instanceof Error ? error.message : String(error),
+          }));
 
         return sendJson(res, 202, { ok: true });
       }
@@ -498,10 +575,7 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
-        if (session.isStreaming) await session.abort();
-        session.clearQueue();
-        session.sessionManager.newSession();
-        session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
+        session = await createNewLiveSession();
         const state = currentState();
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });

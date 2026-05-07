@@ -48,6 +48,7 @@ let token = localStorage.getItem("pi-web-token") || "";
 let streamingAssistant: HTMLDivElement | null = null;
 let currentModelKey = "";
 let currentThinkingLevel = "off";
+let currentSessionFile = "";
 let isStreaming = false;
 let queueMode: "steer" | "followUp" = "steer";
 
@@ -67,6 +68,13 @@ type SessionInfo = {
   modified: string;
   messageCount: number;
   isCurrent: boolean;
+  runtime?: {
+    loaded: boolean;
+    isRunning: boolean;
+    isStreaming: boolean;
+    isCompacting: boolean;
+    pendingMessageCount: number;
+  };
 };
 
 let attachedImages: ImageAttachment[] = [];
@@ -232,6 +240,7 @@ function modelLabel(model: any): string {
 function updateMeta(data: any) {
   currentModelKey = modelKey(data.model);
   currentThinkingLevel = data.thinkingLevel || "off";
+  currentSessionFile = data.sessionFile || currentSessionFile;
   const model = currentModelKey || "no model";
   metaEl.textContent = `${data.cwd} · ${model} · ${currentThinkingLevel}`;
   updateThinkingButton();
@@ -327,15 +336,27 @@ async function refreshSessions() {
     button.className = `sessionItem${item.isCurrent ? " current" : ""}`;
     button.disabled = item.isCurrent;
 
+    const titleRow = document.createElement("span");
+    titleRow.className = "sessionItemTitleRow";
+
     const title = document.createElement("span");
     title.className = "sessionItemTitle";
     title.textContent = sessionTitle(item);
+    titleRow.append(title);
+
+    if (item.runtime?.isRunning) {
+      const spinner = document.createElement("span");
+      spinner.className = "sessionSpinner";
+      spinner.title = item.runtime.isCompacting ? "Compacting" : "Running";
+      spinner.setAttribute("aria-label", spinner.title);
+      titleRow.append(spinner);
+    }
 
     const meta = document.createElement("span");
     meta.className = "sessionItemMeta";
     meta.textContent = `${formatSessionDate(item.modified)} · ${item.messageCount} message${item.messageCount === 1 ? "" : "s"}`;
 
-    button.append(title, meta);
+    button.append(titleRow, meta);
     button.addEventListener("click", async () => {
       try {
         const openRes = await fetch("/api/sessions/open", {
@@ -423,8 +444,16 @@ function connect() {
       }
       return;
     }
-    if (data.type === "pi_event") handlePiEvent(data.event);
-    if (data.type === "server_error") addMessage("system", data.error, "error");
+    if (data.type === "session_runtime_changed") {
+      if (!sessionDrawer.hidden) refreshSessions().catch(() => undefined);
+      return;
+    }
+    if (data.type === "pi_event") {
+      if (!sessionDrawer.hidden) refreshSessions().catch(() => undefined);
+      if (!data.sessionFile || data.sessionFile === currentSessionFile) handlePiEvent(data.event);
+      return;
+    }
+    if (data.type === "server_error" && (!data.sessionFile || data.sessionFile === currentSessionFile)) addMessage("system", data.error, "error");
   });
   ws.addEventListener("close", () => {
     addMessage("system", "Disconnected. Reconnecting…");
