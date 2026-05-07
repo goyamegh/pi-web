@@ -2,7 +2,7 @@
 
 A small local/Tailscale web UI for [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent).
 
-![pi-web main chat](tests/e2e/visual.spec.ts-snapshots/main-chat-desktop.png)
+![pi-web showcase](tests/e2e/visual.spec.ts-snapshots/hero-showcase-desktop.png)
 
 The app is TypeScript end-to-end:
 
@@ -55,9 +55,11 @@ PI_WEB_CWD=/Users/ashwin/projects/comfy-lan-webapp npm run dev
 The README references the same deterministic Playwright visual snapshots used by `tests/e2e/visual.spec.ts`. When visual snapshots are intentionally updated, these images update with them.
 
 <picture>
-  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png">
-  <img alt="pi-web tool result transcript" src="tests/e2e/visual.spec.ts-snapshots/tool-result-desktop.png">
+  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/hero-showcase-mobile.png">
+  <img alt="pi-web diff review" src="tests/e2e/visual.spec.ts-snapshots/diff-review-desktop.png">
 </picture>
+
+![pi-web mobile sessions](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png)
 
 ## Production build
 
