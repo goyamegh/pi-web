@@ -1,6 +1,8 @@
 import "./style.css";
+import "highlight.js/styles/github-dark.css";
+import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { CornerDownRight, createElement, Gauge, KeyRound, Menu, Paperclip, Route, SendHorizontal, Square, X } from "lucide";
+import { Check, Columns2, CornerDownRight, createElement, Copy, Download, ExternalLink, Gauge, KeyRound, Maximize2, Menu, Paperclip, Route, Rows2, SendHorizontal, Square, X } from "lucide";
 
 function syncAppHeight() {
   const height = window.visualViewport?.height || window.innerHeight;
@@ -28,10 +30,10 @@ marked.setOptions({
 const markdownCache = new Map<string, string>();
 const maxCachedMarkdown = 160;
 const allowedMarkdownTags = new Set([
-  "a", "blockquote", "br", "code", "del", "div", "em", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
+  "a", "blockquote", "br", "code", "del", "div", "em", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "img",
   "li", "ol", "p", "pre", "span", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
 ]);
-const allowedMarkdownAttributes = new Set(["class", "href", "rel", "target"]);
+const allowedMarkdownAttributes = new Set(["alt", "class", "href", "rel", "src", "target", "title"]);
 
 function sanitizeMarkdownHtml(html: string) {
   const template = document.createElement("template");
@@ -55,12 +57,44 @@ function sanitizeMarkdownHtml(html: string) {
         const href = attribute.value.trim();
         if (!/^(https?:|mailto:|#|\/)/i.test(href)) element.removeAttribute(attribute.name);
       }
+
+      if (name === "src") {
+        const src = attribute.value.trim();
+        if (!/^(https?:|data:image\/(png|jpeg|jpg|gif|webp);base64,|\/api\/artifacts\/)/i.test(src)) {
+          element.removeAttribute(attribute.name);
+        }
+      }
     }
 
     if (tagName === "a") {
       element.setAttribute("target", "_blank");
       element.setAttribute("rel", "noopener noreferrer");
     }
+
+    if (tagName === "img" && !element.getAttribute("src")) {
+      element.remove();
+    }
+  }
+
+  return template.innerHTML;
+}
+
+function highlightMarkdownCode(html: string) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+
+  for (const code of Array.from(template.content.querySelectorAll("pre code"))) {
+    const languageClass = Array.from(code.classList).find((className) => className.startsWith("language-"));
+    const language = languageClass?.slice("language-".length);
+    const source = code.textContent || "";
+
+    const highlighted = language && hljs.getLanguage(language)
+      ? hljs.highlight(source, { language }).value
+      : hljs.highlightAuto(source).value;
+
+    code.innerHTML = highlighted;
+    code.classList.add("hljs");
+    if (language) code.classList.add(`language-${language}`);
   }
 
   return template.innerHTML;
@@ -74,15 +108,102 @@ function markdownHtml(text: string) {
     return cached;
   }
 
-  const html = sanitizeMarkdownHtml(marked.parse(text) as string);
+  const html = highlightMarkdownCode(sanitizeMarkdownHtml(marked.parse(text) as string));
   markdownCache.set(text, html);
   if (markdownCache.size > maxCachedMarkdown) markdownCache.delete(markdownCache.keys().next().value as string);
   return html;
 }
 
+function imageActionIcon(name: "download" | "external-link" | "maximize-2") {
+  const icons = { Download, ExternalLink, Maximize2 } as const;
+  const icon = name === "download" ? icons.Download : name === "external-link" ? icons.ExternalLink : icons.Maximize2;
+  return createElement(icon, { "aria-hidden": "true" });
+}
+
+function attachImageActions(img: HTMLImageElement) {
+  if (img.closest(".imageFrame")) return;
+
+  const frame = document.createElement("span");
+  frame.className = "imageFrame";
+
+  const toolbar = document.createElement("span");
+  toolbar.className = "imageActions";
+
+  const fullScreen = document.createElement("button");
+  fullScreen.type = "button";
+  fullScreen.className = "imageAction";
+  fullScreen.title = "Fullscreen";
+  fullScreen.setAttribute("aria-label", fullScreen.title);
+  fullScreen.append(imageActionIcon("maximize-2"));
+  fullScreen.addEventListener("click", () => {
+    const overlay = document.createElement("div");
+    overlay.className = "imageOverlay";
+    const full = document.createElement("img");
+    full.src = img.currentSrc || img.src;
+    full.alt = img.alt || "image";
+    overlay.append(full);
+    overlay.addEventListener("click", () => overlay.remove());
+    document.body.append(overlay);
+  });
+
+  const download = document.createElement("a");
+  download.className = "imageAction";
+  download.title = "Download";
+  download.setAttribute("aria-label", download.title);
+  download.href = img.currentSrc || img.src;
+  download.download = img.alt || "image";
+  download.append(imageActionIcon("download"));
+
+  const open = document.createElement("a");
+  open.className = "imageAction";
+  open.title = "Open in new tab";
+  open.setAttribute("aria-label", open.title);
+  open.href = img.currentSrc || img.src;
+  open.target = "_blank";
+  open.rel = "noopener noreferrer";
+  open.append(imageActionIcon("external-link"));
+
+  toolbar.append(fullScreen, download, open);
+  img.before(frame);
+  frame.append(img, toolbar);
+}
+
+function enhanceCodeBlocks(root: ParentNode) {
+  for (const pre of Array.from(root.querySelectorAll<HTMLPreElement>("pre"))) {
+    if (pre.querySelector(".copyCode")) continue;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "copyCode";
+    btn.title = "Copy code";
+    btn.setAttribute("aria-label", btn.title);
+    btn.append(createElement(Copy, { "aria-hidden": "true" }));
+    btn.dataset.icon = "copy";
+    btn.addEventListener("click", () => {
+      btn.innerHTML = "";
+      btn.append(createElement(Check, { "aria-hidden": "true" }));
+      btn.dataset.icon = "check";
+      setTimeout(() => {
+        btn.innerHTML = "";
+        btn.append(createElement(Copy, { "aria-hidden": "true" }));
+        btn.dataset.icon = "copy";
+      }, 1500);
+      const code = pre.querySelector("code");
+      navigator.clipboard.writeText(code?.textContent || pre.textContent || "").catch(() => {});
+    });
+    pre.style.position = "relative";
+    pre.append(btn);
+  }
+}
+
+function enhanceImages(root: ParentNode) {
+  for (const img of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) attachImageActions(img);
+}
+
 function renderAssistantMarkdown(body: HTMLElement, text: string) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
+  enhanceCodeBlocks(body);
+  enhanceImages(body);
   body.dataset.markdownRendered = "true";
   delete body.dataset.markdownText;
 }
@@ -141,7 +262,7 @@ let streamingAssistant: HTMLDivElement | null = null;
 const activeToolCards = new Map<string, HTMLDivElement>();
 let currentModelKey = "";
 let currentThinkingLevel = "off";
-let currentSessionFile = "";
+let currentSessionId = "";
 let isStreaming = false;
 let queueMode: "steer" | "followUp" = "steer";
 
@@ -154,7 +275,6 @@ type ImageAttachment = {
 
 type SessionInfo = {
   id: string;
-  path: string;
   name?: string;
   firstMessage?: string;
   created: string;
@@ -324,17 +444,8 @@ function addMessage(role: Role, text: string, extraClass = "", images: AttachedI
         el.className = "messageImageThumb";
         el.src = `data:${img.mimeType};base64,${img.data}`;
         el.alt = img.path ? img.path.split("/").pop() || "image" : "image";
-        el.addEventListener("click", () => {
-          const overlay = document.createElement("div");
-          overlay.className = "imageOverlay";
-          const full = document.createElement("img");
-          full.src = el.src;
-          full.alt = el.alt;
-          overlay.append(full);
-          overlay.addEventListener("click", () => overlay.remove());
-          document.body.append(overlay);
-        });
         imgWrap.append(el);
+        attachImageActions(el);
       } else {
         const missing = document.createElement("span");
         missing.className = "messageImageMissing";
@@ -410,7 +521,7 @@ function modelLabel(model: any): string {
 function updateMeta(data: any) {
   currentModelKey = modelKey(data.model);
   currentThinkingLevel = data.thinkingLevel || "off";
-  currentSessionFile = data.sessionFile || currentSessionFile;
+  currentSessionId = data.sessionId || currentSessionId;
   const model = currentModelKey || "no model";
   metaEl.textContent = `${data.cwd} · ${model} · ${currentThinkingLevel}`;
   updateThinkingButton();
@@ -458,7 +569,8 @@ async function refreshModels() {
 }
 
 async function refreshMessages() {
-  const res = await fetch("/api/messages", { headers: apiHeaders() });
+  const query = currentSessionId ? `?sessionId=${encodeURIComponent(currentSessionId)}` : "";
+  const res = await fetch(`/api/messages${query}`, { headers: apiHeaders() });
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   messagesEl.textContent = "";
@@ -546,7 +658,7 @@ async function refreshSessions() {
         const openRes = await fetch("/api/sessions/open", {
           method: "POST",
           headers: apiHeaders(),
-          body: JSON.stringify({ id: item.id }),
+          body: JSON.stringify({ sessionId: item.id }),
         });
         if (!openRes.ok) throw new Error(await openRes.text());
         setSessionDrawerOpen(false);
@@ -614,13 +726,184 @@ function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<str
   card.append(header);
 }
 
+interface EditHunk { oldText: string; newText: string; }
+type DiffOp = "same" | "del" | "add";
+interface LineDiff { op: DiffOp; oldLine?: string; newLine?: string; }
+
+function asText(value: unknown) { return typeof value === "string" ? value : value == null ? "" : String(value); }
+function splitLines(text: unknown) {
+  const value = asText(text);
+  return value === "" ? [""] : value.split("\n");
+}
+function tokenize(text: unknown) {
+  const value = asText(text);
+  return value.match(/\s+|\w+|[^\s\w]+/g) || [""];
+}
+function normalizeEditHunks(edits: unknown): EditHunk[] {
+  if (!Array.isArray(edits)) return [];
+  return edits
+    .filter((hunk): hunk is Record<string, unknown> => !!hunk && typeof hunk === "object")
+    .map((hunk) => ({ oldText: asText(hunk.oldText), newText: asText(hunk.newText) }));
+}
+
+function lcsPairs<T>(a: T[], b: T[]) {
+  const dp = Array.from({ length: a.length + 1 }, () => Array<number>(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) {
+    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  }
+  const pairs: Array<[number, number]> = [];
+  for (let i = 0, j = 0; i < a.length && j < b.length;) {
+    if (a[i] === b[j]) { pairs.push([i++, j++]); }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+  }
+  return pairs;
+}
+
+function lineDiff(oldText: unknown, newText: unknown): LineDiff[] {
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
+  const pairs = lcsPairs(oldLines, newLines);
+  const out: LineDiff[] = [];
+  let oi = 0, ni = 0;
+  for (const [oldMatch, newMatch] of pairs) {
+    while (oi < oldMatch || ni < newMatch) {
+      if (oi < oldMatch && ni < newMatch) out.push({ op: "del", oldLine: oldLines[oi++] }, { op: "add", newLine: newLines[ni++] });
+      else if (oi < oldMatch) out.push({ op: "del", oldLine: oldLines[oi++] });
+      else out.push({ op: "add", newLine: newLines[ni++] });
+    }
+    out.push({ op: "same", oldLine: oldLines[oi++], newLine: newLines[ni++] });
+  }
+  while (oi < oldLines.length || ni < newLines.length) {
+    if (oi < oldLines.length && ni < newLines.length) out.push({ op: "del", oldLine: oldLines[oi++] }, { op: "add", newLine: newLines[ni++] });
+    else if (oi < oldLines.length) out.push({ op: "del", oldLine: oldLines[oi++] });
+    else out.push({ op: "add", newLine: newLines[ni++] });
+  }
+  return out;
+}
+
+function appendWordDiff(cell: HTMLElement, oldLine: unknown, newLine: unknown, side: "old" | "new") {
+  const oldTokens = tokenize(oldLine), newTokens = tokenize(newLine);
+  const matches = new Set(lcsPairs(oldTokens, newTokens).map(([i, j]) => side === "old" ? i : j));
+  const tokens = side === "old" ? oldTokens : newTokens;
+  tokens.forEach((token, i) => {
+    const span = document.createElement("span");
+    span.textContent = token;
+    if (!matches.has(i)) span.className = `diffWord diffWord--${side === "old" ? "del" : "add"}`;
+    cell.append(span);
+  });
+}
+
+function appendDiffLine(table: HTMLTableElement, op: DiffOp, oldLine = "", newLine = "") {
+  const tr = document.createElement("tr");
+  tr.className = `diffLine diffLine--${op}`;
+  const oldGutter = document.createElement("td");
+  oldGutter.className = "diffGutter";
+  oldGutter.textContent = op === "add" ? "" : op === "same" ? " " : "-";
+  const oldCell = document.createElement("td");
+  oldCell.className = "diffCode diffCode--old";
+  const newGutter = document.createElement("td");
+  newGutter.className = "diffGutter";
+  newGutter.textContent = op === "del" ? "" : op === "same" ? " " : "+";
+  const newCell = document.createElement("td");
+  newCell.className = "diffCode diffCode--new";
+  if (op === "del") oldCell.textContent = oldLine;
+  else if (op === "add") newCell.textContent = newLine;
+  else { oldCell.textContent = oldLine; newCell.textContent = newLine; }
+  tr.append(oldGutter, oldCell, newGutter, newCell);
+  table.append(tr);
+}
+
+function renderEditDiff(card: HTMLDivElement, args: Record<string, unknown>) {
+  const edits = normalizeEditHunks(args.edits);
+  if (edits.length === 0) return;
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "diffToolbar";
+  const label = document.createElement("span");
+  label.textContent = `${edits.length} edit${edits.length === 1 ? "" : "s"}`;
+  const layout = document.createElement("button");
+  layout.type = "button";
+  layout.className = "diffLayoutToggle";
+  layout.setAttribute("aria-label", "Switch to top/bottom diff view");
+  layout.title = "Switch to top/bottom diff view";
+  layout.append(createElement(Rows2, { "aria-hidden": "true" }));
+  toolbar.append(label, layout);
+
+  const container = document.createElement("div");
+  container.className = "diffContainer diffContainer--sideBySide";
+  layout.addEventListener("click", () => {
+    const stacked = container.classList.toggle("diffContainer--stacked");
+    container.classList.toggle("diffContainer--sideBySide", !stacked);
+    layout.replaceChildren(createElement(stacked ? Columns2 : Rows2, { "aria-hidden": "true" }));
+    const label = stacked ? "Switch to side-by-side diff view" : "Switch to top/bottom diff view";
+    layout.setAttribute("aria-label", label);
+    layout.title = label;
+  });
+
+  edits.forEach((hunk, i) => {
+    if (i > 0) {
+      const sep = document.createElement("div");
+      sep.className = "diffSep";
+      container.append(sep);
+    }
+    const table = document.createElement("table");
+    table.className = "diffTable";
+    lineDiff(hunk.oldText, hunk.newText).forEach((line, index, lines) => {
+      if (line.op === "del" && lines[index + 1]?.op === "add") {
+        const add = lines[index + 1];
+        const tr = document.createElement("tr");
+        tr.className = "diffLine diffLine--changed";
+        const oldGutter = document.createElement("td"); oldGutter.className = "diffGutter"; oldGutter.textContent = "-";
+        const oldCell = document.createElement("td"); oldCell.className = "diffCode diffCode--old";
+        const newGutter = document.createElement("td"); newGutter.className = "diffGutter"; newGutter.textContent = "+";
+        const newCell = document.createElement("td"); newCell.className = "diffCode diffCode--new";
+        appendWordDiff(oldCell, line.oldLine || "", add.newLine || "", "old");
+        appendWordDiff(newCell, line.oldLine || "", add.newLine || "", "new");
+        tr.append(oldGutter, oldCell, newGutter, newCell);
+        table.append(tr);
+      } else if (!(line.op === "add" && lines[index - 1]?.op === "del")) {
+        appendDiffLine(table, line.op, line.oldLine, line.newLine);
+      }
+    });
+    container.append(table);
+  });
+
+  const totalLines = edits.reduce((n, h) => n + splitLines(h.oldText).length + splitLines(h.newText).length, 0);
+  const collapsible = totalLines > 20;
+  if (collapsible) container.classList.add("collapsed");
+  card.append(toolbar, container);
+
+  if (collapsible) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "messageToggle";
+    toggle.textContent = "Show more";
+    toggle.addEventListener("click", () => {
+      const isCollapsed = container.classList.toggle("collapsed");
+      toggle.textContent = isCollapsed ? "Show more" : "Show less";
+    });
+    card.append(toggle);
+  }
+}
+
 function addToolCard(toolName: string, args: Record<string, unknown>): HTMLDivElement {
   const card = document.createElement("div");
   card.className = "toolCard toolCard--running";
   addToolHeader(card, toolName, args);
+  if (toolName === "edit") renderEditDiff(card, args);
+  // Store toolName for updateToolCard
+  card.dataset.toolName = toolName;
   messagesEl.append(card);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return card;
+}
+
+function highlightToolResult(pre: HTMLPreElement, text: string) {
+  const code = document.createElement("code");
+  code.classList.add("hljs");
+  const result = hljs.highlightAuto(text);
+  code.innerHTML = result.value;
+  pre.append(code);
 }
 
 function addToolResultBody(card: HTMLDivElement, result: string) {
@@ -628,7 +911,7 @@ function addToolResultBody(card: HTMLDivElement, result: string) {
   const collapsible = shouldCollapseToolResult(truncated);
   const body = document.createElement("pre");
   body.className = `toolCardBody${collapsible ? " collapsed" : ""}`;
-  body.textContent = truncated;
+  highlightToolResult(body, truncated);
   card.append(body);
   if (collapsible) {
     const toggle = document.createElement("button");
@@ -647,7 +930,27 @@ function shouldCollapseToolResult(text: string) {
   return text.length > 600 || text.split("\n").length > 10;
 }
 
-function updateToolCard(card: HTMLDivElement, toolName: string, isError: boolean, result?: string) {
+function textFromToolResult(result: unknown): string {
+  if (typeof result === "string") {
+    const trimmed = result.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        const text = textFromToolResult(parsed);
+        if (text) return text;
+      } catch {
+        // Plain text that only looks like JSON; render it as-is.
+      }
+    }
+    return result;
+  }
+
+  if (!result || typeof result !== "object") return result == null ? "" : String(result);
+  const value = result as Record<string, unknown>;
+  return textFromRawContent(value.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
+}
+
+function updateToolCard(card: HTMLDivElement, toolName: string, isError: boolean, result?: unknown) {
   card.classList.remove("toolCard--running");
   card.classList.add(isError ? "toolCard--error" : "toolCard--success");
 
@@ -655,10 +958,9 @@ function updateToolCard(card: HTMLDivElement, toolName: string, isError: boolean
   card.querySelector(".toolCardBadge")?.remove();
   card.querySelector(".toolCardDetails")?.remove();
 
-  if (result) {
-    const resultStr = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-    addToolResultBody(card, resultStr);
-  }
+  const resultStr = textFromToolResult(result);
+  // For edit tool, diff is already shown; just show error result if any
+  if (resultStr && (isError || card.dataset.toolName !== "edit")) addToolResultBody(card, resultStr);
 
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -667,7 +969,8 @@ function addToolHistoryCard(toolName: string, isError: boolean, result: string, 
   const card = document.createElement("div");
   card.className = `toolCard ${isError ? "toolCard--error" : "toolCard--success"}`;
   addToolHeader(card, toolName, args);
-  if (result) addToolResultBody(card, result);
+  if (toolName === "edit" && args) renderEditDiff(card, args);
+  else if (result) addToolResultBody(card, result);
   messagesEl.append(card);
 }
 
@@ -676,12 +979,17 @@ function handlePiEvent(event: PiEvent) {
     case "agent_start":
       isStreaming = true;
       updatePrimaryAction();
-      streamingAssistant = addMessage("assistant", "");
+      streamingAssistant = null;
       break;
     case "message_update": {
       const deltaEvent = event.assistantMessageEvent;
       if (deltaEvent?.type === "text_delta") {
-        if (!streamingAssistant) streamingAssistant = addMessage("assistant", "");
+        // Text after a tool result belongs in a new assistant segment. Otherwise all
+        // deltas keep appending to the first assistant bubble, so live rendering loses
+        // the same interleaving that static history gets from the saved message parts.
+        if (!streamingAssistant || messagesEl.lastElementChild !== streamingAssistant) {
+          streamingAssistant = addMessage("assistant", "");
+        }
         const body = streamingAssistant.querySelector<HTMLElement>(".body");
         if (body) body.textContent += deltaEvent.delta || "";
         messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -746,10 +1054,10 @@ function connect() {
     }
     if (data.type === "pi_event") {
       if (!sessionDrawer.hidden) refreshSessions().catch(() => undefined);
-      if (!data.sessionFile || data.sessionFile === currentSessionFile) handlePiEvent(data.event);
+      if (!data.sessionId || data.sessionId === currentSessionId) handlePiEvent(data.event);
       return;
     }
-    if (data.type === "server_error" && (!data.sessionFile || data.sessionFile === currentSessionFile)) addMessage("system", data.error, "error");
+    if (data.type === "server_error" && (!data.sessionId || data.sessionId === currentSessionId)) addMessage("system", data.error, "error");
   });
   ws.addEventListener("close", () => {
     addMessage("system", "Disconnected. Reconnecting…");
@@ -781,7 +1089,7 @@ async function runSlashCommand(command: string) {
 formEl.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (isStreaming) {
-    await fetch("/api/abort", { method: "POST", headers: apiHeaders() });
+    await fetch("/api/abort", { method: "POST", headers: apiHeaders(), body: JSON.stringify({ sessionId: currentSessionId }) });
     return;
   }
 
@@ -813,7 +1121,7 @@ formEl.addEventListener("submit", async (event) => {
     const res = await fetch("/api/prompt", {
       method: "POST",
       headers: apiHeaders(),
-      body: JSON.stringify({ message, mode: queueMode, images }),
+      body: JSON.stringify({ sessionId: currentSessionId, message, mode: queueMode, images }),
     });
     if (!res.ok) throw new Error(await res.text());
   } catch (error) {
