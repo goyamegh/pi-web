@@ -9,8 +9,21 @@
     <main class="app">
       <section id="messages" class="messages" aria-live="polite"></section>
 
+      <div id="sessionBackdrop" class="sessionBackdrop" hidden></div>
+      <aside id="sessionDrawer" class="sessionDrawer" aria-label="Sessions" hidden>
+        <div class="sessionDrawerHeader">
+          <h2>Sessions</h2>
+          <button id="sessionCloseButton" class="iconButton" type="button" aria-label="Close sessions" title="Close sessions">×</button>
+        </div>
+        <button id="sessionNewButton" class="sessionNewButton" type="button">+ New session</button>
+        <div id="sessionList" class="sessionList" aria-live="polite"></div>
+      </aside>
+
       <form id="promptForm" class="composer">
         <div class="composerMeta">
+          <button id="sessionButton" class="iconButton metaIconButton" type="button" aria-label="Sessions" title="Sessions">
+            <span data-icon="menu"></span>
+          </button>
           <span class="brand">pi web</span>
           <p id="meta">Connecting…</p>
         </div>
@@ -32,9 +45,6 @@
           </button>
           <button id="attachButton" class="iconButton" type="button" aria-label="Attach images" title="Attach images">
             <span data-icon="paperclip"></span>
-          </button>
-          <button id="newChatButton" class="iconButton" type="button" aria-label="New chat" title="New chat">
-            <span data-icon="message-square-plus"></span>
           </button>
           <button id="tokenButton" class="iconButton" type="button" aria-label="Set token" title="Set token">
             <span data-icon="key-round"></span>

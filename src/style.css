@@ -17,6 +17,7 @@
 * { box-sizing: border-box; }
 html, body {
   width: 100%;
+  max-width: 100%;
   height: var(--app-height);
   overflow: hidden;
 }
@@ -30,15 +31,20 @@ body {
 
 .app {
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: minmax(0, 1fr) auto;
+  width: 100%;
+  min-width: 0;
   height: var(--app-height);
   max-width: 1100px;
   margin: 0 auto;
   padding: 16px;
   gap: 12px;
+  overflow: hidden;
 }
 
 .composer {
+  min-width: 0;
+  overflow: hidden;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -62,12 +68,29 @@ p { margin: 0; }
   letter-spacing: -0.01em;
 }
 #meta {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--muted);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.metaIconButton {
+  flex: 0 0 auto;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  border-color: transparent;
+  background: transparent;
+}
+.metaIconButton:hover {
+  border-color: transparent;
+  color: var(--accent);
+}
+.metaIconButton svg {
+  width: 16px;
+  height: 16px;
 }
 
 .messages {
@@ -87,6 +110,31 @@ p { margin: 0; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.message .body {
+  display: block;
+}
+.message.collapsed .body {
+  position: relative;
+  max-height: 18rem;
+  overflow: hidden;
+}
+.message.collapsed .body::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 4rem;
+  background: linear-gradient(transparent, var(--message-bg, var(--panel)) 82%);
+}
+.messageToggle {
+  display: inline-flex;
+  min-height: 28px;
+  margin-top: 10px;
+  border-color: transparent;
+  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+  color: var(--accent);
+  padding: 4px 8px;
+  font-size: 12px;
+}
 .message .role {
   display: block;
   margin-bottom: 6px;
@@ -96,9 +144,9 @@ p { margin: 0; }
   text-transform: uppercase;
   letter-spacing: .08em;
 }
-.message.user { align-self: flex-end; background: var(--user); }
-.message.assistant { align-self: flex-start; background: var(--assistant); }
-.message.tool { align-self: flex-start; background: var(--tool); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.message.user { --message-bg: var(--user); align-self: flex-end; background: var(--user); }
+.message.assistant { --message-bg: var(--assistant); align-self: flex-start; background: var(--assistant); }
+.message.tool { --message-bg: var(--tool); align-self: flex-start; background: var(--tool); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .message.system { align-self: center; max-width: 100%; background: transparent; color: var(--muted); }
 .message.error { border-color: var(--danger); color: #fecdd3; }
 
@@ -156,11 +204,12 @@ textarea:focus { border-color: var(--accent); }
 }
 .removeAttachment svg { width: 13px; height: 13px; }
 .composerFooter {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) repeat(6, auto);
+  display: flex;
+  min-width: 0;
   align-items: center;
   gap: 6px;
   margin-top: 8px;
+  overflow: hidden;
 }
 button, select {
   min-height: 34px;
@@ -175,6 +224,11 @@ button, select {
 select {
   min-width: 0;
   max-width: 100%;
+}
+#modelSelect {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
 }
 #thinkingSelect { max-width: 110px; }
 .iconButton {
@@ -193,10 +247,87 @@ button { cursor: pointer; font-weight: 650; }
 button:hover { border-color: var(--accent); }
 button:disabled { cursor: default; opacity: .45; }
 button:disabled:hover { border-color: var(--border); }
+.composerFooter .iconButton:not(.primaryAction) {
+  border-color: transparent;
+  background: transparent;
+}
+.composerFooter .iconButton:not(.primaryAction):hover {
+  border-color: transparent;
+  color: var(--accent);
+}
 #queueToggle[aria-pressed="true"] { color: var(--accent); }
 .primaryAction { background: #0f4c75; border-color: #256b97; }
 .dangerAction { background: #5f1824; border-color: #9f2a3d; }
 .dangerAction:hover { border-color: var(--danger); }
+
+.sessionBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(0, 0, 0, .42);
+}
+.sessionDrawer {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 21;
+  display: flex;
+  width: min(360px, calc(100vw - 32px));
+  flex-direction: column;
+  gap: 12px;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 96%, black);
+  box-shadow: 18px 0 60px rgba(0,0,0,.35);
+  padding: 16px;
+}
+.sessionDrawer[hidden], .sessionBackdrop[hidden] { display: none; }
+.sessionDrawerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sessionDrawerHeader h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.sessionNewButton {
+  width: 100%;
+  justify-content: center;
+}
+.sessionList {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+.sessionItem {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: left;
+}
+.sessionItem.current {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.sessionItemTitle {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessionItemMeta, .sessionEmpty {
+  color: var(--muted);
+  font-size: 12px;
+}
 
 @media (max-width: 700px) {
   .app {
@@ -207,24 +338,15 @@ button:disabled:hover { border-color: var(--border); }
   }
 
   .composerFooter {
-    grid-template-columns: minmax(0, 1fr) repeat(6, 30px);
-    grid-template-areas: "model thinking queue attach newchat token send";
     gap: 4px;
   }
 
   #modelSelect {
-    grid-area: model;
-    width: 100%;
+    flex: 1 1 0;
+    width: 0;
     min-width: 0;
+    padding-right: 24px;
   }
-
-  #thinkingButton { grid-area: thinking; }
-
-  #queueToggle { grid-area: queue; }
-  #attachButton { grid-area: attach; }
-  #newChatButton { grid-area: newchat; }
-  #tokenButton { grid-area: token; }
-  #primaryButton { grid-area: send; }
 
   .composerFooter .iconButton {
     width: 30px;
@@ -235,16 +357,6 @@ button:disabled:hover { border-color: var(--border); }
   .composerFooter .iconButton svg {
     width: 16px;
     height: 16px;
-  }
-
-  .composerFooter .iconButton:not(.primaryAction) {
-    border-color: transparent;
-    background: transparent;
-  }
-
-  .composerFooter .iconButton:not(.primaryAction):hover {
-    border-color: transparent;
-    color: var(--accent);
   }
 
   .message { max-width: 96%; }

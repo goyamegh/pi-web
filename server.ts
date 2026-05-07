@@ -23,6 +23,7 @@ const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
 const piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const noSession = process.env.PI_WEB_NO_SESSION === "1";
+const mockMode = process.env.PI_WEB_MOCK === "1";
 
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -140,14 +141,232 @@ function simplifyMessage(message: unknown) {
   };
 }
 
+function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number]) {
+  return {
+    id: info.id,
+    path: info.path,
+    name: info.name,
+    firstMessage: info.firstMessage,
+    created: info.created.toISOString(),
+    modified: info.modified.toISOString(),
+    messageCount: info.messageCount,
+    isCurrent: info.path === session.sessionFile,
+  };
+}
+
+async function listSessionInfos() {
+  if (noSession) return [];
+  if (mockMode) return mockSessions.map(simplifySessionInfo);
+  const sessions = await SessionManager.list(piCwd);
+  return sessions.map(simplifySessionInfo);
+}
+
+function currentState() {
+  return {
+    cwd: piCwd,
+    sessionFile: session.sessionFile,
+    sessionId: session.sessionId,
+    isStreaming: session.isStreaming,
+    model: simplifyModel(session.model),
+    thinkingLevel: session.thinkingLevel,
+  };
+}
+
+function currentStateWithThinkingLevels() {
+  return {
+    ...currentState(),
+    thinkingLevels: session.getAvailableThinkingLevels(),
+  };
+}
+
+function slashHelp() {
+  return [
+    "Supported web slash commands:",
+    "/help - show this help",
+    "/reload - reload pi resources/extensions/models",
+    "/model - list available models",
+    "/model <provider/model-id> - switch model",
+    "/models - list available models",
+    "/thinking <level> - set thinking level",
+    "/new - start a new session",
+    "/abort - stop the current response",
+  ].join("\n");
+}
+
+function formatModelList() {
+  return session.modelRegistry.getAvailable()
+    .map((model: any) => `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` (${model.name})` : ""}`)
+    .join("\n");
+}
+
+async function executeSlashCommand(input: string) {
+  const trimmed = input.trim();
+  const [rawName = "", ...rest] = trimmed.replace(/^\/+/, "").split(/\s+/);
+  const name = rawName.toLowerCase();
+  const args = rest.join(" ").trim();
+
+  switch (name) {
+    case "help":
+    case "?":
+      return { message: slashHelp(), state: currentStateWithThinkingLevels() };
+
+    case "reload": {
+      if (session.isStreaming) throw new Error("Wait for the current response to finish before reloading.");
+      if (session.isCompacting) throw new Error("Wait for compaction to finish before reloading.");
+      if (typeof session.reload !== "function") throw new Error("Reload is not available in this session.");
+      await session.reload();
+      return { message: "Reloaded pi resources, extensions, and models.", state: currentStateWithThinkingLevels() };
+    }
+
+    case "model": {
+      if (!args) {
+        return { message: formatModelList() || "No models available.", state: currentStateWithThinkingLevels() };
+      }
+      const slashIndex = args.indexOf("/");
+      if (slashIndex <= 0) throw new Error("Usage: /model <provider/model-id>");
+      const provider = args.slice(0, slashIndex);
+      const id = args.slice(slashIndex + 1);
+      const model = session.modelRegistry.find(provider, id);
+      if (!model) throw new Error(`Model not found: ${args}`);
+      await session.setModel(model);
+      return { message: `Model set to ${provider}/${id}.`, state: currentStateWithThinkingLevels() };
+    }
+
+    case "models":
+      return { message: formatModelList() || "No models available.", state: currentStateWithThinkingLevels() };
+
+    case "thinking": {
+      if (!args) {
+        return { message: `Thinking level: ${session.thinkingLevel}\nAvailable: ${session.getAvailableThinkingLevels().join(", ")}`, state: currentStateWithThinkingLevels() };
+      }
+      const levels = session.getAvailableThinkingLevels();
+      if (!levels.includes(args as any)) throw new Error(`Unknown thinking level: ${args}. Available: ${levels.join(", ")}`);
+      session.setThinkingLevel(args as any);
+      return { message: `Thinking level set to ${session.thinkingLevel}.`, state: currentStateWithThinkingLevels() };
+    }
+
+    case "new":
+    case "new-chat":
+    case "clear": {
+      if (session.isStreaming) await session.abort();
+      session.clearQueue();
+      session.sessionManager.newSession();
+      session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
+      return { message: "New session.", state: currentStateWithThinkingLevels() };
+    }
+
+    case "abort":
+    case "stop":
+      await session.abort();
+      return { message: "Aborted.", state: currentStateWithThinkingLevels() };
+
+    default:
+      throw new Error(`Unknown slash command: /${name}. Try /help.`);
+  }
+}
+
+async function switchToSessionFile(path: string) {
+  if (session.isStreaming) await session.abort();
+  session.clearQueue();
+  session.sessionManager.setSessionFile(path);
+  session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
+}
+
+const mockSessions = [
+  {
+    id: "mock-current",
+    path: join(piCwd, ".mock-sessions/current.jsonl"),
+    name: "Current mock session",
+    firstMessage: "Can you add image attachments?",
+    created: new Date("2026-05-01T10:00:00Z"),
+    modified: new Date("2026-05-07T10:00:00Z"),
+    messageCount: 2,
+    allMessagesText: "Can you add image attachments?",
+    cwd: piCwd,
+  },
+  {
+    id: "mock-older",
+    path: join(piCwd, ".mock-sessions/older.jsonl"),
+    name: "Older mock session",
+    firstMessage: "Review the mobile composer layout",
+    created: new Date("2026-05-01T09:00:00Z"),
+    modified: new Date("2026-05-06T09:00:00Z"),
+    messageCount: 4,
+    allMessagesText: "Review the mobile composer layout",
+    cwd: piCwd,
+  },
+];
+
+function createMockSession() {
+  const mockModel = { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 };
+  const initialMessages = () => [
+    { role: "user", content: "Can you add image attachments?", timestamp: "2026-05-07T10:00:00Z" },
+    { role: "assistant", content: "Image attachment support is enabled.\n".repeat(60), timestamp: "2026-05-07T10:01:00Z" },
+  ];
+  const mockMessages = initialMessages();
+  const mockSessionManager = {
+    newSession() {
+      mockSession.sessionId = `mock-${Date.now()}`;
+      mockSession.sessionFile = join(piCwd, `.mock-sessions/${mockSession.sessionId}.jsonl`);
+      mockMessages.length = 0;
+    },
+    setSessionFile(path: string) {
+      mockSession.sessionFile = path;
+      mockSession.sessionId = mockSessions.find((info) => info.path === path)?.id || "mock-opened";
+      mockMessages.length = 0;
+      mockMessages.push(
+        { role: "user", content: "Review the mobile composer layout", timestamp: "2026-05-06T09:00:00Z" },
+        { role: "assistant", content: "Resumed older session.", timestamp: "2026-05-06T09:01:00Z" },
+      );
+    },
+    buildSessionContext() { return { messages: mockMessages }; },
+    getSessionDir() { return join(piCwd, ".mock-sessions"); },
+  };
+  const mockSession: any = {
+    sessionId: "mock-current",
+    sessionFile: mockSessions[0].path,
+    isStreaming: false,
+    model: mockModel,
+    thinkingLevel: "medium",
+    messages: mockMessages,
+    agent: { state: { messages: mockMessages } },
+    sessionManager: mockSessionManager,
+    modelRegistry: {
+      getAvailable: () => [mockModel],
+      find: (provider: string, id: string) => provider === mockModel.provider && id === mockModel.id ? mockModel : undefined,
+    },
+    getAvailableThinkingLevels: () => ["off", "low", "medium", "high"],
+    setModel: async (model: unknown) => { mockSession.model = model; },
+    setThinkingLevel: (level: string) => { mockSession.thinkingLevel = level; },
+    reload: async () => undefined,
+    prompt: async (message: string, options?: { images?: unknown[] }) => {
+      mockMessages.push({ role: "user", content: message, timestamp: new Date().toISOString() });
+      mockMessages.push({ role: "assistant", content: `Mock response${options?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
+      broadcast({ type: "state_changed", ...currentState() });
+    },
+    abort: async () => { mockSession.isStreaming = false; },
+    clearQueue: () => undefined,
+    subscribe: () => undefined,
+    __reset: () => {
+      mockSession.sessionId = "mock-current";
+      mockSession.sessionFile = mockSessions[0].path;
+      mockMessages.length = 0;
+      mockMessages.push(...initialMessages());
+      mockSession.agent.state.messages = mockMessages;
+    },
+  };
+  return mockSession;
+}
+
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
-const { session, modelFallbackMessage } = await createAgentSession({
+const createdSession = mockMode ? { session: createMockSession(), modelFallbackMessage: undefined } : await createAgentSession({
   cwd: piCwd,
   sessionManager: noSession ? SessionManager.inMemory() : SessionManager.create(piCwd),
   authStorage,
   modelRegistry,
 });
+const { session, modelFallbackMessage } = createdSession;
 
 const clients = new Set<WebSocket>();
 function broadcast(value: unknown) {
@@ -157,7 +376,7 @@ function broadcast(value: unknown) {
   }
 }
 
-session.subscribe((event) => {
+session.subscribe((event: unknown) => {
   broadcast({ type: "pi_event", event });
 });
 
@@ -175,6 +394,12 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith("/api/")) {
       if (!isAuthorized(req)) return unauthorized(res);
 
+      if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
+        session.__reset?.();
+        broadcast({ type: "state_changed", ...currentState() });
+        return sendJson(res, 200, { ok: true });
+      }
+
       if (method === "GET" && url.pathname === "/api/state") {
         return sendJson(res, 200, {
           ok: true,
@@ -190,6 +415,10 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/messages") {
         return sendJson(res, 200, { ok: true, messages: session.messages.map(simplifyMessage) });
+      }
+
+      if (method === "GET" && url.pathname === "/api/sessions") {
+        return sendJson(res, 200, { ok: true, sessions: await listSessionInfos() });
       }
 
       if (method === "GET" && url.pathname === "/api/models") {
@@ -227,6 +456,15 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, ...state });
       }
 
+      if (method === "POST" && url.pathname === "/api/command") {
+        const body = await readBody(req) as { command?: unknown };
+        const command = String(body.command || "").trim();
+        if (!command.startsWith("/")) return sendJson(res, 400, { ok: false, error: "Slash command is required" });
+
+        const result = await executeSlashCommand(command);
+        return sendJson(res, 200, { ok: true, ...result });
+      }
+
       if (method === "POST" && url.pathname === "/api/prompt") {
         const body = await readBody(req) as { message?: unknown; mode?: unknown; images?: unknown };
         const message = String(body.message || "").trim();
@@ -249,7 +487,7 @@ const server = createServer(async (req, res) => {
           ...(session.isStreaming ? { streamingBehavior: mode } : {}),
           ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
         })
-          .catch((error) => broadcast({ type: "server_error", error: error instanceof Error ? error.message : String(error) }));
+          .catch((error: unknown) => broadcast({ type: "server_error", error: error instanceof Error ? error.message : String(error) }));
 
         return sendJson(res, 202, { ok: true });
       }
@@ -259,19 +497,28 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true });
       }
 
-      if (method === "POST" && url.pathname === "/api/new-chat") {
+      if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
         if (session.isStreaming) await session.abort();
         session.clearQueue();
         session.sessionManager.newSession();
         session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
-        const state = {
-          cwd: piCwd,
-          sessionFile: session.sessionFile,
-          sessionId: session.sessionId,
-          isStreaming: session.isStreaming,
-          model: simplifyModel(session.model),
-          thinkingLevel: session.thinkingLevel,
-        };
+        const state = currentState();
+        broadcast({ type: "state_changed", ...state });
+        return sendJson(res, 200, { ok: true, ...state });
+      }
+
+      if (method === "POST" && url.pathname === "/api/sessions/open") {
+        const body = await readBody(req) as { id?: unknown; path?: unknown };
+        const requestedId = typeof body.id === "string" ? body.id : "";
+        const requestedPath = typeof body.path === "string" ? body.path : "";
+        const sessions = noSession ? [] : mockMode ? mockSessions : await SessionManager.list(piCwd);
+        const target = sessions.find((info) =>
+          (requestedId && info.id === requestedId) || (requestedPath && info.path === requestedPath)
+        );
+        if (!target) return sendJson(res, 404, { ok: false, error: "Session not found" });
+
+        await switchToSessionFile(target.path);
+        const state = currentState();
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }

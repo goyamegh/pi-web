@@ -1,5 +1,5 @@
 import "./style.css";
-import { CornerDownRight, createElement, Gauge, KeyRound, MessageSquarePlus, Paperclip, Route, SendHorizontal, Square, X } from "lucide";
+import { CornerDownRight, createElement, Gauge, KeyRound, Menu, Paperclip, Route, SendHorizontal, Square, X } from "lucide";
 
 function syncAppHeight() {
   const height = window.visualViewport?.height || window.innerHeight;
@@ -30,7 +30,12 @@ const formEl = requiredElement<HTMLFormElement>("#promptForm");
 const promptEl = requiredElement<HTMLTextAreaElement>("#prompt");
 const primaryButton = requiredElement<HTMLButtonElement>("#primaryButton");
 const tokenButton = requiredElement<HTMLButtonElement>("#tokenButton");
-const newChatButton = requiredElement<HTMLButtonElement>("#newChatButton");
+const sessionButton = requiredElement<HTMLButtonElement>("#sessionButton");
+const sessionDrawer = requiredElement<HTMLElement>("#sessionDrawer");
+const sessionBackdrop = requiredElement<HTMLDivElement>("#sessionBackdrop");
+const sessionCloseButton = requiredElement<HTMLButtonElement>("#sessionCloseButton");
+const sessionNewButton = requiredElement<HTMLButtonElement>("#sessionNewButton");
+const sessionListEl = requiredElement<HTMLDivElement>("#sessionList");
 const queueToggle = requiredElement<HTMLButtonElement>("#queueToggle");
 const attachButton = requiredElement<HTMLButtonElement>("#attachButton");
 const imageInput = requiredElement<HTMLInputElement>("#imageInput");
@@ -53,13 +58,24 @@ type ImageAttachment = {
   name: string;
 };
 
+type SessionInfo = {
+  id: string;
+  path: string;
+  name?: string;
+  firstMessage?: string;
+  created: string;
+  modified: string;
+  messageCount: number;
+  isCurrent: boolean;
+};
+
 let attachedImages: ImageAttachment[] = [];
 
 const iconNodes = {
   "corner-down-right": CornerDownRight,
   gauge: Gauge,
   "key-round": KeyRound,
-  "message-square-plus": MessageSquarePlus,
+  menu: Menu,
   paperclip: Paperclip,
   route: Route,
   "send-horizontal": SendHorizontal,
@@ -154,9 +170,14 @@ function wsUrl() {
   return url;
 }
 
+function shouldCollapseMessage(text: string) {
+  return text.length > 1800 || text.split("\n").length > 28;
+}
+
 function addMessage(role: Role, text: string, extraClass = "") {
   const div = document.createElement("div");
-  div.className = `message ${role} ${extraClass}`.trim();
+  const collapsible = shouldCollapseMessage(text);
+  div.className = `message ${role} ${extraClass}${collapsible ? " collapsible collapsed" : ""}`.trim();
   const label = document.createElement("span");
   label.className = "role";
   label.textContent = role;
@@ -164,6 +185,19 @@ function addMessage(role: Role, text: string, extraClass = "") {
   body.className = "body";
   body.textContent = text || "";
   div.append(label, body);
+
+  if (collapsible) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "messageToggle";
+    toggle.textContent = "Show more";
+    toggle.addEventListener("click", () => {
+      const collapsed = div.classList.toggle("collapsed");
+      toggle.textContent = collapsed ? "Show more" : "Show less";
+    });
+    div.append(toggle);
+  }
+
   messagesEl.append(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return div;
@@ -255,6 +289,71 @@ async function refreshMessages() {
   }
 }
 
+function formatSessionDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function sessionTitle(session: SessionInfo) {
+  return session.name || session.firstMessage?.trim() || "New session";
+}
+
+function setSessionDrawerOpen(open: boolean) {
+  sessionDrawer.hidden = !open;
+  sessionBackdrop.hidden = !open;
+  document.body.classList.toggle("sessionDrawerOpen", open);
+  if (open) refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+}
+
+async function refreshSessions() {
+  const res = await fetch("/api/sessions", { headers: apiHeaders() });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  const sessions: SessionInfo[] = data.sessions || [];
+  sessionListEl.textContent = "";
+
+  if (sessions.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "sessionEmpty";
+    empty.textContent = "No saved sessions yet.";
+    sessionListEl.append(empty);
+    return;
+  }
+
+  for (const item of sessions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `sessionItem${item.isCurrent ? " current" : ""}`;
+    button.disabled = item.isCurrent;
+
+    const title = document.createElement("span");
+    title.className = "sessionItemTitle";
+    title.textContent = sessionTitle(item);
+
+    const meta = document.createElement("span");
+    meta.className = "sessionItemMeta";
+    meta.textContent = `${formatSessionDate(item.modified)} · ${item.messageCount} message${item.messageCount === 1 ? "" : "s"}`;
+
+    button.append(title, meta);
+    button.addEventListener("click", async () => {
+      try {
+        const openRes = await fetch("/api/sessions/open", {
+          method: "POST",
+          headers: apiHeaders(),
+          body: JSON.stringify({ id: item.id }),
+        });
+        if (!openRes.ok) throw new Error(await openRes.text());
+        setSessionDrawerOpen(false);
+        await refreshState();
+      } catch (error) {
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      }
+    });
+    sessionListEl.append(button);
+  }
+}
+
 async function refreshState() {
   const res = await fetch("/api/state", { headers: apiHeaders() });
   if (res.status === 401) {
@@ -318,6 +417,10 @@ function connect() {
       updatePrimaryAction();
       if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
       if (modelSelectEl.options.length) modelSelectEl.value = currentModelKey;
+      if (data.type === "state_changed") {
+        refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        if (!sessionDrawer.hidden) refreshSessions().catch(() => undefined);
+      }
       return;
     }
     if (data.type === "pi_event") handlePiEvent(data.event);
@@ -327,6 +430,27 @@ function connect() {
     addMessage("system", "Disconnected. Reconnecting…");
     setTimeout(connect, 1500);
   });
+}
+
+async function runSlashCommand(command: string) {
+  const res = await fetch("/api/command", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({ command }),
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!res.ok || data.ok === false) throw new Error(data.error || text);
+  if (data.state) {
+    updateMeta(data.state);
+    isStreaming = Boolean(data.state.isStreaming);
+    updatePrimaryAction();
+    if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
+  }
+  await refreshModels();
+  const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
+  if (name === "new" || name === "new-chat" || name === "clear") await refreshMessages();
+  if (data.message) addMessage("system", data.message);
 }
 
 formEl.addEventListener("submit", async (event) => {
@@ -339,6 +463,20 @@ formEl.addEventListener("submit", async (event) => {
   const message = promptEl.value.trim();
   const images = attachedImages.map(({ type, data, mimeType, name }) => ({ type, data, mimeType, name }));
   if (!message && images.length === 0) return;
+
+  if (message.startsWith("/") && images.length === 0) {
+    promptEl.value = "";
+    updatePrimaryAction();
+    addMessage("system", `› ${message}`);
+    try {
+      await runSlashCommand(message);
+    } catch (error) {
+      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      promptEl.focus();
+    }
+    return;
+  }
 
   promptEl.value = "";
   attachedImages = [];
@@ -388,14 +526,17 @@ queueToggle.addEventListener("click", () => {
   updateQueueToggle();
 });
 
-newChatButton.addEventListener("click", async () => {
-  if (isStreaming) await fetch("/api/abort", { method: "POST", headers: apiHeaders() });
-  const res = await fetch("/api/new-chat", { method: "POST", headers: apiHeaders() });
+sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
+sessionCloseButton.addEventListener("click", () => setSessionDrawerOpen(false));
+sessionBackdrop.addEventListener("click", () => setSessionDrawerOpen(false));
+sessionNewButton.addEventListener("click", async () => {
+  const res = await fetch("/api/sessions/new", { method: "POST", headers: apiHeaders() });
   if (!res.ok) return addMessage("system", await res.text(), "error");
+  setSessionDrawerOpen(false);
   messagesEl.textContent = "";
   streamingAssistant = null;
   await refreshState();
-  addMessage("system", "New chat");
+  addMessage("system", "New session");
 });
 
 async function setModelFromControls() {
@@ -447,7 +588,7 @@ tokenButton.addEventListener("click", async () => {
   location.reload();
 });
 
-setIcon(newChatButton, "message-square-plus");
+setIcon(sessionButton, "menu");
 setIcon(tokenButton, "key-round");
 setIcon(attachButton, "paperclip");
 updateQueueToggle();
