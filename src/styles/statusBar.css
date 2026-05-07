@@ -1,0 +1,46 @@
+.statusBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 8px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.statusBar .iconButton {
+  flex: 0 0 auto;
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  height: 24px;
+  border-color: transparent;
+  background: transparent;
+}
+.statusBarButton:hover {
+  border-color: transparent;
+  color: var(--accent);
+}
+.statusBar .iconButton svg {
+  width: 15px;
+  height: 15px;
+}
+.statusTitle {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+.statusPath {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

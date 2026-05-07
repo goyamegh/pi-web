@@ -1,0 +1,88 @@
+.sessionBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(0, 0, 0, .42);
+}
+.sessionDrawer {
+  position: fixed;
+  inset: 0 auto 0 0;
+  z-index: 21;
+  display: flex;
+  width: min(360px, calc(100vw - 32px));
+  max-width: 100vw;
+  flex-direction: column;
+  gap: 12px;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 96%, black);
+  box-shadow: 18px 0 60px rgba(0,0,0,.35);
+  padding: 16px;
+}
+.sessionDrawer[hidden], .sessionBackdrop[hidden] { display: none; }
+.sessionDrawerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sessionDrawerHeader h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.sessionNewButton {
+  width: 100%;
+  justify-content: center;
+}
+.sessionList {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+.sessionItem {
+  display: flex;
+  flex-shrink: 0;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  line-height: 1.35;
+  text-align: left;
+}
+.sessionItem.current {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.sessionItemTitleRow {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.sessionItemTitle {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessionSpinner {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: sessionSpin .8s linear infinite;
+}
+@keyframes sessionSpin {
+  to { transform: rotate(360deg); }
+}

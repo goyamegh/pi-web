@@ -1,0 +1,54 @@
+@media (min-width: 701px) and (max-width: 1100px) {
+  .app {
+    padding-top: 10px;
+  }
+}
+
+@media (max-width: 700px) {
+  .app {
+    height: var(--app-height);
+    min-height: 0;
+    padding: 10px 0;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+  .composer {
+    margin: 0 10px;
+    margin-bottom: max(0px, env(safe-area-inset-bottom));
+  }
+  .message.user { margin: 12px 10px 12px 0; }
+
+  .composerFooter {
+    gap: 4px;
+  }
+
+  #modelSelect {
+    flex: 1 1 0;
+    width: 0;
+    min-width: 0;
+    padding-right: 24px;
+  }
+
+  .composerFooter .iconButton {
+    width: 40px;
+    min-width: 40px;
+    min-height: 40px;
+  }
+
+  .composerFooter .iconButton svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .message { max-width: 96%; }
+
+  .sessionDrawer {
+    width: 100vw;
+    border-right: 0;
+    padding: 16px max(12px, env(safe-area-inset-right)) 16px max(12px, env(safe-area-inset-left));
+  }
+
+  .sessionList {
+    gap: 6px;
+  }
+}
+

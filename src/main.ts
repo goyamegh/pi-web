@@ -4,7 +4,7 @@ import "./git/git.css";
 import "highlight.js/styles/github-dark.css";
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { Check, CornerDownRight, createElement, Copy, Download, ExternalLink, Gauge, GitBranch, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, SendHorizontal, Square, X } from "lucide";
+import { Check, CornerDownRight, createElement, Copy, Download, ExternalLink, Gauge, GitBranch, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, SendHorizontal, Square, SquarePen, X } from "lucide";
 import { renderEditDiff } from "./components/editDiff.js";
 import { initGitPanel } from "./git/panel.js";
 
@@ -242,6 +242,7 @@ const attachmentsEl = requiredElement<HTMLDivElement>("#attachments");
 const modelSelectEl = requiredElement<HTMLSelectElement>("#modelSelect");
 const thinkingSelectEl = requiredElement<HTMLSelectElement>("#thinkingSelect");
 const thinkingButton = requiredElement<HTMLButtonElement>("#thinkingButton");
+const newSessionHeaderButton = requiredElement<HTMLButtonElement>("#newSessionHeaderButton");
 const gitButton = requiredElement<HTMLButtonElement>("#gitButton");
 const gitPanel = requiredElement<HTMLElement>("#gitPanel");
 
@@ -322,6 +323,7 @@ const iconNodes = {
   route: Route,
   "send-horizontal": SendHorizontal,
   square: Square,
+  "square-pen": SquarePen,
   "maximize-2": Maximize2,
   "minimize-2": Minimize2,
   x: X,
@@ -1045,6 +1047,15 @@ queueToggle.addEventListener("click", () => {
 });
 
 sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
+newSessionHeaderButton.addEventListener("click", async () => {
+  const res = await fetch("/api/sessions/new", { method: "POST", headers: apiHeaders() });
+  if (!res.ok) return addMessage("system", await res.text(), "error");
+  setSessionDrawerOpen(false);
+  messagesEl.textContent = "";
+  streamingAssistant = null;
+  await refreshState();
+  addMessage("system", "New session");
+});
 sessionCloseButton.addEventListener("click", () => setSessionDrawerOpen(false));
 sessionBackdrop.addEventListener("click", () => setSessionDrawerOpen(false));
 sessionNewButton.addEventListener("click", async () => {
@@ -1108,6 +1119,7 @@ tokenForm.addEventListener("submit", (e) => {
 });
 
 setIcon(sessionButton, "menu");
+setIcon(newSessionHeaderButton, "square-pen");
 setIcon(attachButton, "paperclip");
 setIcon(primaryButton, "send-horizontal");
 setIcon(expandButton, "maximize-2");

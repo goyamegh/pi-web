@@ -1,0 +1,170 @@
+
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 54px;
+  max-height: 180px;
+  resize: vertical;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 15px 15px 0 0;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 12px 14px;
+  outline: none;
+  font: inherit;
+}
+textarea:focus { border-bottom-color: var(--accent); }
+.expandButton {
+  display: none;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  z-index: 1;
+}
+.expandButton:hover { border-color: transparent; color: var(--accent); }
+.expandButton svg { width: 14px; height: 14px; }
+.composer:hover .expandButton,
+.composer.expanded .expandButton { display: inline-grid; }
+.composer { position: relative; }
+.composer.expanded {
+  position: fixed;
+  inset: 16px;
+  z-index: 10;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+}
+.composer.expanded textarea {
+  flex: 1;
+  max-height: none;
+  resize: none;
+  border-radius: 19px 19px 0 0;
+}
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+}
+.attachments:empty {
+  display: none;
+}
+.attachmentChip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  padding: 3px 5px 3px 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.attachmentChip img {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  object-fit: cover;
+}
+.attachmentChip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.removeAttachment {
+  display: inline-grid;
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  padding: 0;
+}
+.removeAttachment svg { width: 13px; height: 13px; }
+.composerFooter {
+  display: flex;
+  min-width: 0;
+  align-items: stretch;
+  gap: 0;
+  height: 40px;
+  margin-top: 0;
+  padding: 0;
+  overflow: hidden;
+}
+button, select {
+  height: 40px;
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+select {
+  min-width: 0;
+  max-width: 100%;
+}
+#modelSelect {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  height: 40px;
+  border-left: 0;
+  border-bottom: 0;
+  border-bottom-left-radius: 15px;
+}
+#thinkingSelect { max-width: 110px; }
+.iconButton {
+  display: inline-grid;
+  width: 40px;
+  min-width: 40px;
+  place-items: center;
+  padding: 0;
+  border-bottom: 0;
+}
+.iconButton svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 2.25;
+}
+button { cursor: pointer; font-weight: 650; }
+button:hover { border-color: var(--accent); }
+.composer button:focus-visible,
+.composer select:focus-visible,
+.composer textarea:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  position: relative;
+  z-index: 1;
+}
+button:disabled { cursor: default; opacity: .45; }
+button:disabled:hover { border-color: var(--border); }
+.composerFooter .iconButton:not(.primaryAction) {
+  border-color: transparent;
+  background: transparent;
+}
+.composerFooter .iconButton:not(.primaryAction):hover {
+  border-color: transparent;
+  color: var(--accent);
+}
+#queueToggle[aria-pressed="true"] { color: var(--accent); }
+#primaryButton { border-bottom-right-radius: 15px; }
+.primaryAction { background: #0f4c75; border-color: #256b97; }
+.dangerAction { background: #5f1824; border-color: #9f2a3d; }
+.dangerAction:hover { border-color: var(--danger); }
+.composerFooter .iconButton.dangerAction { background: #5f1824; border-color: #9f2a3d; }
+.composerFooter .iconButton.dangerAction:hover { border-color: var(--danger); background: #7a1f2e; }
