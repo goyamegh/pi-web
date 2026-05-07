@@ -5,9 +5,11 @@
   "description": "Local/Tailscale web UI for pi coding agent.",
   "type": "module",
   "scripts": {
-    "dev": "PI_WEB_DEV=1 node --import tsx --watch server.ts",
+    "dev": "PI_WEB_DEV=1 node --import tsx supervisor.ts",
+    "dev:server": "PI_WEB_DEV=1 node --import tsx --watch server.ts",
     "build": "vite build",
     "start": "node --import tsx server.ts",
+    "start:supervised": "node --import tsx supervisor.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -19,6 +21,7 @@
   },
   "dependencies": {
     "@mariozechner/pi-coding-agent": "^0.73.0",
+    "highlight.js": "^11.11.1",
     "lucide": "^1.14.0",
     "marked": "^15.0.12",
     "tsx": "^4.20.6",
