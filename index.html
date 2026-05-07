@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pi web</title>
+  </head>
+  <body>
+    <main class="app">
+      <section id="messages" class="messages" aria-live="polite"></section>
+
+      <form id="promptForm" class="composer">
+        <div class="composerMeta">
+          <span class="brand">pi web</span>
+          <p id="meta">Connecting…</p>
+        </div>
+        <textarea id="prompt" rows="2" placeholder="Ask pi…"></textarea>
+        <div id="attachments" class="attachments" aria-live="polite"></div>
+        <input id="imageInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
+        <div class="composerFooter">
+          <select id="modelSelect" title="Select model" aria-label="Select model">
+            <option value="">Loading models…</option>
+          </select>
+          <select id="thinkingSelect" title="Select thinking level" aria-label="Select thinking level" hidden>
+            <option value="off">off</option>
+          </select>
+          <button id="thinkingButton" class="iconButton" type="button" aria-label="Thinking level: off" title="Thinking level: off">
+            <span data-icon="gauge"></span>
+          </button>
+          <button id="queueToggle" class="iconButton" type="button" aria-pressed="true" aria-label="Queue mode: steer" title="Queue mode: steer">
+            <span data-icon="route"></span>
+          </button>
+          <button id="attachButton" class="iconButton" type="button" aria-label="Attach images" title="Attach images">
+            <span data-icon="paperclip"></span>
+          </button>
+          <button id="newChatButton" class="iconButton" type="button" aria-label="New chat" title="New chat">
+            <span data-icon="message-square-plus"></span>
+          </button>
+          <button id="tokenButton" class="iconButton" type="button" aria-label="Set token" title="Set token">
+            <span data-icon="key-round"></span>
+          </button>
+          <button id="primaryButton" class="iconButton primaryAction" type="submit" aria-label="Send" title="Send">
+            <span data-icon="send-horizontal"></span>
+          </button>
+        </div>
+      </form>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
