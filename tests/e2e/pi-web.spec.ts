@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
@@ -118,6 +120,44 @@ test.describe("tool cards", () => {
     await expect(page.locator(".toolCard--running")).toHaveCount(0);
     await expect(page.locator(".message.tool")).toHaveCount(0);
   });
+
+  test("renders edit tool calls as a side-by-side intraline diff with an icon layout toggle", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("edit diff");
+    await page.locator("#primaryButton").click();
+
+    const card = page.locator(".toolCard.toolCard--success", { hasText: "edit" }).last();
+    await expect(card).toBeVisible();
+    await expect(card.locator(".toolCardName")).toHaveText("edit");
+    await expect(card.locator(".toolCardSubtitle")).toHaveText("/some/file.ts");
+    await expect(card.locator(".diffContainer")).toHaveClass(/diffContainer--sideBySide/);
+    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", "Switch to top/bottom diff view");
+    await expect(card.locator(".diffLayoutToggle svg")).toHaveCount(1);
+    await expect(card.locator(".diffLine--changed")).toHaveCount(2);
+    await expect(card.locator(".diffWord--del", { hasText: "41" })).toBeVisible();
+    await expect(card.locator(".diffWord--add", { hasText: "42" })).toBeVisible();
+    await expect(card.locator(".diffWord--del", { hasText: "log" })).toBeVisible();
+    await expect(card.locator(".diffWord--add", { hasText: "info" })).toBeVisible();
+    await expect(card.locator(".toolCardBody")).toHaveCount(0);
+
+    await card.locator(".diffLayoutToggle").click();
+    await expect(card.locator(".diffContainer")).toHaveClass(/diffContainer--stacked/);
+    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", "Switch to side-by-side diff view");
+  });
+
+  test("does not crash when edit tool args omit oldText or newText", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+
+    await page.goto("/");
+    await page.locator("#prompt").fill("malformed edit");
+    await page.locator("#primaryButton").click();
+
+    const card = page.locator(".toolCard.toolCard--success", { hasText: "edit" }).last();
+    await expect(card).toBeVisible();
+    await expect(card.locator(".diffContainer")).toBeVisible();
+    expect(errors).not.toContain("Cannot read properties of undefined (reading 'split')");
+  });
 });
 
 test.describe("assistant markdown rendering", () => {
@@ -158,5 +198,128 @@ test.describe("assistant markdown rendering", () => {
 
     await toggle.click();
     await expect(longMessage).toHaveClass(/collapsed/);
+  });
+});
+
+test.describe("code block copy button", () => {
+  test("copy button appears on hover and switches to check icon on click", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return markdown");
+    await page.locator("#primaryButton").click();
+
+    const pre = page.locator(".message.assistant .markdownBody pre").last();
+    await expect(pre).toBeVisible();
+
+    const copyBtn = pre.locator(".copyCode");
+
+    // move mouse away so no hover state bleeds in
+    await page.mouse.move(0, 0);
+    await expect(copyBtn).toBeHidden();
+
+    await pre.hover();
+    await expect(copyBtn).toBeVisible();
+
+    // before click: copy state
+    await expect(copyBtn).toHaveAttribute("data-icon", "copy");
+
+    await copyBtn.click();
+
+    // after click: check state
+    await expect(copyBtn).toHaveAttribute("data-icon", "check");
+  });
+
+  test("copy button reverts to copy icon after timeout", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return markdown");
+    await page.locator("#primaryButton").click();
+
+    const pre = page.locator(".message.assistant .markdownBody pre").last();
+    await pre.hover();
+    await pre.locator(".copyCode").click();
+    await expect(pre.locator(".copyCode")).toHaveAttribute("data-icon", "check");
+
+    await page.waitForTimeout(2000);
+    await expect(pre.locator(".copyCode")).toHaveAttribute("data-icon", "copy");
+  });
+});
+
+// Minimal valid 1x1 transparent PNG
+const VALID_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+test.describe("image rendering", () => {
+  test.beforeAll(async () => {
+    const artifactDir = join(process.cwd(), ".pi-web-uploads", "artifacts");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
+  });
+
+  test("image actions appear on hover with fullscreen, download and open buttons", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#primaryButton").click();
+
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await expect(frame).toBeVisible();
+
+    // move mouse away so no hover state bleeds in
+    await page.mouse.move(0, 0);
+    const actions = frame.locator(".imageActions");
+    await expect(actions).toBeHidden();
+
+    await frame.hover();
+    await expect(actions).toBeVisible();
+
+    await expect(frame.locator('[title="Fullscreen"]')).toBeVisible();
+    await expect(frame.locator('[title="Download"]')).toBeVisible();
+    await expect(frame.locator('[title="Open in new tab"]')).toBeVisible();
+  });
+
+  test("fullscreen button opens overlay with image", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#primaryButton").click();
+
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await expect(frame).toBeVisible();
+    await frame.hover();
+    await frame.locator('[title="Fullscreen"]').click();
+
+    const overlay = page.locator(".imageOverlay");
+    await expect(overlay).toBeVisible();
+    await expect(overlay.locator("img")).toBeVisible();
+  });
+
+  test("overlay closes when clicked", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#primaryButton").click();
+
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await expect(frame).toBeVisible();
+    await frame.hover();
+    await frame.locator('[title="Fullscreen"]').click();
+
+    const overlay = page.locator(".imageOverlay");
+    await expect(overlay).toBeVisible();
+    await overlay.click();
+    await expect(overlay).toHaveCount(0);
+  });
+
+  test("image is constrained and does not overflow the message", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#primaryButton").click();
+
+    const img = page.locator(".message.assistant .imageFrame img").last();
+    await expect(img).toBeVisible();
+
+    const imgBox = await img.boundingBox();
+    const msgBox = await page.locator(".message.assistant").last().boundingBox();
+    expect(imgBox).toBeTruthy();
+    expect(msgBox).toBeTruthy();
+    expect(imgBox!.width).toBeLessThanOrEqual(msgBox!.width + 1);
   });
 });
