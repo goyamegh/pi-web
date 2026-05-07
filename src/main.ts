@@ -1,4 +1,5 @@
 import "./style.css";
+import { marked } from "marked";
 import { CornerDownRight, createElement, Gauge, KeyRound, Menu, Paperclip, Route, SendHorizontal, Square, X } from "lucide";
 
 function syncAppHeight() {
@@ -17,6 +18,74 @@ type PiEvent = {
   type: string;
   [key: string]: any;
 };
+
+marked.setOptions({
+  async: false,
+  breaks: true,
+  gfm: true,
+});
+
+const markdownCache = new Map<string, string>();
+const maxCachedMarkdown = 160;
+const allowedMarkdownTags = new Set([
+  "a", "blockquote", "br", "code", "del", "div", "em", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
+  "li", "ol", "p", "pre", "span", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
+]);
+const allowedMarkdownAttributes = new Set(["class", "href", "rel", "target"]);
+
+function sanitizeMarkdownHtml(html: string) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+
+  for (const element of Array.from(template.content.querySelectorAll("*"))) {
+    const tagName = element.tagName.toLowerCase();
+    if (!allowedMarkdownTags.has(tagName)) {
+      element.replaceWith(...Array.from(element.childNodes));
+      continue;
+    }
+
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      if (!allowedMarkdownAttributes.has(name) || name.startsWith("on")) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+
+      if (name === "href") {
+        const href = attribute.value.trim();
+        if (!/^(https?:|mailto:|#|\/)/i.test(href)) element.removeAttribute(attribute.name);
+      }
+    }
+
+    if (tagName === "a") {
+      element.setAttribute("target", "_blank");
+      element.setAttribute("rel", "noopener noreferrer");
+    }
+  }
+
+  return template.innerHTML;
+}
+
+function markdownHtml(text: string) {
+  const cached = markdownCache.get(text);
+  if (cached !== undefined) {
+    markdownCache.delete(text);
+    markdownCache.set(text, cached);
+    return cached;
+  }
+
+  const html = sanitizeMarkdownHtml(marked.parse(text) as string);
+  markdownCache.set(text, html);
+  if (markdownCache.size > maxCachedMarkdown) markdownCache.delete(markdownCache.keys().next().value as string);
+  return html;
+}
+
+function renderAssistantMarkdown(body: HTMLElement, text: string) {
+  body.classList.add("markdownBody");
+  body.innerHTML = markdownHtml(text);
+  body.dataset.markdownRendered = "true";
+  delete body.dataset.markdownText;
+}
 
 function requiredElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -44,8 +113,32 @@ const modelSelectEl = requiredElement<HTMLSelectElement>("#modelSelect");
 const thinkingSelectEl = requiredElement<HTMLSelectElement>("#thinkingSelect");
 const thinkingButton = requiredElement<HTMLButtonElement>("#thinkingButton");
 
+const requestIdle = window.requestIdleCallback || ((callback: IdleRequestCallback) => window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 1));
+const markdownRenderObserver = "IntersectionObserver" in window
+  ? new IntersectionObserver((entries, observer) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const body = entry.target as HTMLElement;
+      observer.unobserve(body);
+      const text = body.dataset.markdownText || "";
+      requestIdle(() => {
+        if (body.isConnected && text && !body.dataset.markdownRendered) renderAssistantMarkdown(body, text);
+      });
+    }
+  }, { root: messagesEl, rootMargin: "600px 0px" })
+  : null;
+
+function queueAssistantMarkdownRender(body: HTMLElement, text: string) {
+  body.dataset.markdownText = text;
+  if (markdownRenderObserver) markdownRenderObserver.observe(body);
+  else requestIdle(() => {
+    if (body.isConnected && !body.dataset.markdownRendered) renderAssistantMarkdown(body, text);
+  });
+}
+
 let token = localStorage.getItem("pi-web-token") || "";
 let streamingAssistant: HTMLDivElement | null = null;
+const activeToolCards = new Map<string, HTMLDivElement>();
 let currentModelKey = "";
 let currentThinkingLevel = "off";
 let currentSessionFile = "";
@@ -182,16 +275,83 @@ function shouldCollapseMessage(text: string) {
   return text.length > 1800 || text.split("\n").length > 28;
 }
 
-function addMessage(role: Role, text: string, extraClass = "") {
+interface AttachedImage {
+  data?: string;
+  mimeType?: string;
+  path?: string;
+}
+
+function imagesFromRawContent(content: unknown): AttachedImage[] {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((part): part is Record<string, unknown> => !!part && typeof part === "object" && (part as any).type === "image")
+    .map((part) => ({ data: part.data as string | undefined, mimeType: part.mimeType as string | undefined }));
+}
+
+function stripImagePathNote(text: string): { text: string; paths: string[] } {
+  const match = text.match(/(\n\nAttached image files?:\n(?:- .+\n?)+)/s);
+  if (!match) return { text, paths: [] };
+  const noteBlock = match[1];
+  const paths = [...noteBlock.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
+  return { text: text.replace(noteBlock, "").trimEnd(), paths };
+}
+
+function addMessage(role: Role, text: string, extraClass = "", images: AttachedImage[] = []) {
   const div = document.createElement("div");
   const collapsible = shouldCollapseMessage(text);
   div.className = `message ${role} ${extraClass}${collapsible ? " collapsible collapsed" : ""}`.trim();
   const label = document.createElement("span");
   label.className = "role";
   label.textContent = role;
-  const body = document.createElement("span");
+  const body = document.createElement("div");
   body.className = "body";
-  body.textContent = text || "";
+
+  if (role === "user" && images.length > 0) {
+    // Render text (stripping the server-appended path note since we show images inline)
+    const { text: cleanText } = stripImagePathNote(text);
+    if (cleanText) {
+      const textNode = document.createElement("span");
+      textNode.className = "messageText";
+      textNode.textContent = cleanText;
+      body.append(textNode);
+    }
+    // Render image previews
+    const imgWrap = document.createElement("div");
+    imgWrap.className = "messageImages";
+    for (const img of images) {
+      if (img.data && img.mimeType) {
+        const el = document.createElement("img");
+        el.className = "messageImageThumb";
+        el.src = `data:${img.mimeType};base64,${img.data}`;
+        el.alt = img.path ? img.path.split("/").pop() || "image" : "image";
+        el.addEventListener("click", () => {
+          const overlay = document.createElement("div");
+          overlay.className = "imageOverlay";
+          const full = document.createElement("img");
+          full.src = el.src;
+          full.alt = el.alt;
+          overlay.append(full);
+          overlay.addEventListener("click", () => overlay.remove());
+          document.body.append(overlay);
+        });
+        imgWrap.append(el);
+      } else {
+        const missing = document.createElement("span");
+        missing.className = "messageImageMissing";
+        missing.title = img.path || "unknown path";
+        missing.textContent = `🖼️ ${img.path ? img.path.split("/").pop() : "missing image"}`;
+        imgWrap.append(missing);
+      }
+    }
+    body.append(imgWrap);
+  } else if (role === "assistant" && text) {
+    body.textContent = text;
+    if (collapsible) queueAssistantMarkdownRender(body, text);
+    else renderAssistantMarkdown(body, text);
+  } else {
+    body.textContent = text || "";
+  }
+
   div.append(label, body);
 
   if (collapsible) {
@@ -201,6 +361,10 @@ function addMessage(role: Role, text: string, extraClass = "") {
     toggle.textContent = "Show more";
     toggle.addEventListener("click", () => {
       const collapsed = div.classList.toggle("collapsed");
+      if (!collapsed && role === "assistant" && text && !body.dataset.markdownRendered) {
+        markdownRenderObserver?.unobserve(body);
+        renderAssistantMarkdown(body, text);
+      }
       toggle.textContent = collapsed ? "Show more" : "Show less";
     });
     div.append(toggle);
@@ -219,13 +383,19 @@ function textFromRawContent(content: unknown): string {
     const value = part as Record<string, unknown>;
     if (value.type === "text") return typeof value.text === "string" ? value.text : "";
     if (value.type === "image") return "[image]";
-    if (value.type === "toolCall") return `[tool call: ${String(value.toolName || "tool")}]`;
+    // toolCall parts are rendered as tool cards — skip them in text bubbles
     return "";
   }).filter(Boolean).join("\n");
 }
 
 function messageText(message: any): string {
-  return message?.text || textFromRawContent(message?.raw?.content || message?.content) || "";
+  // Prefer server-precomputed text, but fall back to raw content parsing.
+  // Also reparse from raw if the precomputed text looks like a pure tool-call placeholder.
+  const precomputed: string = message?.text || "";
+  if (precomputed && !/^(\[tool call: [^\]]+\]\n?)+$/.test(precomputed.trim())) {
+    return precomputed;
+  }
+  return textFromRawContent(message?.raw?.content || message?.content) || "";
 }
 
 function modelKey(model: any): string {
@@ -259,29 +429,31 @@ function updateThinkingOptions(levels: string[] = [currentThinkingLevel]) {
   updateThinkingButton();
 }
 
-async function refreshModels() {
-  const res = await fetch("/api/models", { headers: apiHeaders() });
-  if (!res.ok) throw new Error(await res.text());
-  const data = await res.json();
-  updateMeta({ cwd: data.cwd || "", model: data.current, thinkingLevel: data.thinkingLevel });
+function populateModelSelect(models: any[], activeKey: string) {
   modelSelectEl.textContent = "";
-
-  for (const model of data.models || []) {
+  for (const model of models) {
     if (!model) continue;
     const option = document.createElement("option");
     option.value = modelKey(model);
     option.textContent = modelLabel(model);
     modelSelectEl.append(option);
   }
-
-  modelSelectEl.value = currentModelKey;
-  if (!modelSelectEl.value && currentModelKey) {
+  modelSelectEl.value = activeKey;
+  if (!modelSelectEl.value && activeKey) {
     const option = document.createElement("option");
-    option.value = currentModelKey;
-    option.textContent = currentModelKey;
+    option.value = activeKey;
+    option.textContent = activeKey;
     modelSelectEl.prepend(option);
-    modelSelectEl.value = currentModelKey;
+    modelSelectEl.value = activeKey;
   }
+}
+
+async function refreshModels() {
+  const res = await fetch("/api/models", { headers: apiHeaders() });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  updateMeta({ cwd: data.cwd || "", model: data.current, thinkingLevel: data.thinkingLevel });
+  populateModelSelect(data.models || [], currentModelKey);
   updateThinkingOptions(data.thinkingLevels || [currentThinkingLevel]);
 }
 
@@ -291,10 +463,22 @@ async function refreshMessages() {
   const data = await res.json();
   messagesEl.textContent = "";
   streamingAssistant = null;
+  activeToolCards.clear();
   for (const message of data.messages || []) {
+    if (message.role === "toolResult") {
+      // Render tool result messages as collapsed history cards
+      const toolName = message.toolName || message.raw?.toolName || message.name || "tool";
+      const isError = Boolean(message.isError);
+      const resultText = messageText(message);
+      addToolHistoryCard(toolName, isError, resultText, message.toolArgs);
+      continue;
+    }
     const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
     const text = messageText(message);
-    if (text) addMessage(role, text);
+    // Skip assistant messages that are purely tool-call placeholders (no real text)
+    if (!text) continue;
+    const rawImages = role === "user" ? imagesFromRawContent(message.raw?.content || message.content) : [];
+    addMessage(role, text, "", rawImages);
   }
 }
 
@@ -389,6 +573,104 @@ async function refreshState() {
   await Promise.all([refreshModels(), refreshMessages()]);
 }
 
+function toolSubtitle(toolName: string, args: Record<string, unknown>): string {
+  if (!args) return "";
+  // Prefer the most meaningful arg per tool
+  const order = ["path", "command", "pattern", "query", "url"];
+  for (const key of order) {
+    if (typeof args[key] === "string") return args[key] as string;
+  }
+  // Fall back to first string value
+  for (const val of Object.values(args)) {
+    if (typeof val === "string") return val;
+  }
+  return "";
+}
+
+function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<string, unknown>) {
+  const header = document.createElement("div");
+  header.className = "toolCardHeader";
+
+  const statusIcon = document.createElement("span");
+  statusIcon.className = "toolCardIcon";
+  statusIcon.setAttribute("aria-hidden", "true");
+
+  const name = document.createElement("span");
+  name.className = "toolCardName";
+  name.textContent = toolName;
+
+  header.append(statusIcon, name);
+
+  if (args) {
+    const sub = toolSubtitle(toolName, args);
+    if (sub) {
+      const subtitle = document.createElement("span");
+      subtitle.className = "toolCardSubtitle";
+      subtitle.textContent = sub;
+      header.append(subtitle);
+    }
+  }
+
+  card.append(header);
+}
+
+function addToolCard(toolName: string, args: Record<string, unknown>): HTMLDivElement {
+  const card = document.createElement("div");
+  card.className = "toolCard toolCard--running";
+  addToolHeader(card, toolName, args);
+  messagesEl.append(card);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return card;
+}
+
+function addToolResultBody(card: HTMLDivElement, result: string) {
+  const truncated = result.length > 2000 ? result.slice(0, 2000) + "\n…" : result;
+  const collapsible = shouldCollapseToolResult(truncated);
+  const body = document.createElement("pre");
+  body.className = `toolCardBody${collapsible ? " collapsed" : ""}`;
+  body.textContent = truncated;
+  card.append(body);
+  if (collapsible) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "messageToggle";
+    toggle.textContent = "Show more";
+    toggle.addEventListener("click", () => {
+      const isCollapsed = body.classList.toggle("collapsed");
+      toggle.textContent = isCollapsed ? "Show more" : "Show less";
+    });
+    card.append(toggle);
+  }
+}
+
+function shouldCollapseToolResult(text: string) {
+  return text.length > 600 || text.split("\n").length > 10;
+}
+
+function updateToolCard(card: HTMLDivElement, toolName: string, isError: boolean, result?: string) {
+  card.classList.remove("toolCard--running");
+  card.classList.add(isError ? "toolCard--error" : "toolCard--success");
+
+  // Remove badge and args details — icon + background convey the state
+  card.querySelector(".toolCardBadge")?.remove();
+  card.querySelector(".toolCardDetails")?.remove();
+
+  if (result) {
+    const resultStr = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+    addToolResultBody(card, resultStr);
+  }
+
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function addToolHistoryCard(toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) {
+  const card = document.createElement("div");
+  card.className = `toolCard ${isError ? "toolCard--error" : "toolCard--success"}`;
+  addToolHeader(card, toolName, args);
+  if (result) addToolResultBody(card, result);
+  messagesEl.append(card);
+}
+
 function handlePiEvent(event: PiEvent) {
   switch (event.type) {
     case "agent_start":
@@ -400,22 +682,32 @@ function handlePiEvent(event: PiEvent) {
       const deltaEvent = event.assistantMessageEvent;
       if (deltaEvent?.type === "text_delta") {
         if (!streamingAssistant) streamingAssistant = addMessage("assistant", "");
-        const body = streamingAssistant.querySelector<HTMLSpanElement>(".body");
+        const body = streamingAssistant.querySelector<HTMLElement>(".body");
         if (body) body.textContent += deltaEvent.delta || "";
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
       break;
     }
-    case "tool_execution_start":
-      addMessage("tool", `▶ ${event.toolName}\n${JSON.stringify(event.args || {}, null, 2)}`);
+    case "tool_execution_start": {
+      const cardKey = event.toolCallId || event.toolName;
+      const card = addToolCard(event.toolName, event.args || {});
+      activeToolCards.set(cardKey, card);
       break;
-    case "tool_execution_end":
-      addMessage("tool", `✓ ${event.toolName}${event.isError ? " failed" : ""}`);
+    }
+    case "tool_execution_end": {
+      const cardKey = event.toolCallId || event.toolName;
+      const card = activeToolCards.get(cardKey);
+      if (card) {
+        updateToolCard(card, event.toolName, Boolean(event.isError), event.result);
+        activeToolCards.delete(cardKey);
+      }
       break;
+    }
     case "agent_end":
       isStreaming = false;
       updatePrimaryAction();
       streamingAssistant = null;
+      activeToolCards.clear();
       refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
       break;
     case "thinking_level_changed":
@@ -446,6 +738,10 @@ function connect() {
     }
     if (data.type === "session_runtime_changed") {
       if (!sessionDrawer.hidden) refreshSessions().catch(() => undefined);
+      return;
+    }
+    if (data.type === "models_updated") {
+      populateModelSelect(data.models || [], currentModelKey);
       return;
     }
     if (data.type === "pi_event") {
@@ -511,7 +807,7 @@ formEl.addEventListener("submit", async (event) => {
   attachedImages = [];
   renderAttachments();
   updatePrimaryAction();
-  addMessage("user", `${message || "[image]"}${images.length ? `\n📎 ${images.length} image${images.length === 1 ? "" : "s"}` : ""}`);
+  addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
 
   try {
     const res = await fetch("/api/prompt", {

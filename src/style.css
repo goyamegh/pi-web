@@ -37,7 +37,7 @@ body {
   height: var(--app-height);
   max-width: 1100px;
   margin: 0 auto;
-  padding: 16px;
+  padding: 16px 0;
   gap: 12px;
   overflow: hidden;
 }
@@ -50,6 +50,7 @@ body {
   border-radius: 16px;
   box-shadow: 0 18px 60px rgba(0,0,0,.25);
   padding: 10px;
+  margin: 0 16px;
 }
 
 p { margin: 0; }
@@ -96,10 +97,10 @@ p { margin: 0; }
 .messages {
   min-height: 0;
   overflow: auto;
-  padding: 8px 2px;
+  padding: 8px 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
 }
 
 .message {
@@ -113,6 +114,50 @@ p { margin: 0; }
 .message .body {
   display: block;
 }
+.markdownBody {
+  white-space: normal;
+}
+.markdownBody > :first-child { margin-top: 0; }
+.markdownBody > :last-child { margin-bottom: 0; }
+.markdownBody p, .markdownBody ul, .markdownBody ol, .markdownBody blockquote, .markdownBody pre, .markdownBody table {
+  margin: 0 0 .8em;
+}
+.markdownBody ul, .markdownBody ol { padding-left: 1.4em; }
+.markdownBody blockquote {
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+  padding-left: 1em;
+}
+.markdownBody code {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  padding: .1em .3em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .92em;
+}
+.markdownBody pre {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 10px 12px;
+}
+.markdownBody pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+.markdownBody table {
+  display: block;
+  overflow: auto;
+  border-collapse: collapse;
+}
+.markdownBody th, .markdownBody td {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+}
+.markdownBody a { color: var(--accent); }
 .message.collapsed .body {
   position: relative;
   max-height: 18rem;
@@ -129,12 +174,13 @@ p { margin: 0; }
   display: inline-flex;
   min-height: 28px;
   margin-top: 10px;
-  border-color: transparent;
-  background: color-mix(in srgb, var(--panel-2) 60%, transparent);
+  border: none;
+  background: transparent;
   color: var(--accent);
   padding: 4px 8px;
   font-size: 12px;
 }
+.messageToggle:hover { border: none; }
 .message .role {
   display: block;
   margin-bottom: 6px;
@@ -144,10 +190,18 @@ p { margin: 0; }
   text-transform: uppercase;
   letter-spacing: .08em;
 }
-.message.user { --message-bg: var(--user); align-self: flex-end; background: var(--user); }
-.message.assistant { --message-bg: var(--assistant); align-self: flex-start; background: var(--assistant); }
-.message.tool { --message-bg: var(--tool); align-self: flex-start; background: var(--tool); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
-.message.system { align-self: center; max-width: 100%; background: transparent; color: var(--muted); }
+.message.user { --message-bg: var(--user); align-self: flex-end; background: var(--user); margin: 12px 16px 12px 0; }
+.messageText { display: block; white-space: pre-wrap; word-break: break-word; }
+.messageImages { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.messageImageThumb { max-width: 260px; max-height: 200px; border-radius: 6px; object-fit: contain; cursor: zoom-in; display: block; }
+.messageImageThumb:only-child { max-width: 320px; max-height: 280px; }
+.messageImageMissing { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,.08); color: var(--muted); font-size: 12px; border: 1px dashed rgba(255,255,255,.2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imageOverlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+.imageOverlay img { max-width: 92vw; max-height: 92vh; border-radius: 8px; object-fit: contain; }
+.message.assistant { --message-bg: var(--bg); align-self: stretch; background: transparent; border: none; max-width: 100%; width: 100%; }
+.message.assistant .role { display: none; }
+/* tool role messages no longer used as bubbles */
+.message.system { align-self: center; max-width: 100%; background: transparent; color: var(--muted); margin: 8px 0; }
 .message.error { border-color: var(--danger); color: #fecdd3; }
 
 textarea {
@@ -304,8 +358,8 @@ button:disabled:hover { border-color: var(--border); }
 }
 .sessionItem {
   display: flex;
+  flex-shrink: 0;
   width: 100%;
-  min-height: 0;
   flex-direction: column;
   align-items: stretch;
   gap: 4px;
@@ -343,6 +397,109 @@ button:disabled:hover { border-color: var(--border); }
 @keyframes sessionSpin {
   to { transform: rotate(360deg); }
 }
+/* ── Tool Cards ─────────────────────────────────────────── */
+.toolCard {
+  align-self: stretch;
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--tool);
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.toolCard--success { background: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
+.toolCard--error   { background: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
+
+.toolCardHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+.toolCardIcon {
+  flex: 0 0 auto;
+  font-size: 13px;
+  line-height: 1;
+}
+/* state-specific icon glyphs via ::before */
+.toolCard--running .toolCardIcon::before { content: "◌"; color: var(--muted); animation: toolSpin 1s linear infinite; display: inline-block; }
+.toolCard--success .toolCardIcon::before { content: "✓"; color: #4ade80; }
+.toolCard--error   .toolCardIcon::before { content: "✗"; color: var(--danger); }
+@keyframes toolSpin { to { transform: rotate(360deg); } }
+
+.toolCardName {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+.toolCardSubtitle {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.toolCardDetails {
+  border-top: 1px solid var(--border);
+}
+.toolCardSummary {
+  display: block;
+  padding: 5px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.toolCardSummary::-webkit-details-marker { display: none; }
+.toolCardSummary::before { content: "▶ "; font-size: 9px; opacity: .6; }
+details[open] > .toolCardSummary::before { content: "▼ "; }
+.toolCardArgs {
+  margin: 0;
+  padding: 8px 12px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: var(--muted);
+  max-height: 280px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+.toolCardBody {
+  margin: 0;
+  padding: 0 12px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: var(--muted);
+}
+.toolCardBody.collapsed {
+  position: relative;
+  max-height: 8rem;
+  overflow: hidden;
+}
+.toolCardBody.collapsed::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 3rem;
+  background: linear-gradient(transparent, var(--tool-bg, var(--tool)) 82%);
+}
+.toolCard--success .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
+.toolCard--error   .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
+/* ── end Tool Cards ──────────────────────────────────────── */
+
 .sessionItemMeta, .sessionEmpty {
   color: var(--muted);
   font-size: 12px;
@@ -352,9 +509,14 @@ button:disabled:hover { border-color: var(--border); }
   .app {
     height: var(--app-height);
     min-height: 0;
-    padding: 10px;
+    padding: 10px 0;
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
+  .composer {
+    margin: 0 10px;
+    margin-bottom: max(0px, env(safe-area-inset-bottom));
+  }
+  .message.user { margin: 12px 10px 12px 0; }
 
   .composerFooter {
     gap: 4px;

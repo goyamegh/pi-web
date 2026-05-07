@@ -99,20 +99,64 @@ test.describe("attachments and prompt", () => {
 
     await page.locator("#imageInput").setInputFiles(file);
     await page.locator("#primaryButton").click();
+    await expect(page.locator(".message.user .messageImageThumb")).toBeVisible();
     await expect(page.getByText("Mock response with image.").first()).toBeVisible();
   });
 });
 
-test.describe("long message accordion", () => {
-  test("collapses long messages and toggles them", async ({ page }) => {
+test.describe("tool cards", () => {
+  test("renders tool results as tool cards instead of tool bubbles", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("use tool");
+    await page.locator("#primaryButton").click();
+
+    const card = page.locator(".toolCard.toolCard--success").last();
+    await expect(card).toBeVisible();
+    await expect(card.locator(".toolCardName")).toHaveText("read");
+    await expect(card.locator(".toolCardSubtitle")).toHaveText("/some/file");
+    await expect(card.locator(".toolCardBody")).toContainText("file contents here");
+    await expect(page.locator(".toolCard--running")).toHaveCount(0);
+    await expect(page.locator(".message.tool")).toHaveCount(0);
+  });
+});
+
+test.describe("assistant markdown rendering", () => {
+  test("renders normal assistant responses as markdown", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return markdown");
+    await page.locator("#primaryButton").click();
+
+    const latestAssistant = page.locator(".message.assistant", { hasText: "Here is" }).last();
+    await expect(latestAssistant.locator(".markdownBody strong")).toHaveText("bold");
+    await expect(latestAssistant.locator(".markdownBody li")).toHaveText(["one", "two"]);
+    await expect(latestAssistant.locator(".markdownBody pre code")).toContainText("const answer = 42;");
+    await expect(latestAssistant.locator(".body")).not.toContainText("**bold**");
+  });
+
+  test("renders collapsed long assistant messages as markdown before and after show more", async ({ page }) => {
     await page.goto("/");
     const longMessage = page.locator(".message.assistant.collapsible").first();
     await expect(longMessage).toBeVisible();
     await expect(longMessage).toHaveClass(/collapsed/);
-    await longMessage.locator(".messageToggle").click();
+
+    const toggle = longMessage.locator(".messageToggle");
+    let toggleStyles = await toggle.evaluate((el) => getComputedStyle(el));
+    expect(toggleStyles.borderTopStyle).toBe("none");
+    await toggle.hover();
+    toggleStyles = await toggle.evaluate((el) => getComputedStyle(el));
+    expect(toggleStyles.borderTopStyle).toBe("none");
+
+    await expect(longMessage.locator(".body.markdownBody")).toHaveAttribute("data-markdown-rendered", "true");
+    await expect(longMessage.locator(".markdownBody h2").first()).toHaveText("Image attachment support");
+    await expect(longMessage.locator(".markdownBody strong").first()).toHaveText("enabled");
+    await expect(longMessage.locator(".body")).not.toContainText("**enabled**");
+
+    await toggle.click();
     await expect(longMessage).not.toHaveClass(/collapsed/);
-    await expect(longMessage.locator(".messageToggle")).toHaveText("Show less");
-    await longMessage.locator(".messageToggle").click();
+    await expect(toggle).toHaveText("Show less");
+    await expect(longMessage.locator(".markdownBody pre code").first()).toContainText("const enabled = true;");
+
+    await toggle.click();
     await expect(longMessage).toHaveClass(/collapsed/);
   });
 });

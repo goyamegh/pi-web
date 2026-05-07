@@ -87,7 +87,7 @@ function textFromContent(content: unknown): string {
     const p = part as Record<string, unknown>;
     if (p.type === "text" && typeof p.text === "string") return p.text;
     if (p.type === "image") return "[image]";
-    if (p.type === "toolCall") return `[tool call: ${String(p.toolName || "tool")}]`;
+    // toolCall parts are rendered as tool cards in the UI — omit from text
     return "";
   }).filter(Boolean).join("\n");
 }
@@ -102,6 +102,34 @@ function simplifyModel(model: any) {
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
   };
+}
+
+// Models confirmed broken with this Copilot integration — tracked at runtime.
+const blockedModelIds = new Set<string>();
+
+// Parse allowed model IDs from Copilot's model_not_available_for_integrator error.
+// Returns null if no such error has been seen yet.
+function copilotAllowedIdsFromSession(): Set<string> | null {
+  const entries = session.messages;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const msg = entries[i] as any;
+    const err: string = msg?.errorMessage || msg?.message?.errorMessage || "";
+    if (!err.includes("model_not_available_for_integrator")) continue;
+    const match = err.match(/Available models: \[([^\]]+)\]/);
+    if (!match) continue;
+    return new Set(match[1].split(/\s+/).map((s: string) => s.trim()).filter(Boolean));
+  }
+  return null;
+}
+
+function getAvailableModels() {
+  const all = session.modelRegistry.getAvailable();
+  const allowed = copilotAllowedIdsFromSession();
+  return all.filter((m: any) => {
+    if (blockedModelIds.has(m.id)) return false;
+    if (allowed && !allowed.has(m.id)) return false;
+    return true;
+  });
 }
 
 const imageExtensions: Record<string, string> = {
@@ -130,9 +158,21 @@ async function persistPromptImages(images: Array<{ data: string; mimeType: strin
   return `\n\nAttached image file${images.length === 1 ? "" : "s"}:\n${lines.join("\n")}`;
 }
 
-function simplifyMessage(message: unknown) {
+function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<string, unknown>>) {
   if (!message || typeof message !== "object") return message;
   const m = message as Record<string, unknown>;
+  if (m.role === "toolResult") {
+    const args = toolCallArgs?.get(m.toolCallId as string);
+    return {
+      role: "toolResult",
+      toolName: m.toolName,
+      toolArgs: args,
+      isError: Boolean(m.isError),
+      text: textFromContent(m.content),
+      timestamp: m.timestamp,
+      raw: m,
+    };
+  }
   return {
     role: m.role,
     text: textFromContent(m.content),
@@ -209,7 +249,7 @@ function slashHelp() {
 }
 
 function formatModelList() {
-  return session.modelRegistry.getAvailable()
+  return getAvailableModels()
     .map((model: any) => `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` (${model.name})` : ""}`)
     .join("\n");
 }
@@ -315,7 +355,7 @@ function createMockSession(path = mockSessions[0].path) {
     ]
     : [
       { role: "user", content: "Can you add image attachments?", timestamp: "2026-05-07T10:00:00Z" },
-      { role: "assistant", content: "Image attachment support is enabled.\n".repeat(60), timestamp: "2026-05-07T10:01:00Z" },
+      { role: "assistant", content: ("## Image attachment support\n\nImage attachment support is **enabled**.\n\n- Upload images\n- Preview images\n\n```ts\nconst enabled = true;\n```\n\n").repeat(18), timestamp: "2026-05-07T10:01:00Z" },
     ];
   const mockMessages = initialMessages();
   const mockSessionManager = {
@@ -356,10 +396,31 @@ function createMockSession(path = mockSessions[0].path) {
     prompt: async (message: string, options?: { images?: unknown[] }) => {
       mockMessages.push({ role: "user", content: message, timestamp: new Date().toISOString() });
       const slow = /slow|running/i.test(message);
+      const withTools = /tool|interleav/i.test(message);
       mockSession.isStreaming = true;
       broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_start" } });
       if (slow) await new Promise((resolve) => setTimeout(resolve, 750));
-      mockMessages.push({ role: "assistant", content: `Mock response${options?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
+      if (withTools) {
+        // Simulate a tool call mid-turn
+        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Let me check that for you. " } } });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_start", toolName: "read", toolCallId: "call-1", args: { path: "/some/file" } } });
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "read", toolCallId: "call-1", isError: false, result: "file contents here" } });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Done reading." } } });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        mockMessages.push({ role: "assistant", content: [
+          { type: "text", text: "Let me check that for you. " },
+          { type: "toolCall", id: "call-1", toolName: "read", arguments: { path: "/some/file" } },
+          { type: "text", text: "Done reading." },
+        ], timestamp: new Date().toISOString() } as any);
+        mockMessages.push({ role: "toolResult", toolCallId: "call-1", toolName: "read", content: "file contents here", timestamp: new Date().toISOString() } as any);
+      } else if (/markdown/i.test(message)) {
+        mockMessages.push({ role: "assistant", content: "Here is **bold** markdown.\n\n- one\n- two\n\n```ts\nconst answer = 42;\n```", timestamp: new Date().toISOString() });
+      } else {
+        mockMessages.push({ role: "assistant", content: `Mock response${options?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
+      }
       mockSession.isStreaming = false;
       broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
       if (mockSession === session) broadcast({ type: "state_changed", ...currentState() });
@@ -410,6 +471,20 @@ function registerLiveSession(value: any) {
       sessionFile: eventSessionFile,
       runtime: runtimeForPath(eventSessionFile),
     });
+
+    // Track models that fail with model_not_supported and remove them from the list.
+    const e = event as any;
+    if (e?.type === "message_end" || e?.type === "turn_end") {
+      const msg = e?.message ?? e?.toolResults?.[0];
+      const err: string = msg?.errorMessage || msg?.message?.errorMessage || "";
+      const modelId: string = msg?.model || msg?.message?.model || "";
+      if (modelId && (err.includes("model_not_supported") || err.includes("model_not_available"))) {
+        if (!blockedModelIds.has(modelId)) {
+          blockedModelIds.add(modelId);
+          broadcast({ type: "models_updated", models: getAvailableModels().map(simplifyModel) });
+        }
+      }
+    }
   });
   liveSessions.set(key, { session: value, unsubscribe });
   return value;
@@ -485,7 +560,20 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/messages") {
-        return sendJson(res, 200, { ok: true, messages: session.messages.map(simplifyMessage) });
+        const msgs = session.messages;
+        // Build toolCallId -> args map from assistant messages
+        const toolCallArgs = new Map<string, Record<string, unknown>>();
+        for (const m of msgs) {
+          const msg = m as any;
+          if (msg.role === "assistant" && Array.isArray(msg.content)) {
+            for (const part of msg.content) {
+              if (part?.type === "toolCall" && part.id) {
+                toolCallArgs.set(part.id, part.arguments || {});
+              }
+            }
+          }
+        }
+        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown) => simplifyMessage(m, toolCallArgs)) });
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
@@ -499,7 +587,7 @@ const server = createServer(async (req, res) => {
           current: simplifyModel(session.model),
           thinkingLevel: session.thinkingLevel,
           thinkingLevels: session.getAvailableThinkingLevels(),
-          models: session.modelRegistry.getAvailable().map(simplifyModel),
+          models: getAvailableModels().map(simplifyModel),
         });
       }
 
