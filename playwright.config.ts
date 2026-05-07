@@ -7,6 +7,7 @@ export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 30_000,
   workers: 1,
+  snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}{ext}",
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     trace: "on-first-retry",

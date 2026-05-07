@@ -93,6 +93,42 @@ test.describe("composer layout", () => {
 });
 
 test.describe("sessions drawer", () => {
+  test("mobile session rows expand to contain title and metadata", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const drawer = page.locator("#sessionDrawer");
+    await expect(drawer).toBeVisible();
+
+    const drawerBox = await drawer.boundingBox();
+    expect(drawerBox).toBeTruthy();
+    expect(drawerBox!.width).toBeLessThanOrEqual(390);
+
+    const items = page.locator(".sessionItem");
+    await expect(items).toHaveCount(2);
+
+    for (let i = 0; i < 2; i += 1) {
+      const item = items.nth(i);
+      const itemBox = await item.boundingBox();
+      const titleBox = await item.locator(".sessionItemTitle").boundingBox();
+      const metaBox = await item.locator(".sessionItemMeta").boundingBox();
+      expect(itemBox).toBeTruthy();
+      expect(titleBox).toBeTruthy();
+      expect(metaBox).toBeTruthy();
+
+      expect(itemBox!.height).toBeGreaterThan(40);
+      expect(titleBox!.y + titleBox!.height).toBeLessThanOrEqual(metaBox!.y + 1);
+      expect(metaBox!.y + metaBox!.height).toBeLessThanOrEqual(itemBox!.y + itemBox!.height + 1);
+    }
+
+    const firstBox = await items.nth(0).boundingBox();
+    const secondBox = await items.nth(1).boundingBox();
+    expect(firstBox).toBeTruthy();
+    expect(secondBox).toBeTruthy();
+    expect(firstBox!.y + firstBox!.height).toBeLessThanOrEqual(secondBox!.y);
+  });
+
   test("shows a spinner for a background running session", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("slow background task");

@@ -2,6 +2,8 @@
 
 A small local/Tailscale web UI for [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent).
 
+![pi-web main chat](tests/e2e/visual.spec.ts-snapshots/main-chat-desktop.png)
+
 The app is TypeScript end-to-end:
 
 - `supervisor.ts` is a small stable dev supervisor that owns the public port and restarts the app server safely
@@ -47,6 +49,15 @@ By default, Pi operates in the directory where you start this server. To point P
 ```bash
 PI_WEB_CWD=/Users/ashwin/projects/comfy-lan-webapp npm run dev
 ```
+
+## Screenshots
+
+The README references the same deterministic Playwright visual snapshots used by `tests/e2e/visual.spec.ts`. When visual snapshots are intentionally updated, these images update with them.
+
+<picture>
+  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png">
+  <img alt="pi-web tool result transcript" src="tests/e2e/visual.spec.ts-snapshots/tool-result-desktop.png">
+</picture>
 
 ## Production build
 

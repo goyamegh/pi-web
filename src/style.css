@@ -485,6 +485,7 @@ button:disabled:hover { border-color: var(--border); }
   z-index: 21;
   display: flex;
   width: min(360px, calc(100vw - 32px));
+  max-width: 100vw;
   flex-direction: column;
   gap: 12px;
   border-right: 1px solid var(--border);
@@ -519,11 +520,15 @@ button:disabled:hover { border-color: var(--border); }
   display: flex;
   flex-shrink: 0;
   width: 100%;
+  height: auto;
+  min-height: 0;
   flex-direction: column;
   align-items: stretch;
   gap: 4px;
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 10px 12px;
+  line-height: 1.35;
   text-align: left;
 }
 .sessionItem.current {
@@ -805,7 +810,18 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
   }
 
   .message { max-width: 96%; }
+
+  .sessionDrawer {
+    width: 100vw;
+    border-right: 0;
+    padding: 16px max(12px, env(safe-area-inset-right)) 16px max(12px, env(safe-area-inset-left));
+  }
+
+  .sessionList {
+    gap: 6px;
+  }
 }
+
 
 .tokenOverlay {
   position: fixed; inset: 0;
