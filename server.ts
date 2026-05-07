@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { extname, join, resolve } from "node:path";
@@ -9,9 +9,13 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   AuthStorage,
   createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
   ModelRegistry,
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
+import { createMockHarness } from "./server/mock.js";
+import type { PiWebSession } from "./server/types.js";
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const distDir = join(appDir, "dist");
@@ -22,6 +26,8 @@ const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
 const piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
+const artifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
+const webUiContextFile = join(appDir, "contexts", "web-ui.md");
 const noSession = process.env.PI_WEB_NO_SESSION === "1";
 const mockMode = process.env.PI_WEB_MOCK === "1";
 
@@ -31,6 +37,11 @@ const contentTypes: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
 };
 
 function sendJson(res: ServerResponse, status: number, value: unknown) {
@@ -62,6 +73,26 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   for await (const chunk of req) chunks.push(Buffer.from(chunk));
   const text = Buffer.concat(chunks).toString("utf-8");
   return text ? JSON.parse(text) : {};
+}
+
+function safeArtifactName(name: string) {
+  return name.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 160);
+}
+
+function serveArtifact(req: IncomingMessage, res: ServerResponse) {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const rawName = decodeURIComponent(url.pathname.slice("/api/artifacts/".length));
+  const name = safeArtifactName(rawName);
+  if (!name || rawName.includes("..") || rawName.includes("/") || name !== rawName) return sendJson(res, 400, { ok: false, error: "Invalid artifact name" });
+
+  const file = resolve(artifactDir, name);
+  if (!file.startsWith(artifactDir) || !existsSync(file)) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
+
+  res.writeHead(200, {
+    "content-type": contentTypes[extname(file).toLowerCase()] || "application/octet-stream",
+    "cache-control": "no-store",
+  });
+  createReadStream(file).pipe(res);
 }
 
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
@@ -198,13 +229,12 @@ function runtimeForPath(path: string) {
 function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number]) {
   return {
     id: info.id,
-    path: info.path,
     name: info.name,
     firstMessage: info.firstMessage,
     created: info.created.toISOString(),
     modified: info.modified.toISOString(),
     messageCount: info.messageCount,
-    isCurrent: info.path === session.sessionFile,
+    isCurrent: info.id === session.sessionId,
     runtime: runtimeForPath(info.path),
   };
 }
@@ -317,132 +347,31 @@ async function executeSlashCommand(input: string) {
   }
 }
 
-async function switchToSessionFile(path: string) {
-  session = await getOrCreateLiveSession(path);
+async function findSessionInfoById(id: string) {
+  if (!id) return undefined;
+  const sessions = noSession ? [] : mockMode ? mockSessions : await SessionManager.list(piCwd);
+  return sessions.find((info) => info.id === id);
 }
 
-const mockSessions = [
-  {
-    id: "mock-current",
-    path: join(piCwd, ".mock-sessions/current.jsonl"),
-    name: "Current mock session",
-    firstMessage: "Can you add image attachments?",
-    created: new Date("2026-05-01T10:00:00Z"),
-    modified: new Date("2026-05-07T10:00:00Z"),
-    messageCount: 2,
-    allMessagesText: "Can you add image attachments?",
-    cwd: piCwd,
-  },
-  {
-    id: "mock-older",
-    path: join(piCwd, ".mock-sessions/older.jsonl"),
-    name: "Older mock session",
-    firstMessage: "Review the mobile composer layout",
-    created: new Date("2026-05-01T09:00:00Z"),
-    modified: new Date("2026-05-06T09:00:00Z"),
-    messageCount: 4,
-    allMessagesText: "Review the mobile composer layout",
-    cwd: piCwd,
-  },
-];
+async function getOrCreateLiveSessionById(id: string) {
+  if (id === session.sessionId) return session;
+  for (const entry of liveSessions.values()) {
+    if (entry.session.sessionId === id) return entry.session;
+  }
+  const info = await findSessionInfoById(id);
+  return info ? getOrCreateLiveSession(info.path) : undefined;
+}
 
-function createMockSession(path = mockSessions[0].path) {
-  const mockModel = { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 };
-  const initialMessages = () => path === mockSessions[1].path
-    ? [
-      { role: "user", content: "Review the mobile composer layout", timestamp: "2026-05-06T09:00:00Z" },
-      { role: "assistant", content: "Resumed older session.", timestamp: "2026-05-06T09:01:00Z" },
-    ]
-    : [
-      { role: "user", content: "Can you add image attachments?", timestamp: "2026-05-07T10:00:00Z" },
-      { role: "assistant", content: ("## Image attachment support\n\nImage attachment support is **enabled**.\n\n- Upload images\n- Preview images\n\n```ts\nconst enabled = true;\n```\n\n").repeat(18), timestamp: "2026-05-07T10:01:00Z" },
-    ];
-  const mockMessages = initialMessages();
-  const mockSessionManager = {
-    newSession() {
-      mockSession.sessionId = `mock-${Date.now()}`;
-      mockSession.sessionFile = join(piCwd, `.mock-sessions/${mockSession.sessionId}.jsonl`);
-      mockMessages.length = 0;
-    },
-    setSessionFile(path: string) {
-      mockSession.sessionFile = path;
-      mockSession.sessionId = mockSessions.find((info) => info.path === path)?.id || "mock-opened";
-      mockMessages.length = 0;
-      mockMessages.push(
-        { role: "user", content: "Review the mobile composer layout", timestamp: "2026-05-06T09:00:00Z" },
-        { role: "assistant", content: "Resumed older session.", timestamp: "2026-05-06T09:01:00Z" },
-      );
-    },
-    buildSessionContext() { return { messages: mockMessages }; },
-    getSessionDir() { return join(piCwd, ".mock-sessions"); },
-  };
-  const mockSession: any = {
-    sessionId: mockSessions.find((info) => info.path === path)?.id || "mock-current",
-    sessionFile: path,
-    isStreaming: false,
-    model: mockModel,
-    thinkingLevel: "medium",
-    messages: mockMessages,
-    agent: { state: { messages: mockMessages } },
-    sessionManager: mockSessionManager,
-    modelRegistry: {
-      getAvailable: () => [mockModel],
-      find: (provider: string, id: string) => provider === mockModel.provider && id === mockModel.id ? mockModel : undefined,
-    },
-    getAvailableThinkingLevels: () => ["off", "low", "medium", "high"],
-    setModel: async (model: unknown) => { mockSession.model = model; },
-    setThinkingLevel: (level: string) => { mockSession.thinkingLevel = level; },
-    reload: async () => undefined,
-    prompt: async (message: string, options?: { images?: unknown[] }) => {
-      mockMessages.push({ role: "user", content: message, timestamp: new Date().toISOString() });
-      const slow = /slow|running/i.test(message);
-      const withTools = /tool|interleav/i.test(message);
-      mockSession.isStreaming = true;
-      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_start" } });
-      if (slow) await new Promise((resolve) => setTimeout(resolve, 750));
-      if (withTools) {
-        // Simulate a tool call mid-turn
-        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Let me check that for you. " } } });
-        await new Promise((resolve) => setTimeout(resolve, 80));
-        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_start", toolName: "read", toolCallId: "call-1", args: { path: "/some/file" } } });
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "read", toolCallId: "call-1", isError: false, result: "file contents here" } });
-        await new Promise((resolve) => setTimeout(resolve, 80));
-        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Done reading." } } });
-        await new Promise((resolve) => setTimeout(resolve, 80));
-        mockMessages.push({ role: "assistant", content: [
-          { type: "text", text: "Let me check that for you. " },
-          { type: "toolCall", id: "call-1", toolName: "read", arguments: { path: "/some/file" } },
-          { type: "text", text: "Done reading." },
-        ], timestamp: new Date().toISOString() } as any);
-        mockMessages.push({ role: "toolResult", toolCallId: "call-1", toolName: "read", content: "file contents here", timestamp: new Date().toISOString() } as any);
-      } else if (/markdown/i.test(message)) {
-        mockMessages.push({ role: "assistant", content: "Here is **bold** markdown.\n\n- one\n- two\n\n```ts\nconst answer = 42;\n```", timestamp: new Date().toISOString() });
-      } else {
-        mockMessages.push({ role: "assistant", content: `Mock response${options?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
-      }
-      mockSession.isStreaming = false;
-      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
-      if (mockSession === session) broadcast({ type: "state_changed", ...currentState() });
-    },
-    abort: async () => { mockSession.isStreaming = false; },
-    clearQueue: () => undefined,
-    subscribe: () => undefined,
-    __reset: () => {
-      mockSession.sessionId = "mock-current";
-      mockSession.sessionFile = mockSessions[0].path;
-      mockMessages.length = 0;
-      mockMessages.push(...initialMessages());
-      mockSession.agent.state.messages = mockMessages;
-    },
-  };
-  return mockSession;
+async function switchToSessionId(id: string) {
+  const target = await getOrCreateLiveSessionById(id);
+  if (!target) throw new Error("Session not found");
+  session = target;
 }
 
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
-let session: any;
+let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
 
 const clients = new Set<WebSocket>();
@@ -452,6 +381,14 @@ function broadcast(value: unknown) {
     if (client.readyState === client.OPEN) client.send(data);
   }
 }
+
+const mockHarness = createMockHarness({
+  piCwd,
+  broadcast,
+  isCurrentSession: (value: PiWebSession) => value === session,
+  currentState,
+});
+const { mockSessions, createMockSession } = mockHarness;
 
 function sessionPathKey(value: any) {
   return String(value.sessionFile || value.sessionId || "");
@@ -495,11 +432,25 @@ async function makeAgentSession(path?: string) {
 
   const sessionManager = noSession ? SessionManager.inMemory() : SessionManager.create(piCwd);
   if (path && !noSession) sessionManager.setSessionFile(path);
+
+  const webUiContext = existsSync(webUiContextFile) ? readFileSync(webUiContextFile, "utf-8") : "";
+
+  const loader = new DefaultResourceLoader({
+    cwd: piCwd,
+    agentDir: getAgentDir(),
+    appendSystemPromptOverride: (base) => [
+      ...base,
+      webUiContext,
+    ].filter(Boolean),
+  });
+  await loader.reload();
+
   return createAgentSession({
     cwd: piCwd,
     sessionManager,
     authStorage,
     modelRegistry,
+    resourceLoader: loader,
   });
 }
 
@@ -536,6 +487,10 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
     if (url.pathname.startsWith("/api/")) {
+      if (method === "GET" && url.pathname.startsWith("/api/artifacts/")) {
+        return serveArtifact(req, res);
+      }
+
       if (!isAuthorized(req)) return unauthorized(res);
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
@@ -560,7 +515,10 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/messages") {
-        const msgs = session.messages;
+        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const msgs = targetSession.messages;
         // Build toolCallId -> args map from assistant messages
         const toolCallArgs = new Map<string, Record<string, unknown>>();
         for (const m of msgs) {
@@ -625,7 +583,7 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && url.pathname === "/api/prompt") {
-        const body = await readBody(req) as { message?: unknown; mode?: unknown; images?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; message?: unknown; mode?: unknown; images?: unknown };
         const message = String(body.message || "").trim();
         const images = Array.isArray(body.images)
           ? body.images.filter((image): image is { type: "image"; data: string; mimeType: string; name?: string } => {
@@ -642,7 +600,9 @@ const server = createServer(async (req, res) => {
         const imageFileNote = await persistPromptImages(images);
         const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
         const mode = body.mode === "followUp" ? "followUp" : "steer";
-        const targetSession = session;
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         void targetSession.prompt(promptText, {
           ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
           ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
@@ -654,12 +614,21 @@ const server = createServer(async (req, res) => {
             error: error instanceof Error ? error.message : String(error),
           }));
 
-        return sendJson(res, 202, { ok: true });
+        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
       }
 
       if (method === "POST" && url.pathname === "/api/abort") {
-        await session.abort();
-        return sendJson(res, 200, { ok: true });
+        const body = await readBody(req) as { sessionId?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        void targetSession.abort().catch((error: unknown) => broadcast({
+          type: "server_error",
+          sessionId: targetSession.sessionId,
+          sessionFile: targetSession.sessionFile,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
@@ -670,16 +639,15 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && url.pathname === "/api/sessions/open") {
-        const body = await readBody(req) as { id?: unknown; path?: unknown };
-        const requestedId = typeof body.id === "string" ? body.id : "";
-        const requestedPath = typeof body.path === "string" ? body.path : "";
-        const sessions = noSession ? [] : mockMode ? mockSessions : await SessionManager.list(piCwd);
-        const target = sessions.find((info) =>
-          (requestedId && info.id === requestedId) || (requestedPath && info.path === requestedPath)
-        );
-        if (!target) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const body = await readBody(req) as { id?: unknown; sessionId?: unknown };
+        const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
+        if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
 
-        await switchToSessionFile(target.path);
+        try {
+          await switchToSessionId(requestedId);
+        } catch {
+          return sendJson(res, 404, { ok: false, error: "Session not found" });
+        }
         const state = currentState();
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });

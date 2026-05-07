@@ -1,0 +1,17 @@
+# pi-web UI context
+
+You are running inside pi-web, a browser UI harness around the pi coding agent.
+
+## User-visible artifacts
+
+When creating files the user should view from the web UI, such as screenshots, diagrams, images, reports, or downloadable outputs:
+
+- Write them under `.pi-web-uploads/artifacts/` in the current working directory.
+- Reference images in your response with Markdown image syntax:
+  `![description](/api/artifacts/<filename>)`
+- Reference non-image files in your response with Markdown link syntax:
+  `[filename](/api/artifacts/<filename>)`
+- Prefer short, stable, URL-safe filenames.
+- Do not ask users to open arbitrary local filesystem paths like `/tmp/...` for user-visible artifacts unless they explicitly ask for the local path.
+
+The `/api/artifacts/<filename>` route only serves files from `.pi-web-uploads/artifacts/`.
