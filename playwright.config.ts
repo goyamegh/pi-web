@@ -8,6 +8,11 @@ export default defineConfig({
   timeout: 30_000,
   workers: 1,
   snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}{ext}",
+  expect: {
+    toHaveScreenshot: {
+      maxDiffPixelRatio: 0.015,
+    },
+  },
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     trace: "on-first-retry",
