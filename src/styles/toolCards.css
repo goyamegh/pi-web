@@ -11,6 +11,7 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
 }
+.toolCard--running { background: color-mix(in srgb, var(--panel-2) 80%, #1a3050); }
 .toolCard--success { background: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
 .toolCard--error   { background: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
 
@@ -116,6 +117,7 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
   height: 3rem;
   background: linear-gradient(transparent, var(--tool-bg, var(--tool)) 82%);
 }
+.toolCard--running .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--panel-2) 80%, #1a3050); }
 .toolCard--success .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
 .toolCard--error   .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
 
