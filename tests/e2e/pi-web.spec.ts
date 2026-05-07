@@ -26,7 +26,7 @@ test.describe("composer layout", () => {
 
   test("non-send composer action icons are borderless", async ({ page }) => {
     await page.goto("/");
-    for (const selector of ["#thinkingButton", "#queueToggle", "#attachButton", "#tokenButton"]) {
+    for (const selector of ["#thinkingButton", "#queueToggle", "#attachButton"]) {
       const styles = await page.locator(selector).evaluate((el) => getComputedStyle(el));
       expect(styles.borderTopColor).toBe("rgba(0, 0, 0, 0)");
       expect(styles.backgroundColor).toBe("rgba(0, 0, 0, 0)");

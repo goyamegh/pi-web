@@ -6,6 +6,13 @@
     <title>pi web</title>
   </head>
   <body>
+    <div id="tokenOverlay" class="tokenOverlay" hidden>
+      <form id="tokenForm" class="tokenForm">
+        <label for="tokenInput">Enter PI_WEB_TOKEN to continue</label>
+        <input id="tokenInput" type="password" placeholder="Token" autocomplete="current-password" />
+        <button type="submit" class="primaryAction">Connect</button>
+      </form>
+    </div>
     <main class="app">
       <section id="messages" class="messages" aria-live="polite"></section>
 
@@ -46,8 +53,8 @@
           <button id="attachButton" class="iconButton" type="button" aria-label="Attach images" title="Attach images">
             <span data-icon="paperclip"></span>
           </button>
-          <button id="tokenButton" class="iconButton" type="button" aria-label="Set token" title="Set token">
-            <span data-icon="key-round"></span>
+          <button id="stopButton" class="iconButton dangerAction" type="button" aria-label="Stop streaming" title="Stop streaming" style="display:none">
+            <span data-icon="square"></span>
           </button>
           <button id="primaryButton" class="iconButton primaryAction" type="submit" aria-label="Send" title="Send">
             <span data-icon="send-horizontal"></span>

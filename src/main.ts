@@ -219,7 +219,10 @@ const metaEl = requiredElement<HTMLParagraphElement>("#meta");
 const formEl = requiredElement<HTMLFormElement>("#promptForm");
 const promptEl = requiredElement<HTMLTextAreaElement>("#prompt");
 const primaryButton = requiredElement<HTMLButtonElement>("#primaryButton");
-const tokenButton = requiredElement<HTMLButtonElement>("#tokenButton");
+const stopButton = requiredElement<HTMLButtonElement>("#stopButton");
+const tokenOverlay = requiredElement<HTMLDivElement>("#tokenOverlay");
+const tokenForm = requiredElement<HTMLFormElement>("#tokenForm");
+const tokenInput = requiredElement<HTMLInputElement>("#tokenInput");
 const sessionButton = requiredElement<HTMLButtonElement>("#sessionButton");
 const sessionDrawer = requiredElement<HTMLElement>("#sessionDrawer");
 const sessionBackdrop = requiredElement<HTMLDivElement>("#sessionBackdrop");
@@ -257,6 +260,15 @@ function queueAssistantMarkdownRender(body: HTMLElement, text: string) {
   });
 }
 
+{
+  const urlToken = new URLSearchParams(location.search).get("token");
+  if (urlToken) {
+    localStorage.setItem("pi-web-token", urlToken);
+    const url = new URL(location.href);
+    url.searchParams.delete("token");
+    history.replaceState(null, "", url.toString());
+  }
+}
 let token = localStorage.getItem("pi-web-token") || "";
 let streamingAssistant: HTMLDivElement | null = null;
 const activeToolCards = new Map<string, HTMLDivElement>();
@@ -311,11 +323,9 @@ function setIcon(button: HTMLButtonElement, name: keyof typeof iconNodes) {
 }
 
 function updatePrimaryAction() {
-  primaryButton.disabled = !isStreaming && !promptEl.value.trim() && attachedImages.length === 0;
-  primaryButton.classList.toggle("dangerAction", isStreaming);
-  primaryButton.title = isStreaming ? "Stop streaming" : "Send";
-  primaryButton.setAttribute("aria-label", primaryButton.title);
-  setIcon(primaryButton, isStreaming ? "square" : "send-horizontal");
+  const hasInput = !!promptEl.value.trim() || attachedImages.length > 0;
+  primaryButton.disabled = !hasInput;
+  stopButton.style.display = isStreaming ? "" : "none";
 }
 
 function updateQueueToggle() {
@@ -674,7 +684,8 @@ async function refreshSessions() {
 async function refreshState() {
   const res = await fetch("/api/state", { headers: apiHeaders() });
   if (res.status === 401) {
-    metaEl.textContent = "Token required. Click Token to enter it.";
+    tokenOverlay.hidden = false;
+    tokenInput.focus();
     return;
   }
   if (!res.ok) throw new Error(await res.text());
@@ -1066,6 +1077,15 @@ function connect() {
 }
 
 async function runSlashCommand(command: string) {
+  const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
+  if (name === "logout") {
+    token = "";
+    localStorage.removeItem("pi-web-token");
+    tokenInput.value = "";
+    tokenOverlay.hidden = false;
+    tokenInput.focus();
+    return;
+  }
   const res = await fetch("/api/command", {
     method: "POST",
     headers: apiHeaders(),
@@ -1081,17 +1101,13 @@ async function runSlashCommand(command: string) {
     if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
   }
   await refreshModels();
-  const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
   if (name === "new" || name === "new-chat" || name === "clear") await refreshMessages();
   if (data.message) addMessage("system", data.message);
 }
 
 formEl.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (isStreaming) {
-    await fetch("/api/abort", { method: "POST", headers: apiHeaders(), body: JSON.stringify({ sessionId: currentSessionId }) });
-    return;
-  }
+  if (isStreaming && !promptEl.value.trim() && attachedImages.length === 0) return;
 
   const message = promptEl.value.trim();
   const images = attachedImages.map(({ type, data, mimeType, name }) => ({ type, data, mimeType, name }));
@@ -1154,6 +1170,10 @@ imageInput.addEventListener("change", async () => {
   }
 });
 
+stopButton.addEventListener("click", async () => {
+  await fetch("/api/abort", { method: "POST", headers: apiHeaders(), body: JSON.stringify({ sessionId: currentSessionId }) });
+});
+
 queueToggle.addEventListener("click", () => {
   queueMode = queueMode === "steer" ? "followUp" : "steer";
   updateQueueToggle();
@@ -1212,18 +1232,20 @@ thinkingButton.addEventListener("click", () => {
   setModelFromControls();
 });
 
-tokenButton.addEventListener("click", async () => {
-  const next = prompt("PI_WEB_TOKEN", token);
-  if (next === null) return;
-  token = next.trim();
-  if (token) localStorage.setItem("pi-web-token", token);
-  else localStorage.removeItem("pi-web-token");
-  location.reload();
+tokenForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const val = tokenInput.value.trim();
+  if (!val) return;
+  token = val;
+  localStorage.setItem("pi-web-token", token);
+  tokenOverlay.hidden = true;
+  refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
 });
 
 setIcon(sessionButton, "menu");
-setIcon(tokenButton, "key-round");
 setIcon(attachButton, "paperclip");
+setIcon(primaryButton, "send-horizontal");
+setIcon(stopButton, "square");
 updateQueueToggle();
 updatePrimaryAction();
 refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
