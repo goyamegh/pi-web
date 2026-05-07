@@ -284,7 +284,11 @@ const activeToolCards = new Map<string, HTMLDivElement>();
 let currentModelKey = "";
 let currentThinkingLevel = "off";
 let currentSessionId = "";
+let currentCwd = "";
 let isStreaming = false;
+const collapsedSessionFolders = new Set<string>(JSON.parse(localStorage.getItem("pi-web-collapsed-session-folders") || "[]"));
+const expandedSessionFolders = new Set<string>();
+const sessionFolderPreviewLimit = 8;
 let queueMode: "steer" | "followUp" = "steer";
 
 type ImageAttachment = {
@@ -301,6 +305,7 @@ type SessionInfo = {
   created: string;
   modified: string;
   messageCount: number;
+  cwd?: string;
   isCurrent: boolean;
   runtime?: {
     loaded: boolean;
@@ -545,7 +550,8 @@ function updateMeta(data: any) {
   currentModelKey = modelKey(data.model);
   currentThinkingLevel = data.thinkingLevel || "off";
   currentSessionId = data.sessionId || currentSessionId;
-  statusPathEl.textContent = data.cwd || "";
+  currentCwd = data.cwd || currentCwd;
+  statusPathEl.textContent = currentCwd;
   updateThinkingButton();
 }
 
@@ -590,6 +596,111 @@ async function refreshModels() {
   updateThinkingOptions(data.thinkingLevels || [currentThinkingLevel]);
 }
 
+function renderEmptyCwdChooser() {
+  if (messagesEl.children.length || isStreaming) return;
+  const panel = document.createElement("div");
+  panel.className = "emptyCwdChooser";
+  const label = document.createElement("div");
+  label.className = "emptyCwdLabel";
+  label.textContent = "Working directory";
+  const path = document.createElement("div");
+  path.className = "emptyCwdPath";
+  path.textContent = currentCwd;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "emptyCwdButton";
+  button.textContent = "Change folder";
+  button.addEventListener("click", () => openFolderPicker(currentCwd));
+  panel.append(label, path, button);
+  messagesEl.append(panel);
+}
+
+async function selectSessionCwd(cwd: string) {
+  const res = await fetch("/api/session/cwd", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({ cwd }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+  updateMeta(data);
+  if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
+  await refreshModels();
+  await refreshMessages();
+  refreshSessionTitle();
+}
+
+async function openFolderPicker(startPath: string) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "folderPickerBackdrop";
+  const modal = document.createElement("div");
+  modal.className = "folderPicker";
+  const title = document.createElement("h2");
+  title.textContent = "Select working directory";
+  const input = document.createElement("input");
+  input.className = "folderPickerInput";
+  input.value = startPath;
+  const list = document.createElement("div");
+  list.className = "folderPickerList";
+  const error = document.createElement("div");
+  error.className = "folderPickerError";
+  const actions = document.createElement("div");
+  actions.className = "folderPickerActions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  const select = document.createElement("button");
+  select.type = "button";
+  select.className = "primaryAction";
+  select.textContent = "Select folder";
+  actions.append(cancel, select);
+  modal.append(title, input, list, error, actions);
+  backdrop.append(modal);
+  document.body.append(backdrop);
+
+  async function load(path: string) {
+    error.textContent = "";
+    list.textContent = "Loading…";
+    const res = await fetch(`/api/fs/dirs?path=${encodeURIComponent(path)}`, { headers: apiHeaders() });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) throw new Error(data.error || "Could not list directory");
+    input.value = data.path;
+    list.textContent = "";
+    const up = document.createElement("button");
+    up.type = "button";
+    up.className = "folderPickerRow";
+    up.textContent = "..";
+    up.addEventListener("click", () => load(data.parent).catch((e) => { error.textContent = e.message; }));
+    list.append(up);
+    for (const dir of data.dirs || []) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "folderPickerRow";
+      row.textContent = dir.name;
+      row.addEventListener("click", () => load(dir.path).catch((e) => { error.textContent = e.message; }));
+      list.append(row);
+    }
+  }
+
+  cancel.addEventListener("click", () => backdrop.remove());
+  backdrop.addEventListener("click", (event) => { if (event.target === backdrop) backdrop.remove(); });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") load(input.value).catch((e) => { error.textContent = e.message; });
+  });
+  select.addEventListener("click", async () => {
+    try {
+      select.disabled = true;
+      await selectSessionCwd(input.value);
+      backdrop.remove();
+    } catch (e) {
+      error.textContent = e instanceof Error ? e.message : String(e);
+      select.disabled = false;
+    }
+  });
+  load(startPath).catch((e) => { error.textContent = e.message; list.textContent = ""; });
+  input.focus();
+}
+
 async function refreshMessages() {
   const query = currentSessionId ? `?sessionId=${encodeURIComponent(currentSessionId)}` : "";
   const res = await fetch(`/api/messages${query}`, { headers: apiHeaders() });
@@ -614,6 +725,7 @@ async function refreshMessages() {
     const rawImages = role === "user" ? imagesFromRawContent(message.raw?.content || message.content) : [];
     addMessage(role, text, "", rawImages);
   }
+  renderEmptyCwdChooser();
 }
 
 function formatSessionDate(value: string) {
@@ -624,6 +736,29 @@ function formatSessionDate(value: string) {
 
 function sessionTitle(session: SessionInfo) {
   return session.name || session.firstMessage?.trim() || "New session";
+}
+
+function folderName(path: string) {
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts.at(-1) || path || "Folder";
+}
+
+function persistCollapsedSessionFolders() {
+  localStorage.setItem("pi-web-collapsed-session-folders", JSON.stringify(Array.from(collapsedSessionFolders)));
+}
+
+async function startNewSession(cwd?: string) {
+  const res = await fetch("/api/sessions/new", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: cwd ? JSON.stringify({ cwd }) : undefined,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  setSessionDrawerOpen(false);
+  messagesEl.textContent = "";
+  streamingAssistant = null;
+  await refreshState();
+  renderEmptyCwdChooser();
 }
 
 function setSessionDrawerOpen(open: boolean) {
@@ -648,48 +783,127 @@ async function refreshSessions() {
     return;
   }
 
+  const groups = new Map<string, SessionInfo[]>();
   for (const item of sessions) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `sessionItem${item.isCurrent ? " current" : ""}`;
-    button.disabled = item.isCurrent;
+    const cwd = item.cwd || currentCwd || "";
+    groups.set(cwd, [...(groups.get(cwd) || []), item]);
+  }
 
-    const titleRow = document.createElement("span");
-    titleRow.className = "sessionItemTitleRow";
+  for (const [cwd, items] of groups) {
+    const group = document.createElement("section");
+    group.className = "sessionFolderGroup";
 
-    const title = document.createElement("span");
-    title.className = "sessionItemTitle";
-    title.textContent = sessionTitle(item);
-    titleRow.append(title);
+    const header = document.createElement("div");
+    header.className = "sessionFolderHeader";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "sessionFolderToggle";
+    toggle.setAttribute("aria-expanded", String(!collapsedSessionFolders.has(cwd)));
+    toggle.title = collapsedSessionFolders.has(cwd) ? "Expand folder" : "Collapse folder";
+    const chevron = document.createElement("span");
+    chevron.className = "sessionFolderChevron";
+    chevron.textContent = collapsedSessionFolders.has(cwd) ? "▸" : "▾";
+    const labels = document.createElement("span");
+    labels.className = "sessionFolderLabels";
+    const name = document.createElement("span");
+    name.className = "sessionFolderName";
+    name.textContent = folderName(cwd);
+    const path = document.createElement("span");
+    path.className = "sessionFolderPath";
+    path.textContent = cwd;
+    labels.append(name, path);
+    toggle.append(chevron, labels);
+    toggle.addEventListener("click", () => {
+      if (collapsedSessionFolders.has(cwd)) collapsedSessionFolders.delete(cwd);
+      else collapsedSessionFolders.add(cwd);
+      persistCollapsedSessionFolders();
+      refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+    });
 
-    if (item.runtime?.isRunning) {
-      const spinner = document.createElement("span");
-      spinner.className = "sessionSpinner";
-      spinner.title = item.runtime.isCompacting ? "Compacting" : "Running";
-      spinner.setAttribute("aria-label", spinner.title);
-      titleRow.append(spinner);
-    }
-
-    const meta = document.createElement("span");
-    meta.className = "sessionItemMeta";
-    meta.textContent = `${formatSessionDate(item.modified)} · ${item.messageCount} message${item.messageCount === 1 ? "" : "s"}`;
-
-    button.append(titleRow, meta);
-    button.addEventListener("click", async () => {
+    const newButton = document.createElement("button");
+    newButton.type = "button";
+    newButton.className = "iconButton sessionFolderNewButton";
+    newButton.title = `New session in ${folderName(cwd)}`;
+    newButton.setAttribute("aria-label", newButton.title);
+    setIcon(newButton, "square-pen");
+    newButton.addEventListener("click", async () => {
       try {
-        const openRes = await fetch("/api/sessions/open", {
-          method: "POST",
-          headers: apiHeaders(),
-          body: JSON.stringify({ sessionId: item.id }),
-        });
-        if (!openRes.ok) throw new Error(await openRes.text());
-        setSessionDrawerOpen(false);
-        await refreshState();
+        await startNewSession(cwd);
       } catch (error) {
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       }
     });
-    sessionListEl.append(button);
+    header.append(toggle, newButton);
+    group.append(header);
+
+    if (collapsedSessionFolders.has(cwd)) {
+      sessionListEl.append(group);
+      continue;
+    }
+
+    const folderExpanded = expandedSessionFolders.has(cwd);
+    const visibleItems = folderExpanded ? items : items.slice(0, sessionFolderPreviewLimit);
+
+    for (const item of visibleItems) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sessionItem${item.isCurrent ? " current" : ""}`;
+      button.disabled = item.isCurrent;
+
+      const titleRow = document.createElement("span");
+      titleRow.className = "sessionItemTitleRow";
+
+      const title = document.createElement("span");
+      title.className = "sessionItemTitle";
+      title.textContent = sessionTitle(item);
+      titleRow.append(title);
+
+      if (item.runtime?.isRunning) {
+        const spinner = document.createElement("span");
+        spinner.className = "sessionSpinner";
+        spinner.title = item.runtime.isCompacting ? "Compacting" : "Running";
+        spinner.setAttribute("aria-label", spinner.title);
+        titleRow.append(spinner);
+      }
+
+      const meta = document.createElement("span");
+      meta.className = "sessionItemMeta";
+      meta.textContent = `${formatSessionDate(item.modified)} · ${item.messageCount} message${item.messageCount === 1 ? "" : "s"}`;
+
+      button.append(titleRow, meta);
+      button.addEventListener("click", async () => {
+        try {
+          const openRes = await fetch("/api/sessions/open", {
+            method: "POST",
+            headers: apiHeaders(),
+            body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd }),
+          });
+          if (!openRes.ok) throw new Error(await openRes.text());
+          setSessionDrawerOpen(false);
+          await refreshState();
+        } catch (error) {
+          addMessage("system", error instanceof Error ? error.message : String(error), "error");
+        }
+      });
+      group.append(button);
+    }
+
+    if (items.length > sessionFolderPreviewLimit) {
+      const moreButton = document.createElement("button");
+      moreButton.type = "button";
+      moreButton.className = "sessionFolderMoreButton";
+      moreButton.textContent = folderExpanded
+        ? "Show fewer"
+        : `Show all ${items.length} sessions`;
+      moreButton.addEventListener("click", () => {
+        if (folderExpanded) expandedSessionFolders.delete(cwd);
+        else expandedSessionFolders.add(cwd);
+        refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+      });
+      group.append(moreButton);
+    }
+
+    sessionListEl.append(group);
   }
 }
 
@@ -906,7 +1120,7 @@ async function refreshSessionTitle() {
 
 function connect() {
   const ws = new WebSocket(wsUrl());
-  ws.addEventListener("open", () => addMessage("system", "Connected"));
+  ws.addEventListener("open", () => undefined);
   ws.addEventListener("message", (message) => {
     const data = JSON.parse(String(message.data));
     if (data.type === "hello" || data.type === "state_changed") {
@@ -1048,24 +1262,20 @@ queueToggle.addEventListener("click", () => {
 
 sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
 newSessionHeaderButton.addEventListener("click", async () => {
-  const res = await fetch("/api/sessions/new", { method: "POST", headers: apiHeaders() });
-  if (!res.ok) return addMessage("system", await res.text(), "error");
-  setSessionDrawerOpen(false);
-  messagesEl.textContent = "";
-  streamingAssistant = null;
-  await refreshState();
-  addMessage("system", "New session");
+  try {
+    await startNewSession();
+  } catch (error) {
+    addMessage("system", error instanceof Error ? error.message : String(error), "error");
+  }
 });
 sessionCloseButton.addEventListener("click", () => setSessionDrawerOpen(false));
 sessionBackdrop.addEventListener("click", () => setSessionDrawerOpen(false));
 sessionNewButton.addEventListener("click", async () => {
-  const res = await fetch("/api/sessions/new", { method: "POST", headers: apiHeaders() });
-  if (!res.ok) return addMessage("system", await res.text(), "error");
-  setSessionDrawerOpen(false);
-  messagesEl.textContent = "";
-  streamingAssistant = null;
-  await refreshState();
-  addMessage("system", "New session");
+  try {
+    await startNewSession();
+  } catch (error) {
+    addMessage("system", error instanceof Error ? error.message : String(error), "error");
+  }
 });
 
 async function setModelFromControls() {

@@ -1,0 +1,106 @@
+.emptyCwdChooser {
+  margin: auto;
+  align-self: center;
+  max-width: min(680px, calc(100% - 32px));
+  text-align: center;
+  color: var(--text);
+  padding: 28px;
+  border-radius: 18px;
+}
+
+.emptyCwdLabel {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.emptyCwdPath {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+  margin-bottom: 18px;
+}
+
+.emptyCwdButton,
+.folderPickerActions button {
+  min-height: 34px;
+  border-radius: 10px;
+  padding: 0 14px;
+}
+
+.folderPickerBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .55);
+  backdrop-filter: blur(8px);
+}
+
+.folderPicker {
+  width: min(720px, calc(100vw - 28px));
+  max-height: min(720px, calc(100vh - 28px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .45);
+  padding: 18px;
+}
+
+.folderPicker h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.folderPickerInput {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.folderPickerList {
+  min-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 6px;
+}
+
+.folderPickerRow {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 0 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.folderPickerRow:hover {
+  border: none;
+  background: var(--panel-2);
+}
+
+.folderPickerError {
+  min-height: 18px;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.folderPickerActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}

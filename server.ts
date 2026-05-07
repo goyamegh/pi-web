@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -27,8 +27,9 @@ const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "develo
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
-const piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
-const artifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
+let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
+let artifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
+const knownCwds = new Set<string>([piCwd]);
 const webUiContextFile = join(appDir, "contexts", "web-ui.md");
 const noSession = process.env.PI_WEB_NO_SESSION === "1";
 const mockMode = process.env.PI_WEB_MOCK === "1";
@@ -144,6 +145,33 @@ async function git(args: string[], timeout = 15_000) {
 
 async function isGitRepo() {
   try { await git(["rev-parse", "--is-inside-work-tree"]); return true; } catch { return false; }
+}
+
+async function assertDirectory(path: string) {
+  const resolved = resolve(path || piCwd);
+  const info = await stat(resolved);
+  if (!info.isDirectory()) throw new Error("Path is not a directory");
+  return resolved;
+}
+
+async function listDirectories(path: string) {
+  const resolved = await assertDirectory(path);
+  const entries = await readdir(resolved, { withFileTypes: true });
+  const dirs = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({ name: entry.name, path: join(resolved, entry.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { ok: true, path: resolved, parent: resolve(resolved, ".."), dirs };
+}
+
+function hasUserMessages(value: PiWebSession) {
+  return value.messages.some((message: any) => message?.role === "user");
+}
+
+async function setPiCwd(path: string) {
+  piCwd = await assertDirectory(path);
+  knownCwds.add(piCwd);
+  artifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
 }
 
 function gitLabel(indexStatus: string, worktreeStatus: string) {
@@ -331,7 +359,7 @@ function runtimeForPath(path: string) {
   };
 }
 
-function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number]) {
+function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd) {
   return {
     id: info.id,
     name: info.name,
@@ -339,16 +367,24 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     created: info.created.toISOString(),
     modified: info.modified.toISOString(),
     messageCount: info.messageCount,
-    isCurrent: info.id === session.sessionId,
+    cwd,
+    isCurrent: cwd === piCwd && info.id === session.sessionId,
     runtime: runtimeForPath(info.path),
   };
 }
 
 async function listSessionInfos() {
   if (noSession) return [];
-  if (mockMode) return mockSessions.map(simplifySessionInfo);
-  const sessions = await SessionManager.list(piCwd);
-  return sessions.map(simplifySessionInfo);
+  if (mockMode) return mockSessions.map((info) => simplifySessionInfo(info as any, info.cwd || piCwd));
+  const groups = await Promise.all(Array.from(knownCwds).map(async (cwd) => {
+    try {
+      const sessions = await SessionManager.list(cwd);
+      return sessions.map((info) => simplifySessionInfo(info, cwd));
+    } catch {
+      return [];
+    }
+  }));
+  return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
 }
 
 function currentState() {
@@ -453,9 +489,9 @@ async function executeSlashCommand(input: string) {
   }
 }
 
-async function findSessionInfoById(id: string) {
+async function findSessionInfoById(id: string, cwd = piCwd) {
   if (!id) return undefined;
-  const sessions = noSession ? [] : mockMode ? mockSessions : await SessionManager.list(piCwd);
+  const sessions = noSession ? [] : mockMode ? mockSessions : await SessionManager.list(cwd);
   return sessions.find((info) => info.id === id);
 }
 
@@ -574,13 +610,22 @@ async function getOrCreateLiveSession(path: string) {
   return registerLiveSession(created.session);
 }
 
-async function createNewLiveSession() {
+async function createNewLiveSession(cwd?: string) {
+  if (cwd) await setPiCwd(cwd);
   const created = await makeAgentSession();
   if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
   const value = created.session;
   value.sessionManager.newSession();
   value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
   return registerLiveSession(value);
+}
+
+async function switchEmptySessionCwd(cwd: string) {
+  if (session.isStreaming) throw new Error("Wait for the current response to finish before changing the working directory.");
+  if (session.isCompacting) throw new Error("Wait for compaction to finish before changing the working directory.");
+  if (hasUserMessages(session)) throw new Error("Working directory can only be changed before the first message.");
+  session = await createNewLiveSession(cwd);
+  return currentStateWithThinkingLevels();
 }
 
 const createdSession = await makeAgentSession();
@@ -611,6 +656,14 @@ const server = createServer(async (req, res) => {
         session = registerLiveSession(createMockSession());
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
+      }
+
+      if (method === "GET" && url.pathname === "/api/fs/dirs") {
+        try {
+          return sendJson(res, 200, await listDirectories(url.searchParams.get("path") || piCwd));
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
       }
 
       if (method === "GET" && url.pathname === "/api/git/status") {
@@ -784,23 +837,38 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
-        session = await createNewLiveSession();
-        const state = currentState();
+        const body = await readBody(req) as { cwd?: unknown };
+        session = await createNewLiveSession(typeof body.cwd === "string" ? body.cwd : undefined);
+        const state = currentStateWithThinkingLevels();
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
 
+      if (method === "POST" && url.pathname === "/api/session/cwd") {
+        const body = await readBody(req) as { cwd?: unknown };
+        const cwd = String(body.cwd || "").trim();
+        if (!cwd) return sendJson(res, 400, { ok: false, error: "cwd is required" });
+        try {
+          const state = await switchEmptySessionCwd(cwd);
+          broadcast({ type: "state_changed", ...state });
+          return sendJson(res, 200, { ok: true, ...state });
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
       if (method === "POST" && url.pathname === "/api/sessions/open") {
-        const body = await readBody(req) as { id?: unknown; sessionId?: unknown };
+        const body = await readBody(req) as { id?: unknown; sessionId?: unknown; cwd?: unknown };
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
 
         try {
+          if (typeof body.cwd === "string" && body.cwd.trim()) await setPiCwd(body.cwd);
           await switchToSessionId(requestedId);
         } catch {
           return sendJson(res, 404, { ok: false, error: "Session not found" });
         }
-        const state = currentState();
+        const state = currentStateWithThinkingLevels();
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }

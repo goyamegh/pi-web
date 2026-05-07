@@ -41,6 +41,96 @@
   gap: 8px;
   overflow: auto;
 }
+.sessionFolderGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sessionFolderHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 2px 2px;
+}
+.sessionFolderToggle {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  height: auto;
+  min-height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  padding: 4px 6px;
+  text-align: left;
+}
+.sessionFolderToggle:hover {
+  border: none;
+  background: var(--panel-2);
+}
+.sessionFolderChevron {
+  flex: 0 0 auto;
+  width: 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.sessionFolderLabels {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.sessionFolderName {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessionFolderPath {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessionFolderNewButton {
+  flex: 0 0 auto;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+.sessionFolderNewButton:hover {
+  border: none;
+  background: var(--panel-2);
+  color: var(--accent);
+}
+.sessionFolderNewButton svg {
+  width: 15px;
+  height: 15px;
+}
+.sessionFolderMoreButton {
+  height: 32px;
+  min-height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+.sessionFolderMoreButton:hover {
+  border: none;
+  background: var(--panel-2);
+  color: var(--accent);
+}
 .sessionItem {
   display: flex;
   flex-shrink: 0;
