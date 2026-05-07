@@ -26,7 +26,18 @@
   line-height: 1;
 }
 /* state-specific icon glyphs via ::before */
-.toolCard--running .toolCardIcon::before { content: "◌"; color: var(--muted); animation: toolSpin 1s linear infinite; display: inline-block; }
+.toolCard--running .toolCardIcon::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--muted) 30%, transparent);
+  border-top-color: var(--muted);
+  animation: toolSpin 0.65s linear infinite;
+  vertical-align: -1px;
+  box-sizing: border-box;
+}
 .toolCard--success .toolCardIcon::before { content: "✓"; color: #4ade80; }
 .toolCard--error   .toolCardIcon::before { content: "✗"; color: var(--danger); }
 @keyframes toolSpin { to { transform: rotate(360deg); } }
