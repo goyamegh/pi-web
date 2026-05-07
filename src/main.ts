@@ -944,11 +944,13 @@ function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<str
   statusIcon.className = "toolCardIcon";
   statusIcon.setAttribute("aria-hidden", "true");
 
+  const label = document.createElement("span");
+  label.className = "toolCardLabel";
+
   const name = document.createElement("span");
   name.className = "toolCardName";
   name.textContent = toolName;
-
-  header.append(statusIcon, name);
+  label.append(name);
 
   if (args) {
     const sub = toolSubtitle(toolName, args);
@@ -956,9 +958,12 @@ function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<str
       const subtitle = document.createElement("span");
       subtitle.className = "toolCardSubtitle";
       subtitle.textContent = sub;
-      header.append(subtitle);
+      label.append(subtitle);
+      label.addEventListener("click", () => label.classList.toggle("expanded"));
     }
   }
+
+  header.append(statusIcon, label);
 
   card.append(header);
 }

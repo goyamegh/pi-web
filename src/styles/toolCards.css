@@ -43,21 +43,30 @@
 .toolCard--error   .toolCardIcon::before { content: "✗"; color: var(--danger); }
 @keyframes toolSpin { to { transform: rotate(360deg); } }
 
+.toolCardLabel {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.toolCardLabel.expanded {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  word-break: break-all;
+}
 .toolCardName {
-  flex: 0 0 auto;
   color: var(--text);
   font-weight: 700;
   font-size: 13px;
   letter-spacing: -0.01em;
 }
 .toolCardSubtitle {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--muted);
   font-size: 12px;
+  margin-left: 0.4ch;
 }
 .toolCardDetails {
   border-top: 1px solid var(--border);
