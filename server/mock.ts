@@ -102,7 +102,7 @@ export function createMockHarness(options: MockSessionOptions) {
             { type: "toolCall", id: "call-showcase-read", toolName: "read", arguments: { path: "/Users/ashwin/projects/pi-web/src/style.css" } },
             { type: "text", text: "The global button height was constraining session rows, so I patched the drawer-specific styles." },
             { type: "toolCall", id: "call-showcase-edit", toolName: "edit", arguments: editArgs },
-            { type: "text", text: "Visual snapshots now cover the polished desktop and mobile states.\n\n![pi-web workflow](/api/artifacts/e2e-test.png)" },
+            { type: "text", text: "Visual snapshots now cover the polished desktop and mobile states.\n\n![pi-web workflow](/api/artifacts/e2e-test.jpg)" },
           ], timestamp: new Date().toISOString() });
           mockMessages.push({ role: "toolResult", toolCallId: "call-showcase-read", toolName: "read", content: "session drawer CSS and responsive composer styles", timestamp: new Date().toISOString() });
           mockMessages.push({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /Users/ashwin/projects/pi-web/src/style.css.", timestamp: new Date().toISOString() });

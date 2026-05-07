@@ -24,7 +24,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   const artifactDir = join(process.cwd(), ".pi-web-uploads", "artifacts");
   await mkdir(artifactDir, { recursive: true });
-  await writeFile(join(artifactDir, "e2e-test.png"), await readFile(join(process.cwd(), "tests", "fixtures", "showcase-artifact.png")));
+  await writeFile(join(artifactDir, "e2e-test.jpg"), await readFile(join(process.cwd(), "tests", "fixtures", "showcase-artifact.jpg")));
   await page.addStyleTag({
     content: `
       *, *::before, *::after {
@@ -80,6 +80,7 @@ test.describe("visual regression", () => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
 
     await page.goto("/");
+    await startEmptySession(page);
     await sendPrompt(page, "edit diff");
     await expect(page.locator(".toolCard.toolCard--success", { hasText: "edit" })).toBeVisible();
     await scrollMessagesToBottom(page);
