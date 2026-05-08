@@ -168,13 +168,15 @@
 }
 .messageToggle {
   display: inline-flex;
-  min-height: 28px;
-  margin-top: 10px;
+  height: auto;
+  min-height: 0;
+  margin-top: 4px;
   border: none;
   background: transparent;
   color: var(--accent);
-  padding: 4px 8px;
-  font-size: 12px;
+  padding: 1px 4px;
+  font-size: 11px;
+  line-height: 1.4;
 }
 .messageToggle:hover { border: none; }
 .message .role {

@@ -15,6 +15,13 @@ function updateLayoutToggle(button: HTMLButtonElement, stacked: boolean) {
   button.title = label;
 }
 
+function updateCollapseToggle(button: HTMLButtonElement, collapsed: boolean) {
+  button.textContent = collapsed ? "▾" : "▴";
+  button.setAttribute("aria-label", collapsed ? "Show more" : "Show less");
+  button.title = collapsed ? "Show more" : "Show less";
+  button.setAttribute("aria-expanded", String(!collapsed));
+}
+
 export function renderEditDiff(card: HTMLDivElement, args: Record<string, unknown>) {
   const edits = normalizeEditHunks(args.edits);
   if (edits.length === 0) return;
@@ -44,11 +51,16 @@ export function renderEditDiff(card: HTMLDivElement, args: Record<string, unknow
   if (collapsible) {
     const toggle = document.createElement("button");
     toggle.type = "button";
-    toggle.className = "messageToggle";
-    toggle.textContent = "Show more";
-    toggle.addEventListener("click", () => {
-      const isCollapsed = container.classList.toggle("collapsed");
-      toggle.textContent = isCollapsed ? "Show more" : "Show less";
+    toggle.className = "toolCardCollapseToggle";
+    const setCollapsed = (collapsed: boolean) => {
+      container.classList.toggle("collapsed", collapsed);
+      updateCollapseToggle(toggle, collapsed);
+    };
+    setCollapsed(true);
+    container.addEventListener("click", () => setCollapsed(!container.classList.contains("collapsed")));
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setCollapsed(!container.classList.contains("collapsed"));
     });
     card.append(toggle);
   }

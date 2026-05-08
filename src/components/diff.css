@@ -33,6 +33,8 @@
   position: relative;
   max-height: 12rem;
   overflow: hidden;
+  cursor: pointer;
+  padding-right: 36px;
 }
 .diffContainer.collapsed::after {
   content: "";

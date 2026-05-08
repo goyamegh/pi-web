@@ -1001,11 +1001,19 @@ function addToolResultBody(card: HTMLDivElement, result: string) {
   if (collapsible) {
     const toggle = document.createElement("button");
     toggle.type = "button";
-    toggle.className = "messageToggle";
-    toggle.textContent = "Show more";
-    toggle.addEventListener("click", () => {
-      const isCollapsed = body.classList.toggle("collapsed");
-      toggle.textContent = isCollapsed ? "Show more" : "Show less";
+    toggle.className = "toolCardCollapseToggle";
+    const setCollapsed = (collapsed: boolean) => {
+      body.classList.toggle("collapsed", collapsed);
+      toggle.textContent = collapsed ? "▾" : "▴";
+      toggle.setAttribute("aria-label", collapsed ? "Show more" : "Show less");
+      toggle.title = collapsed ? "Show more" : "Show less";
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+    };
+    setCollapsed(true);
+    body.addEventListener("click", () => setCollapsed(!body.classList.contains("collapsed")));
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setCollapsed(!body.classList.contains("collapsed"));
     });
     card.append(toggle);
   }
