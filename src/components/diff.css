@@ -15,15 +15,15 @@
   justify-content: center;
   width: 26px;
   height: 26px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
   padding: 0;
   cursor: pointer;
 }
 .diffLayoutToggle svg { width: 14px; height: 14px; }
-.diffLayoutToggle:hover { color: var(--text); border-color: var(--muted); }
+.diffLayoutToggle:hover { color: var(--text); background: var(--panel-2); border-color: transparent; }
 .diffContainer {
   margin: 0;
   padding: 0 0 6px;
