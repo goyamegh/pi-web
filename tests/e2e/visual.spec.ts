@@ -60,7 +60,13 @@ async function mockGitApi(page: import("@playwright/test").Page) {
     " }",
   ].join("\n");
 
-  await page.route("**/api/git/status", (route) => route.fulfill({ json: {
+  await page.route("**/api/git/repos", (route) => route.fulfill({ json: {
+    ok: true,
+    cwd: "/Users/ashwin/projects/pi-web",
+    depth: 1,
+    repos: [{ path: ".", root: "/Users/ashwin/projects/pi-web", branch: "main", upstream: "origin/main", ahead: 0, behind: 0, dirtyCount: 2, isCurrent: true }],
+  } }));
+  await page.route("**/api/git/status?**", (route) => route.fulfill({ json: {
     ok: true,
     isRepo: true,
     root: "/Users/ashwin/projects/pi-web",
@@ -74,7 +80,7 @@ async function mockGitApi(page: import("@playwright/test").Page) {
       { path: "src/git/commitView.ts", indexStatus: " ", worktreeStatus: "M", label: "modified", staged: false },
     ],
   } }));
-  await page.route("**/api/git/log", (route) => route.fulfill({ json: { ok: true, isRepo: true, commits: [
+  await page.route("**/api/git/log?**", (route) => route.fulfill({ json: { ok: true, isRepo: true, commits: [
     commit,
     { ...commit, hash: "3179eff000000000000000000000000000000000", shortHash: "3179eff", parents: [], refs: [], subject: "Use downloaded showcase image fixture" },
   ] } }));

@@ -4,7 +4,7 @@ import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { extname, join, resolve } from "node:path";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -140,12 +140,12 @@ function simplifyModel(model: any) {
   };
 }
 
-async function git(args: string[], timeout = 15_000) {
-  return execFileAsync("git", args, { cwd: piCwd, timeout, maxBuffer: 10 * 1024 * 1024 });
+async function git(args: string[], timeout = 15_000, cwd = piCwd) {
+  return execFileAsync("git", args, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 });
 }
 
-async function isGitRepo() {
-  try { await git(["rev-parse", "--is-inside-work-tree"]); return true; } catch { return false; }
+async function isGitRepo(cwd = piCwd) {
+  try { await git(["rev-parse", "--is-inside-work-tree"], 15_000, cwd); return true; } catch { return false; }
 }
 
 async function assertDirectory(path: string) {
@@ -194,21 +194,21 @@ function parseStatusLine(line: string) {
   return { path: path || rawPath, oldPath, indexStatus, worktreeStatus, label: gitLabel(indexStatus, worktreeStatus), staged: indexStatus !== " " && indexStatus !== "?" };
 }
 
-async function gitStatus() {
-  if (!await isGitRepo()) return { ok: true, isRepo: false, ahead: 0, behind: 0, files: [] };
+async function gitStatus(cwd = piCwd) {
+  if (!await isGitRepo(cwd)) return { ok: true, isRepo: false, ahead: 0, behind: 0, files: [] };
   const [{ stdout: root }, { stdout: branchOut }, { stdout: porcelain }, upstreamResult, defaultResult] = await Promise.all([
-    git(["rev-parse", "--show-toplevel"]),
-    git(["branch", "--show-current"]).catch(() => ({ stdout: "" })),
-    git(["status", "--porcelain=v1", "-b"]),
-    git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).catch(() => ({ stdout: "" })),
-    git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).catch(() => ({ stdout: "" })),
+    git(["rev-parse", "--show-toplevel"], 15_000, cwd),
+    git(["branch", "--show-current"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["status", "--porcelain=v1", "-b"], 15_000, cwd),
+    git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], 15_000, cwd).catch(() => ({ stdout: "" })),
   ]);
   const lines = porcelain.trimEnd().split("\n").filter(Boolean);
   const header = lines[0] || "";
   const ahead = Number(header.match(/ahead (\d+)/)?.[1] || 0);
   const behind = Number(header.match(/behind (\d+)/)?.[1] || 0);
   const trackedFiles = lines.slice(1).map(parseStatusLine).filter((file) => file.label !== "untracked");
-  const { stdout: untrackedOut } = await git(["ls-files", "--others", "--exclude-standard"]).catch(() => ({ stdout: "" }));
+  const { stdout: untrackedOut } = await git(["ls-files", "--others", "--exclude-standard"], 15_000, cwd).catch(() => ({ stdout: "" }));
   const untrackedFiles = untrackedOut.split("\n").map((path) => path.trim()).filter(Boolean).map((path) => ({
     path,
     indexStatus: "?",
@@ -234,26 +234,76 @@ function safeGitPath(path: string) {
   return path;
 }
 
+async function gitCwdFromRepoParam(repo: string | null) {
+  if (!repo || repo === ".") return piCwd;
+  if (repo.includes("\0") || isAbsolute(repo)) throw new Error("Invalid repository path");
+  const resolved = resolve(piCwd, repo);
+  const rel = relative(piCwd, resolved);
+  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Repository path is outside the workspace");
+  const info = await stat(resolved);
+  if (!info.isDirectory()) throw new Error("Repository path is not a directory");
+  return resolved;
+}
+
+const ignoredGitRepoDirs = new Set([".git", ".pi-web-uploads", "node_modules", "dist", "build", ".cache", ".next", "target", "vendor"]);
+
+async function gitRepoSummary(path: string, cwd: string) {
+  const status = await gitStatus(cwd) as any;
+  return {
+    path,
+    root: status.root || cwd,
+    branch: status.branch || "",
+    upstream: status.upstream || "",
+    ahead: status.ahead || 0,
+    behind: status.behind || 0,
+    dirtyCount: status.files?.length || 0,
+    isCurrent: path === ".",
+  };
+}
+
+async function listGitRepos() {
+  const repos: Array<Awaited<ReturnType<typeof gitRepoSummary>>> = [];
+  const seenRoots = new Set<string>();
+  async function addRepo(path: string, cwd: string) {
+    if (!await isGitRepo(cwd)) return;
+    const { stdout } = await git(["rev-parse", "--show-toplevel"], 15_000, cwd);
+    const root = resolve(stdout.trim());
+    if (seenRoots.has(root)) return;
+    seenRoots.add(root);
+    repos.push(await gitRepoSummary(path, cwd));
+  }
+
+  await addRepo(".", piCwd);
+  const entries = await readdir(piCwd, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory() || ignoredGitRepoDirs.has(entry.name)) continue;
+    const cwd = join(piCwd, entry.name);
+    if (!existsSync(join(cwd, ".git"))) continue;
+    await addRepo(entry.name, cwd);
+  }
+  return { ok: true, cwd: piCwd, depth: 1, repos };
+}
+
 function parseCommit(entry: string) {
   const [hash = "", shortHash = "", parents = "", author = "", date = "", refs = "", subject = ""] = entry.split("\x1f");
   return { hash, shortHash, parents: parents ? parents.split(" ").filter(Boolean) : [], author, date, refs: refs ? refs.split(", ").filter(Boolean) : [], subject };
 }
 
-async function gitLog() {
-  if (!await isGitRepo()) return { ok: true, isRepo: false, commits: [] };
-  const { stdout } = await git(["log", "--all", "-n", "200", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s%x1e"]);
+async function gitLog(cwd = piCwd) {
+  if (!await isGitRepo(cwd)) return { ok: true, isRepo: false, commits: [] };
+  const { stdout } = await git(["log", "--all", "-n", "200", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s%x1e"], 15_000, cwd);
   const commits = stdout.split("\x1e").map((entry) => entry.trim()).filter(Boolean).map(parseCommit);
   return { ok: true, isRepo: true, commits };
 }
 
-async function gitCommitDetails(hash: string) {
-  if (!await isGitRepo()) throw new Error("Not a Git repository");
+async function gitCommitDetails(hash: string, cwd = piCwd) {
+  if (!await isGitRepo(cwd)) throw new Error("Not a Git repository");
   if (!/^[a-f0-9]{7,40}$/i.test(hash)) throw new Error("Invalid commit hash");
   const [{ stdout: commitOut }, { stdout: nameOut }, { stdout: numstatOut }, { stdout: diff }] = await Promise.all([
-    git(["show", "-s", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s", hash]),
-    git(["show", "--name-status", "--format=", hash]),
-    git(["show", "--numstat", "--format=", hash]),
-    git(["show", "--format=", "--patch", "--find-renames", hash]),
+    git(["show", "-s", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s", hash], 15_000, cwd),
+    git(["show", "--name-status", "--format=", hash], 15_000, cwd),
+    git(["show", "--numstat", "--format=", hash], 15_000, cwd),
+    git(["show", "--format=", "--patch", "--find-renames", hash], 15_000, cwd),
   ]);
   const stats = new Map<string, { additions?: number; deletions?: number }>();
   for (const line of numstatOut.split("\n").filter(Boolean)) {
@@ -675,44 +725,66 @@ const server = createServer(async (req, res) => {
         }
       }
 
+      if (method === "GET" && url.pathname === "/api/git/repos") {
+        return sendJson(res, 200, await listGitRepos());
+      }
+
       if (method === "GET" && url.pathname === "/api/git/status") {
-        return sendJson(res, 200, await gitStatus());
+        try {
+          return sendJson(res, 200, await gitStatus(await gitCwdFromRepoParam(url.searchParams.get("repo"))));
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
       }
 
       if (method === "GET" && url.pathname === "/api/git/log") {
-        return sendJson(res, 200, await gitLog());
+        try {
+          return sendJson(res, 200, await gitLog(await gitCwdFromRepoParam(url.searchParams.get("repo"))));
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
       }
 
       if (method === "GET" && url.pathname === "/api/git/commit") {
         try {
-          return sendJson(res, 200, await gitCommitDetails(url.searchParams.get("hash") || ""));
+          return sendJson(res, 200, await gitCommitDetails(url.searchParams.get("hash") || "", await gitCwdFromRepoParam(url.searchParams.get("repo"))));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/git/diff") {
-        if (!await isGitRepo()) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
-        const filePath = safeGitPath(url.searchParams.get("path") || "");
-        const staged = url.searchParams.get("staged") === "1";
-        const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
-        let { stdout } = await git(args);
-        if (!stdout) {
-          const status = await gitStatus() as any;
-          const file = status.files?.find((f: any) => f.path === filePath);
-          if (file?.label === "untracked") stdout = (await git(["diff", "--no-index", "--", "/dev/null", filePath]).catch((error: any) => ({ stdout: error.stdout || "" }))).stdout;
+        try {
+          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"));
+          if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
+          const filePath = safeGitPath(url.searchParams.get("path") || "");
+          const staged = url.searchParams.get("staged") === "1";
+          const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
+          let { stdout } = await git(args, 15_000, cwd);
+          if (!stdout) {
+            const status = await gitStatus(cwd) as any;
+            const file = status.files?.find((f: any) => f.path === filePath);
+            if (file?.label === "untracked") stdout = (await git(["diff", "--no-index", "--", "/dev/null", filePath], 15_000, cwd).catch((error: any) => ({ stdout: error.stdout || "" }))).stdout;
+          }
+          return sendJson(res, 200, { ok: true, path: filePath, staged, diff: stdout });
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
-        return sendJson(res, 200, { ok: true, path: filePath, staged, diff: stdout });
       }
 
       if (method === "POST" && url.pathname === "/api/git/sync") {
-        if (!await isGitRepo()) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
-        const status = await gitStatus() as any;
-        const branch = status.branch;
-        if (!branch) return sendJson(res, 400, { ok: false, error: "Cannot sync detached HEAD" });
-        const fetchResult = await git(["fetch", "--prune", "origin"], 60_000);
-        const pullResult = await git(["pull", "--rebase", "--autostash", "origin", branch], 120_000);
-        return sendJson(res, 200, { ok: true, output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`, status: await gitStatus() });
+        try {
+          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"));
+          if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
+          const status = await gitStatus(cwd) as any;
+          const branch = status.branch;
+          if (!branch) return sendJson(res, 400, { ok: false, error: "Cannot sync detached HEAD" });
+          const fetchResult = await git(["fetch", "--prune", "origin"], 60_000, cwd);
+          const pullResult = await git(["pull", "--rebase", "--autostash", "origin", branch], 120_000, cwd);
+          return sendJson(res, 200, { ok: true, output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`, status: await gitStatus(cwd) });
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
       }
 
       if (method === "GET" && url.pathname === "/api/state") {

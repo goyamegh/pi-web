@@ -54,6 +54,14 @@
 .gitPrimaryPane { border-right: 1px solid var(--border); }
 .gitPanelFooter { border-top: 1px solid var(--border); border-bottom: 0; justify-content: space-between; color: var(--muted); font-size: 12px; padding: 6px 10px; }
 .gitFooterText { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gitRepoAccordion { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
+.gitRepoAccordion summary { cursor: pointer; padding: 8px 10px; color: var(--text); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gitRepoList { display: grid; gap: 4px; padding: 6px; border-top: 1px solid var(--border); }
+.gitRepoItem { width: 100%; display: grid; gap: 2px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text); padding: 7px 8px; text-align: left; cursor: pointer; font: inherit; }
+.gitRepoItem:hover, .gitRepoItem.selected { background: var(--panel-2); border-color: var(--border); }
+.gitRepoItem:disabled { cursor: default; opacity: .65; }
+.gitRepoName { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.gitRepoMeta, .gitRepoEmpty { color: var(--muted); font-size: 11px; }
 .gitStatusGroup h3 { margin: 10px 0 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
 .gitFileItem, .gitCommitItem { width: 100%; display: flex; gap: 8px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--text); padding: 8px; text-align: left; cursor: pointer; font: inherit; line-height: 1.35; }
 .gitFileItem:hover, .gitFileItem.selected, .gitCommitItem:hover, .gitCommitItem.selected { background: var(--panel-2); border-color: var(--border); }

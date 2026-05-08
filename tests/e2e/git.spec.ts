@@ -21,6 +21,46 @@ test("git panel opens, switches views, and commit rows do not overlap", async ({
   expect(overlaps).toBe(false);
 });
 
+test("git repo accordion switches the selected repo", async ({ page }) => {
+  await page.route("**/api/git/repos", (route) => route.fulfill({ json: {
+    ok: true,
+    cwd: "/workspace",
+    depth: 1,
+    repos: [
+      { path: "repo-a", root: "/workspace/repo-a", branch: "main", upstream: "", ahead: 0, behind: 0, dirtyCount: 1, isCurrent: false },
+      { path: "repo-b", root: "/workspace/repo-b", branch: "feature", upstream: "", ahead: 0, behind: 0, dirtyCount: 1, isCurrent: false },
+    ],
+  } }));
+  await page.route("**/api/git/status?**", (route) => {
+    const repo = new URL(route.request().url()).searchParams.get("repo");
+    return route.fulfill({ json: {
+      ok: true,
+      isRepo: true,
+      root: `/workspace/${repo}`,
+      branch: repo === "repo-b" ? "feature" : "main",
+      upstream: "",
+      defaultRemoteBranch: "",
+      ahead: 0,
+      behind: 0,
+      files: [{ path: repo === "repo-b" ? "b.txt" : "a.txt", indexStatus: " ", worktreeStatus: "M", label: "modified", staged: false }],
+    } });
+  });
+  await page.route("**/api/git/log?**", (route) => route.fulfill({ json: { ok: true, isRepo: true, commits: [] } }));
+  await page.route("**/api/git/diff?**", (route) => route.fulfill({ json: { ok: true, path: "file.txt", staged: false, diff: "" } }));
+
+  await page.goto("/");
+  await page.locator("#gitButton").click();
+  await expect(page.locator(".gitRepoAccordion summary")).toContainText("repo-a");
+  await expect(page.locator(".gitFilePath")).toHaveText("a.txt");
+
+  await page.locator(".gitRepoAccordion summary").click();
+  await page.locator(".gitRepoItem", { hasText: "repo-b" }).click();
+
+  await expect(page.locator(".gitRepoAccordion summary")).toContainText("repo-b");
+  await expect(page.locator(".gitFilePath")).toHaveText("b.txt");
+  await expect(page.locator("#gitFooter")).toContainText("repo-b");
+});
+
 test("git commit detail shows changed files, diff, and layout toggle", async ({ page }) => {
   await page.goto("/");
   await page.locator("#gitButton").click();

@@ -22,6 +22,19 @@ export type GitCommit = {
   subject: string;
 };
 
+export type GitRepo = {
+  path: string;
+  root: string;
+  branch: string;
+  upstream: string;
+  ahead: number;
+  behind: number;
+  dirtyCount: number;
+  isCurrent: boolean;
+};
+
+export type GitReposResponse = { ok: true; cwd: string; depth: number; repos: GitRepo[] };
+
 export type GitStatusResponse = {
   ok: true;
   isRepo: boolean;
@@ -47,6 +60,10 @@ export type GitState = {
   error?: string;
   status?: GitStatusResponse;
   commits: GitCommit[];
+  repos: GitRepo[];
+  repoCwd?: string;
+  selectedRepo?: GitRepo;
+  repoPickerOpen: boolean;
   primaryView: GitPrimaryView;
   mobileView: GitView;
   selectedFile?: GitFileStatus;

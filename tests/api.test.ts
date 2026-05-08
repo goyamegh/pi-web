@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
-import { mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
@@ -27,6 +28,17 @@ async function freePort() {
   server.close();
   if (!address || typeof address === "string") throw new Error("Could not allocate port");
   return address.port;
+}
+
+function execFilePromise(file: string, args: string[], cwd: string) {
+  return new Promise<void>((resolve, reject) => {
+    execFile(file, args, { cwd }, (error) => error ? reject(error) : resolve());
+  });
+}
+
+async function initGitRepo(path: string) {
+  await mkdir(path, { recursive: true });
+  await execFilePromise("git", ["init"], path);
 }
 
 async function waitForServer(baseUrl: string) {
@@ -205,6 +217,56 @@ describe("pi-web mock API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ path: "/tmp/not-allowed.jsonl" }),
     });
+    expect(invalid.status).toBe(400);
+  });
+});
+
+describe("git repo discovery API", () => {
+  let child: ChildProcess;
+  let baseUrl: string;
+  let workspace: string;
+
+  beforeAll(async () => {
+    workspace = await mkdtemp(join(tmpdir(), "pi-web-git-repos-"));
+    await initGitRepo(join(workspace, "repo-a"));
+    await writeFile(join(workspace, "repo-a", "a.txt"), "a\n");
+    await initGitRepo(join(workspace, "repo-b"));
+    await writeFile(join(workspace, "repo-b", "b.txt"), "b\n");
+    await initGitRepo(join(workspace, "parent", "nested-repo"));
+    await initGitRepo(join(workspace, "node_modules", "stray-repo"));
+
+    const port = await freePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: workspace },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr?.on("data", (data) => process.stderr.write(data));
+    await waitForServer(baseUrl);
+  }, 25_000);
+
+  afterAll(async () => {
+    child?.kill();
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("discovers only the current folder and direct child repos by default", async () => {
+    const res = await fetch(`${baseUrl}/api/git/repos`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.depth).toBe(1);
+    expect(data.repos.map((repo: any) => repo.path).sort()).toEqual(["repo-a", "repo-b"]);
+  });
+
+  it("runs git status in the selected repo and rejects paths outside the workspace", async () => {
+    const statusRes = await fetch(`${baseUrl}/api/git/status?repo=repo-b`);
+    expect(statusRes.status).toBe(200);
+    const status = await statusRes.json();
+    expect(status.isRepo).toBe(true);
+    expect(status.files.map((file: any) => file.path)).toContain("b.txt");
+    expect(status.files.map((file: any) => file.path)).not.toContain("a.txt");
+
+    const invalid = await fetch(`${baseUrl}/api/git/status?repo=../repo-b`);
     expect(invalid.status).toBe(400);
   });
 });

@@ -1,4 +1,4 @@
-import type { GitCommitDetailsResponse, GitDiffResponse, GitLogResponse, GitStatusResponse, GitSyncResponse } from "./types.js";
+import type { GitCommitDetailsResponse, GitDiffResponse, GitLogResponse, GitReposResponse, GitStatusResponse, GitSyncResponse } from "./types.js";
 
 async function getJson<T>(url: string, headers: HeadersInit): Promise<T> {
   const res = await fetch(url, { headers });
@@ -12,24 +12,37 @@ async function postJson<T>(url: string, headers: HeadersInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function fetchGitStatus(headers: HeadersInit) {
-  return getJson<GitStatusResponse>("/api/git/status", headers);
+function queryWithRepo(values: Record<string, string> = {}, repo?: string) {
+  const query = new URLSearchParams(values);
+  if (repo) query.set("repo", repo);
+  return query;
 }
 
-export function fetchGitLog(headers: HeadersInit) {
-  return getJson<GitLogResponse>("/api/git/log", headers);
+export function fetchGitRepos(headers: HeadersInit) {
+  return getJson<GitReposResponse>("/api/git/repos", headers);
 }
 
-export function fetchGitDiff(headers: HeadersInit, path: string, staged: boolean) {
-  const query = new URLSearchParams({ path, staged: staged ? "1" : "0" });
+export function fetchGitStatus(headers: HeadersInit, repo?: string) {
+  const query = queryWithRepo({}, repo);
+  return getJson<GitStatusResponse>(`/api/git/status?${query}`, headers);
+}
+
+export function fetchGitLog(headers: HeadersInit, repo?: string) {
+  const query = queryWithRepo({}, repo);
+  return getJson<GitLogResponse>(`/api/git/log?${query}`, headers);
+}
+
+export function fetchGitDiff(headers: HeadersInit, path: string, staged: boolean, repo?: string) {
+  const query = queryWithRepo({ path, staged: staged ? "1" : "0" }, repo);
   return getJson<GitDiffResponse>(`/api/git/diff?${query}`, headers);
 }
 
-export function fetchGitCommit(headers: HeadersInit, hash: string) {
-  const query = new URLSearchParams({ hash });
+export function fetchGitCommit(headers: HeadersInit, hash: string, repo?: string) {
+  const query = queryWithRepo({ hash }, repo);
   return getJson<GitCommitDetailsResponse>(`/api/git/commit?${query}`, headers);
 }
 
-export function syncGit(headers: HeadersInit) {
-  return postJson<GitSyncResponse>("/api/git/sync", headers);
+export function syncGit(headers: HeadersInit, repo?: string) {
+  const query = queryWithRepo({}, repo);
+  return postJson<GitSyncResponse>(`/api/git/sync?${query}`, headers);
 }
