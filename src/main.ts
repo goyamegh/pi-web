@@ -551,6 +551,7 @@ function updateMeta(data: any) {
   currentThinkingLevel = data.thinkingLevel || "off";
   currentSessionId = data.sessionId || currentSessionId;
   currentCwd = data.cwd || currentCwd;
+  if ("sessionName" in data) statusTitleEl.textContent = data.sessionName?.trim() || "New session";
   statusPathEl.textContent = currentCwd;
   updateThinkingButton();
 }
@@ -1124,12 +1125,13 @@ function handlePiEvent(event: PiEvent) {
   }
 }
 
-async function refreshSessionTitle() {
+async function refreshSessionTitle(sessionId = currentSessionId) {
   try {
     const res = await fetch("/api/sessions", { headers: apiHeaders() });
-    if (!res.ok) return;
+    if (!res.ok || sessionId !== currentSessionId) return;
     const data = await res.json();
-    const current = (data.sessions || []).find((s: any) => s.isCurrent);
+    if (sessionId !== currentSessionId) return;
+    const current = (data.sessions || []).find((s: any) => s.id === sessionId) || (data.sessions || []).find((s: any) => s.isCurrent);
     statusTitleEl.textContent = current ? sessionTitle(current) : "New session";
   } catch (_e) { /* best-effort */ }
 }

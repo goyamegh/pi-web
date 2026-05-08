@@ -31,6 +31,7 @@ let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 let artifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
 const knownCwds = new Set<string>([piCwd]);
 const webUiContextFile = join(appDir, "contexts", "web-ui.md");
+const bundledExtensionsDir = join(appDir, ".pi", "extensions");
 const noSession = process.env.PI_WEB_NO_SESSION === "1";
 const mockMode = process.env.PI_WEB_MOCK === "1";
 const execFileAsync = promisify(execFile);
@@ -575,6 +576,13 @@ function registerLiveSession(value: any) {
   return value;
 }
 
+function bundledExtensionPaths() {
+  // When developing pi-web from this repo, the same directory is already loaded
+  // by pi as the project-local .pi/extensions path. For other PI_WEB_CWD values
+  // and packaged installs, add pi-web's bundled extensions explicitly.
+  return resolve(piCwd) === appDir || !existsSync(bundledExtensionsDir) ? [] : [bundledExtensionsDir];
+}
+
 async function makeAgentSession(path?: string) {
   if (mockMode) return { session: createMockSession(path), modelFallbackMessage: undefined };
 
@@ -586,6 +594,7 @@ async function makeAgentSession(path?: string) {
   const loader = new DefaultResourceLoader({
     cwd: piCwd,
     agentDir: getAgentDir(),
+    additionalExtensionPaths: bundledExtensionPaths(),
     appendSystemPromptOverride: (base) => [
       ...base,
       webUiContext,

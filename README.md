@@ -13,6 +13,7 @@ The app is TypeScript end-to-end:
 - `src/main.ts` is the Vite frontend with HMR
 - in dev, `server.ts` embeds Vite middleware while `supervisor.ts` proxies API, WebSocket, and HMR traffic
 - `contexts/web-ui.md` is always injected into agent sessions for web UI behavior like image/artifact rendering
+- bundled pi extensions add pi-web defaults, including automatic session naming from the first prompt
 - `AGENTS.md` provides normal project-specific pi instructions when the target cwd is this repo
 
 ## Install
