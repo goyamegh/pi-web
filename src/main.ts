@@ -4,7 +4,7 @@ import "./git/git.css";
 import "highlight.js/styles/github-dark.css";
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { Check, CornerDownRight, createElement, Copy, Download, ExternalLink, Gauge, GitBranch, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, SendHorizontal, Square, SquarePen, X } from "lucide";
+import { Brain, Check, CornerDownRight, createElement, Copy, Download, ExternalLink, GitBranch, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, SendHorizontal, Square, SquarePen, X } from "lucide";
 import { renderEditDiff } from "./components/editDiff.js";
 import { initGitPanel } from "./git/panel.js";
 
@@ -240,9 +240,13 @@ const queueToggle = requiredElement<HTMLButtonElement>("#queueToggle");
 const attachButton = requiredElement<HTMLButtonElement>("#attachButton");
 const imageInput = requiredElement<HTMLInputElement>("#imageInput");
 const attachmentsEl = requiredElement<HTMLDivElement>("#attachments");
+const modelControl = requiredElement<HTMLDivElement>("#modelControl");
+const modelSettingsButton = requiredElement<HTMLButtonElement>("#modelSettingsButton");
+const modelSettingsLabel = requiredElement<HTMLSpanElement>("#modelSettingsLabel");
+const modelSettingsThinking = requiredElement<HTMLSpanElement>("#modelSettingsThinking");
+const modelSettingsPopover = requiredElement<HTMLDivElement>("#modelSettingsPopover");
 const modelSelectEl = requiredElement<HTMLSelectElement>("#modelSelect");
 const thinkingSelectEl = requiredElement<HTMLSelectElement>("#thinkingSelect");
-const thinkingButton = requiredElement<HTMLButtonElement>("#thinkingButton");
 const newSessionHeaderButton = requiredElement<HTMLButtonElement>("#newSessionHeaderButton");
 const gitButton = requiredElement<HTMLButtonElement>("#gitButton");
 const gitPanel = requiredElement<HTMLElement>("#gitPanel");
@@ -287,6 +291,7 @@ let token = localStorage.getItem("pi-web-token") || "";
 let streamingAssistant: HTMLDivElement | null = null;
 const activeToolCards = new Map<string, HTMLDivElement>();
 let currentModelKey = "";
+let currentModelDisplay = "No model";
 let currentThinkingLevel = "off";
 let currentSessionId = "";
 let currentCwd = "";
@@ -335,7 +340,6 @@ let attachedImages: ImageAttachment[] = [];
 
 const iconNodes = {
   "corner-down-right": CornerDownRight,
-  gauge: Gauge,
   "git-branch": GitBranch,
   "key-round": KeyRound,
   menu: Menu,
@@ -369,11 +373,20 @@ function updateQueueToggle() {
   setIcon(queueToggle, isSteer ? "route" : "corner-down-right");
 }
 
-function updateThinkingButton() {
+function updateModelSettingsSummary() {
   const level = thinkingSelectEl.value || currentThinkingLevel || "off";
-  thinkingButton.title = `Thinking level: ${level}`;
-  thinkingButton.setAttribute("aria-label", thinkingButton.title);
-  setIcon(thinkingButton, "gauge");
+  const label = currentModelDisplay || currentModelKey || "No model";
+  modelSettingsLabel.textContent = label;
+  modelSettingsThinking.textContent = "";
+  modelSettingsThinking.append(createElement(Brain, { "aria-hidden": "true" }), document.createTextNode(level));
+  modelSettingsButton.dataset.thinkingLevel = level;
+  modelSettingsButton.title = `${label} · reasoning: ${level}`;
+  modelSettingsButton.setAttribute("aria-label", `Model and reasoning settings: ${label}, reasoning ${level}`);
+}
+
+function setModelSettingsOpen(open: boolean) {
+  modelSettingsPopover.hidden = !open;
+  modelSettingsButton.setAttribute("aria-expanded", String(open));
 }
 
 function renderAttachments() {
@@ -714,12 +727,13 @@ function modelLabel(model: any): string {
 
 function updateMeta(data: any) {
   currentModelKey = modelKey(data.model);
+  currentModelDisplay = data.model ? modelLabel(data.model) : "No model";
   currentThinkingLevel = data.thinkingLevel || "off";
   currentSessionId = data.sessionId || currentSessionId;
   currentCwd = data.cwd || currentCwd;
   if ("sessionName" in data) setStatusTitle(data.sessionName?.trim() || "New session");
   statusPathEl.textContent = currentCwd;
-  updateThinkingButton();
+  updateModelSettingsSummary();
 }
 
 function updateThinkingOptions(levels: string[] = [currentThinkingLevel]) {
@@ -732,7 +746,7 @@ function updateThinkingOptions(levels: string[] = [currentThinkingLevel]) {
     thinkingSelectEl.append(option);
   }
   thinkingSelectEl.value = options.includes(currentThinkingLevel) ? currentThinkingLevel : options[0] || "off";
-  updateThinkingButton();
+  updateModelSettingsSummary();
 }
 
 function populateModelSelect(models: any[], activeKey: string) {
@@ -1276,7 +1290,7 @@ function handlePiEvent(event: PiEvent) {
     case "thinking_level_changed":
       currentThinkingLevel = event.level || currentThinkingLevel;
       thinkingSelectEl.value = currentThinkingLevel;
-      updateThinkingButton();
+      updateModelSettingsSummary();
       refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
       break;
   }
@@ -1466,7 +1480,7 @@ async function setModelFromControls() {
 
   modelSelectEl.disabled = true;
   thinkingSelectEl.disabled = true;
-  thinkingButton.disabled = true;
+  modelSettingsButton.disabled = true;
   try {
     const res = await fetch("/api/model", {
       method: "POST",
@@ -1484,18 +1498,30 @@ async function setModelFromControls() {
   } finally {
     modelSelectEl.disabled = false;
     thinkingSelectEl.disabled = false;
-    thinkingButton.disabled = false;
+    modelSettingsButton.disabled = false;
   }
 }
 
-modelSelectEl.addEventListener("change", setModelFromControls);
-thinkingButton.addEventListener("click", () => {
-  const options = Array.from(thinkingSelectEl.options);
-  if (options.length < 2) return;
-  const nextIndex = (thinkingSelectEl.selectedIndex + 1) % options.length;
-  thinkingSelectEl.selectedIndex = nextIndex;
+modelSettingsButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setModelSettingsOpen(modelSettingsPopover.hidden);
+});
+modelSettingsPopover.addEventListener("click", (event) => event.stopPropagation());
+document.addEventListener("click", (event) => {
+  if (!modelSettingsPopover.hidden && !modelControl.contains(event.target as Node)) setModelSettingsOpen(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !modelSettingsPopover.hidden) setModelSettingsOpen(false);
+});
+modelSelectEl.addEventListener("change", () => {
+  const selected = modelSelectEl.selectedOptions[0]?.textContent;
+  if (selected) currentModelDisplay = selected;
+  updateModelSettingsSummary();
+  setModelFromControls();
+});
+thinkingSelectEl.addEventListener("change", () => {
   currentThinkingLevel = thinkingSelectEl.value;
-  updateThinkingButton();
+  updateModelSettingsSummary();
   setModelFromControls();
 });
 

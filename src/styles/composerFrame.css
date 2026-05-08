@@ -1,7 +1,7 @@
 .composer {
   grid-row: 3;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--border);
   border-radius: 16px;

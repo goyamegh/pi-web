@@ -57,8 +57,10 @@ export type GitState = {
   isOpen: boolean;
   loading: boolean;
   syncing: boolean;
+  syncingRepo?: string;
   error?: string;
   status?: GitStatusResponse;
+  statusesByRepo: Record<string, GitStatusResponse | undefined>;
   commits: GitCommit[];
   repos: GitRepo[];
   repoCwd?: string;
@@ -67,6 +69,7 @@ export type GitState = {
   primaryView: GitPrimaryView;
   mobileView: GitView;
   selectedFile?: GitFileStatus;
+  selectedFileRepo?: string;
   selectedCommit?: GitCommit;
   commitFiles?: GitCommitFile[];
   commitDiff?: string;

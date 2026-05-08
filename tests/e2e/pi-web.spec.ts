@@ -220,19 +220,19 @@ test.describe("composer layout", () => {
 
     const footerBox = await page.locator(".composerFooter").boundingBox();
     const textAreaBox = await page.locator("#prompt").boundingBox();
-    const modelBox = await page.locator("#modelSelect").boundingBox();
+    const modelSettingsBox = await page.locator("#modelSettingsButton").boundingBox();
     const sendBox = await page.locator("#primaryButton").boundingBox();
     expect(footerBox).toBeTruthy();
     expect(textAreaBox).toBeTruthy();
-    expect(modelBox).toBeTruthy();
+    expect(modelSettingsBox).toBeTruthy();
     expect(sendBox).toBeTruthy();
 
     expect(footerBox!.height).toBeCloseTo(40, 1);
     expect(footerBox!.y).toBeCloseTo(textAreaBox!.y + textAreaBox!.height, 1);
-    expect(modelBox!.height).toBeCloseTo(40, 1);
+    expect(modelSettingsBox!.height).toBeCloseTo(40, 1);
     expect(sendBox!.height).toBeCloseTo(40, 1);
 
-    const modelRadius = await page.locator("#modelSelect").evaluate((el) => getComputedStyle(el).borderBottomLeftRadius);
+    const modelRadius = await page.locator("#modelSettingsButton").evaluate((el) => getComputedStyle(el).borderBottomLeftRadius);
     const sendRadius = await page.locator("#primaryButton").evaluate((el) => getComputedStyle(el).borderBottomRightRadius);
     expect(modelRadius).toBe("15px");
     expect(sendRadius).toBe("15px");
@@ -240,10 +240,48 @@ test.describe("composer layout", () => {
 
   test("composer focus ring is inset instead of clipped", async ({ page }) => {
     await page.goto("/");
-    await page.locator("#modelSelect").focus();
-    const styles = await page.locator("#modelSelect").evaluate((el) => getComputedStyle(el));
+    await page.locator("#modelSettingsButton").focus();
+    const styles = await page.locator("#modelSettingsButton").evaluate((el) => getComputedStyle(el));
     expect(styles.outlineStyle).toBe("none");
     expect(styles.boxShadow).toContain("inset");
+  });
+
+  test("model settings popover changes reasoning level explicitly", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.locator("#modelSettingsButton")).toContainText("mock/model");
+    await expect(page.locator("#modelSettingsThinking")).toContainText("medium");
+    await expect(page.locator("#modelSettingsThinking")).not.toContainText("reasoning");
+
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(page.locator("#modelSelect")).toHaveValue("mock/model");
+    await expect(page.locator("#thinkingSelect")).toHaveValue("medium");
+
+    await page.locator("#thinkingSelect").selectOption("off");
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("data-thinking-level", "off");
+    await expect(page.locator("#modelSettingsThinking")).toContainText("off");
+
+    const state = await (await page.request.get("/api/state")).json();
+    expect(state.thinkingLevel).toBe("off");
+  });
+
+  test("model settings popover is not clipped on mobile", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+
+    const composerOverflow = await page.locator("#promptForm").evaluate((el) => getComputedStyle(el).overflow);
+    expect(composerOverflow).toBe("visible");
+
+    const popoverBox = await page.locator("#modelSettingsPopover").boundingBox();
+    expect(popoverBox).toBeTruthy();
+    expect(popoverBox!.x).toBeGreaterThanOrEqual(0);
+    expect(popoverBox!.y).toBeGreaterThanOrEqual(0);
+    expect(popoverBox!.x + popoverBox!.width).toBeLessThanOrEqual(390);
+    expect(popoverBox!.y + popoverBox!.height).toBeLessThanOrEqual(844);
   });
 
   test("composer expands to fullscreen editor", async ({ page }) => {

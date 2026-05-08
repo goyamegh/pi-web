@@ -21,11 +21,22 @@
     gap: 4px;
   }
 
-  #modelSelect {
+  .modelControl {
     flex: 1 1 0;
     width: 0;
     min-width: 0;
-    padding-right: 24px;
+  }
+
+  .modelSettingsButton {
+    padding-right: 10px;
+  }
+
+  .modelSettingsThinking {
+    display: none;
+  }
+
+  .modelSettingsPopover {
+    width: min(420px, calc(100vw - 32px));
   }
 
   .composerFooter .iconButton {

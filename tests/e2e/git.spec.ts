@@ -21,14 +21,14 @@ test("git panel opens, switches views, and commit rows do not overlap", async ({
   expect(overlaps).toBe(false);
 });
 
-test("git repo accordion switches the selected repo", async ({ page }) => {
+test("git status repo list switches the selected repo", async ({ page }) => {
   await page.route("**/api/git/repos", (route) => route.fulfill({ json: {
     ok: true,
     cwd: "/workspace",
     depth: 1,
     repos: [
       { path: "repo-a", root: "/workspace/repo-a", branch: "main", upstream: "", ahead: 0, behind: 0, dirtyCount: 1, isCurrent: false },
-      { path: "repo-b", root: "/workspace/repo-b", branch: "feature", upstream: "", ahead: 0, behind: 0, dirtyCount: 1, isCurrent: false },
+      { path: "repo-b", root: "/workspace/repo-b", branch: "feature", upstream: "origin/feature", ahead: 0, behind: 2, dirtyCount: 1, isCurrent: false },
     ],
   } }));
   await page.route("**/api/git/status?**", (route) => {
@@ -38,10 +38,10 @@ test("git repo accordion switches the selected repo", async ({ page }) => {
       isRepo: true,
       root: `/workspace/${repo}`,
       branch: repo === "repo-b" ? "feature" : "main",
-      upstream: "",
+      upstream: repo === "repo-b" ? "origin/feature" : "",
       defaultRemoteBranch: "",
       ahead: 0,
-      behind: 0,
+      behind: repo === "repo-b" ? 2 : 0,
       files: [{ path: repo === "repo-b" ? "b.txt" : "a.txt", indexStatus: " ", worktreeStatus: "M", label: "modified", staged: false }],
     } });
   });
@@ -50,15 +50,15 @@ test("git repo accordion switches the selected repo", async ({ page }) => {
 
   await page.goto("/");
   await page.locator("#gitButton").click();
-  await expect(page.locator(".gitRepoAccordion summary")).toContainText("repo-a");
-  await expect(page.locator(".gitFilePath")).toHaveText("a.txt");
+  await expect(page.locator(".gitRepoOverviewList .gitRepoOverviewItem.selected .gitRepoName")).toHaveText("repo-a");
+  await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("a.txt");
+  await expect(page.locator(".gitRebaseButton")).toHaveCount(1);
+  await expect(page.locator(".gitRebaseButton")).toHaveAttribute("aria-label", "Fetch and rebase repo-b onto upstream");
 
-  await page.locator(".gitRepoAccordion summary").click();
-  await page.locator(".gitRepoItem", { hasText: "repo-b" }).click();
+  await page.locator(".gitRepoOverviewList .gitRepoOverviewItem", { hasText: "repo-b" }).locator(".gitRepoSelect").click();
 
-  await expect(page.locator(".gitRepoAccordion summary")).toContainText("repo-b");
-  await expect(page.locator(".gitFilePath")).toHaveText("b.txt");
-  await expect(page.locator("#gitFooter")).toContainText("repo-b");
+  await expect(page.locator(".gitRepoOverviewList .gitRepoOverviewItem.selected .gitRepoName")).toHaveText("repo-b");
+  await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("b.txt");
 });
 
 test("git commit detail shows changed files, diff, and layout toggle", async ({ page }) => {

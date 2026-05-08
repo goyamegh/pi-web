@@ -48,10 +48,6 @@
           <div id="gitPrimaryPane" class="gitPrimaryPane"></div>
           <div id="gitDetailPane" class="gitDetailPane"></div>
         </div>
-        <div class="gitPanelFooter">
-          <span id="gitFooter" class="gitFooterText"></span>
-          <button id="gitSyncButton" type="button" class="gitSyncButton">⟳ Sync</button>
-        </div>
       </aside>
 
       <section id="messages" class="messages" aria-live="polite"></section>
@@ -81,15 +77,27 @@
         <div id="attachments" class="attachments" aria-live="polite"></div>
         <input id="imageInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
         <div class="composerFooter">
-          <select id="modelSelect" title="Select model" aria-label="Select model">
-            <option value="">Loading models…</option>
-          </select>
-          <select id="thinkingSelect" title="Select thinking level" aria-label="Select thinking level" hidden>
-            <option value="off">off</option>
-          </select>
-          <button id="thinkingButton" class="iconButton" type="button" aria-label="Thinking level: off" title="Thinking level: off">
-            <span data-icon="gauge"></span>
-          </button>
+          <div id="modelControl" class="modelControl">
+            <button id="modelSettingsButton" class="modelSettingsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelSettingsPopover" title="Model and reasoning settings">
+              <span id="modelSettingsLabel" class="modelSettingsLabel">Loading models…</span>
+              <span id="modelSettingsThinking" class="modelSettingsThinking">off</span>
+            </button>
+            <div id="modelSettingsPopover" class="modelSettingsPopover" role="dialog" aria-label="Model and reasoning settings" hidden>
+              <label class="modelSettingsField">
+                <span>Model</span>
+                <select id="modelSelect" title="Select model" aria-label="Select model">
+                  <option value="">Loading models…</option>
+                </select>
+              </label>
+              <label class="modelSettingsField">
+                <span>Reasoning</span>
+                <select id="thinkingSelect" title="Select reasoning level" aria-label="Select reasoning level">
+                  <option value="off">off</option>
+                </select>
+              </label>
+              <p class="modelSettingsHint">Choose <strong>off</strong> to disable reasoning when the model supports it.</p>
+            </div>
+          </div>
           <button id="queueToggle" class="iconButton" type="button" aria-pressed="true" aria-label="Queue mode: steer" title="Queue mode: steer">
             <span data-icon="route"></span>
           </button>

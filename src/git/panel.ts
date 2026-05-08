@@ -3,7 +3,7 @@ import { renderCommitView } from "./commitView.js";
 import { renderDiffView } from "./diffView.js";
 import { renderGraphView } from "./graphView.js";
 import { renderStatusView } from "./statusView.js";
-import type { GitCommit, GitFileStatus, GitPrimaryView, GitRepo, GitState } from "./types.js";
+import type { GitCommit, GitFileStatus, GitPrimaryView, GitRepo, GitState, GitStatusResponse } from "./types.js";
 
 export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLElement; apiHeaders: () => HeadersInit }) {
   const { button, panel, apiHeaders } = options;
@@ -12,13 +12,12 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
   const statusTab = panel.querySelector<HTMLButtonElement>("#gitStatusTab")!;
   const graphTab = panel.querySelector<HTMLButtonElement>("#gitGraphTab")!;
   const close = panel.querySelector<HTMLButtonElement>("#gitCloseButton")!;
-  const footerText = panel.querySelector<HTMLElement>("#gitFooter")!;
-  const syncButton = panel.querySelector<HTMLButtonElement>("#gitSyncButton")!;
 
   const state: GitState = {
     isOpen: false,
     loading: false,
     syncing: false,
+    statusesByRepo: {},
     commits: [],
     repos: [],
     repoPickerOpen: false,
@@ -56,11 +55,28 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     return repos.find((repo) => repo.path === previous) || repos.find((repo) => repo.isCurrent) || repos[0];
   }
 
+  async function loadStatuses(repos: GitRepo[]) {
+    const entries = await Promise.all(repos.map(async (repo) => [repo.path, await fetchGitStatus(apiHeaders(), repo.path)] as const));
+    return Object.fromEntries(entries) as Record<string, GitStatusResponse>;
+  }
+
+  function firstChangedFile(statuses = state.statusesByRepo) {
+    const selected = state.selectedRepo ? statuses[state.selectedRepo.path]?.files[0] : undefined;
+    if (selected && state.selectedRepo) return { repo: state.selectedRepo, file: selected };
+    for (const repo of state.repos) {
+      const file = statuses[repo.path]?.files[0];
+      if (file) return { repo, file };
+    }
+    return undefined;
+  }
+
   async function loadSelectedRepoData() {
     if (!state.selectedRepo) {
       state.status = { ok: true, isRepo: false, ahead: 0, behind: 0, files: [] };
+      state.statusesByRepo = {};
       state.commits = [];
       state.selectedFile = undefined;
+      state.selectedFileRepo = undefined;
       state.selectedCommit = undefined;
       state.diff = undefined;
       state.commitDiff = undefined;
@@ -68,15 +84,24 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     }
 
     const repo = selectedRepoPath();
-    const [status, log] = await Promise.all([fetchGitStatus(apiHeaders(), repo), fetchGitLog(apiHeaders(), repo)]);
-    state.status = status;
+    const [statuses, log] = await Promise.all([loadStatuses(state.repos), fetchGitLog(apiHeaders(), repo)]);
+    state.statusesByRepo = statuses;
+    state.status = repo ? statuses[repo] : undefined;
     state.commits = log.commits || [];
-    state.selectedFile = status.files[0];
     state.selectedCommit = state.commits[0];
     state.diff = undefined;
     state.commitDiff = undefined;
     state.commitFiles = undefined;
-    if (state.selectedFile) await selectFile(state.selectedFile, false);
+
+    const preservedRepo = state.selectedFileRepo ? state.repos.find((item) => item.path === state.selectedFileRepo) : undefined;
+    const preservedFile = preservedRepo && state.selectedFile ? statuses[preservedRepo.path]?.files.find((file) => file.path === state.selectedFile?.path) : undefined;
+    const initial = preservedRepo && preservedFile ? { repo: preservedRepo, file: preservedFile } : firstChangedFile(statuses);
+    if (initial) await selectFile(initial.file, initial.repo, false);
+    else {
+      state.selectedFile = undefined;
+      state.selectedFileRepo = undefined;
+      state.diff = undefined;
+    }
   }
 
   async function refresh() {
@@ -100,13 +125,22 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     state.loading = true;
     state.error = undefined;
     state.selectedFile = undefined;
+    state.selectedFileRepo = undefined;
     state.selectedCommit = undefined;
     state.diff = undefined;
     state.commitDiff = undefined;
     storeRepo(repo);
     render();
     try {
-      await loadSelectedRepoData();
+      const [status, log] = await Promise.all([
+        state.statusesByRepo[repo.path] ? Promise.resolve(state.statusesByRepo[repo.path]!) : fetchGitStatus(apiHeaders(), repo.path),
+        fetchGitLog(apiHeaders(), repo.path),
+      ]);
+      state.statusesByRepo = { ...state.statusesByRepo, [repo.path]: status };
+      state.status = status;
+      state.commits = log.commits || [];
+      state.selectedCommit = state.commits[0];
+      if (status.files[0]) await selectFile(status.files[0], repo, false);
     } catch (error) {
       state.error = error instanceof Error ? error.message : String(error);
     } finally {
@@ -115,12 +149,17 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     }
   }
 
-  async function selectFile(file: GitFileStatus, navigate = true) {
-    state.selectedFile = file; state.diffLoading = true; state.diff = undefined;
+  async function selectFile(file: GitFileStatus, repo: GitRepo, navigate = true) {
+    state.selectedRepo = repo;
+    state.status = state.statusesByRepo[repo.path];
+    state.selectedFile = file;
+    state.selectedFileRepo = repo.path;
+    state.diffLoading = true;
+    state.diff = undefined;
     if (navigate) state.mobileView = "diff";
     render();
     try {
-      const diff = await fetchGitDiff(apiHeaders(), file.path, file.staged && file.worktreeStatus === " ", selectedRepoPath());
+      const diff = await fetchGitDiff(apiHeaders(), file.path, file.staged && file.worktreeStatus === " ", repo.path);
       state.diff = diff.diff;
     } catch (error) {
       state.diff = error instanceof Error ? error.message : String(error);
@@ -154,17 +193,24 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     render();
   }
 
-  async function runSync() {
-    state.syncing = true; state.error = undefined; render();
+  async function runRebase(repo: GitRepo) {
+    state.syncing = true;
+    state.syncingRepo = repo.path;
+    state.error = undefined;
+    render();
     try {
-      const result = await syncGit(apiHeaders(), selectedRepoPath());
-      state.status = result.status;
-      const log = await fetchGitLog(apiHeaders(), selectedRepoPath());
-      state.commits = log.commits || [];
+      await syncGit(apiHeaders(), repo.path);
+      const repoList = await fetchGitRepos(apiHeaders());
+      state.repos = repoList.repos;
+      state.repoCwd = repoList.cwd;
+      state.selectedRepo = state.repos.find((item) => item.path === state.selectedRepo?.path) || state.repos.find((item) => item.path === repo.path) || chooseRepo(state.repos, repoList.cwd);
+      await loadSelectedRepoData();
     } catch (error) {
       state.error = error instanceof Error ? error.message : String(error);
     } finally {
-      state.syncing = false; render();
+      state.syncing = false;
+      state.syncingRepo = undefined;
+      render();
     }
   }
 
@@ -206,7 +252,8 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
         const meta = document.createElement("span");
         meta.className = "gitRepoMeta";
         const dirty = repo.dirtyCount ? `${repo.dirtyCount} changed` : "clean";
-        meta.textContent = `${repo.branch || "detached"} · ${dirty}`;
+        const upstream = repo.upstream ? ` ⇄ ${repo.upstream}` : "";
+        meta.textContent = `${repo.branch || "detached"}${upstream} · ↑${repo.ahead} ↓${repo.behind} · ${dirty}`;
         item.append(meta);
 
         list.append(item);
@@ -216,21 +263,13 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     container.append(details);
   }
 
-  function renderFooter() {
-    const s = state.status;
-    const repo = state.repos.length > 1 && state.selectedRepo ? `${repoDisplayPath(state.selectedRepo)} · ` : "";
-    footerText.textContent = s?.isRepo ? `${repo}${s.branch || "detached"}${s.upstream ? ` ⇄ ${s.upstream}` : ""} · Ahead ${s.ahead} · Behind ${s.behind}` : "Not a Git repository";
-    syncButton.disabled = state.syncing || !s?.isRepo;
-    syncButton.textContent = state.syncing ? "Syncing…" : "⟳ Sync";
-  }
-
   function render() {
     panel.dataset.view = state.mobileView;
     panel.dataset.primaryView = state.primaryView;
     statusTab.classList.toggle("active", state.primaryView === "status");
     graphTab.classList.toggle("active", state.primaryView === "graph");
     primary.textContent = "";
-    renderRepoPicker(primary);
+    if (state.primaryView === "graph") renderRepoPicker(primary);
     const primaryContent = document.createElement("div");
     primaryContent.className = "gitPrimaryContent";
     primary.append(primaryContent);
@@ -241,23 +280,31 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
       primaryContent.textContent = state.error;
     } else if (!state.repos.length) {
       primaryContent.textContent = "No Git repositories found in the current folder or one level down.";
+    } else if (state.primaryView === "status") {
+      renderStatusView({
+        container: primaryContent,
+        repos: state.repos,
+        statusesByRepo: state.statusesByRepo,
+        selectedPath: state.selectedFile?.path,
+        selectedRepoPath: state.selectedFileRepo || state.selectedRepo?.path,
+        syncingRepo: state.syncingRepo,
+        onSelectRepo: (repo) => void selectRepo(repo),
+        onSelectFile: (file, repo) => void selectFile(file, repo),
+        onRebase: (repo) => void runRebase(repo),
+      });
     } else if (!state.status?.isRepo) {
       primaryContent.textContent = "Selected folder is not a Git repository.";
-    } else if (state.primaryView === "status") {
-      renderStatusView({ container: primaryContent, files: state.status.files, selectedPath: state.selectedFile?.path, onSelectFile: (file) => void selectFile(file) });
     } else {
       renderGraphView({ container: primaryContent, commits: state.commits, selectedHash: state.selectedCommit?.hash, onSelectCommit: (commit) => void selectCommit(commit) });
     }
 
     if (state.mobileView === "commit") renderCommitView({ container: detail, commit: state.selectedCommit, files: state.commitFiles, diff: state.commitDiff, loading: state.commitLoading, onBack: () => setPrimary("graph") });
     else renderDiffView({ container: detail, file: state.selectedFile, diff: state.diff, loading: state.diffLoading, onBack: () => setPrimary("status") });
-    renderFooter();
   }
 
   button.addEventListener("click", () => setOpen(!state.isOpen));
   close.addEventListener("click", () => setOpen(false));
   statusTab.addEventListener("click", () => setPrimary("status"));
   graphTab.addEventListener("click", () => setPrimary("graph"));
-  syncButton.addEventListener("click", () => void runSync());
   render();
 }
