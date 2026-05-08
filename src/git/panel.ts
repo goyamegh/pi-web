@@ -298,7 +298,7 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     }
 
     if (state.mobileView === "commit") renderCommitView({ container: detail, commit: state.selectedCommit, files: state.commitFiles, diff: state.commitDiff, loading: state.commitLoading, onBack: () => setPrimary("graph") });
-    else renderDiffView({ container: detail, file: state.selectedFile, diff: state.diff, loading: state.diffLoading, onBack: () => setPrimary("status") });
+    else renderDiffView({ container: detail, file: state.selectedFile, repo: state.selectedFileRepo, diff: state.diff, loading: state.diffLoading, apiHeaders, onBack: () => setPrimary("status") });
   }
 
   button.addEventListener("click", () => setOpen(!state.isOpen));

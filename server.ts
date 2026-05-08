@@ -144,6 +144,19 @@ async function git(args: string[], timeout = 15_000, cwd = piCwd) {
   return execFileAsync("git", args, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 });
 }
 
+async function gitBuffer(args: string[], timeout = 15_000, cwd = piCwd) {
+  return new Promise<Buffer>((resolvePromise, reject) => {
+    execFile("git", args, { cwd, timeout, maxBuffer: 50 * 1024 * 1024, encoding: "buffer" }, (error, stdout) => {
+      if (error) {
+        (error as any).stdout = stdout;
+        reject(error);
+        return;
+      }
+      resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
+    });
+  });
+}
+
 async function isGitRepo(cwd = piCwd) {
   try { await git(["rev-parse", "--is-inside-work-tree"], 15_000, cwd); return true; } catch { return false; }
 }
@@ -233,6 +246,41 @@ async function gitStatus(cwd = piCwd, fetchRemote = false) {
 function safeGitPath(path: string) {
   if (!path || path.startsWith("/") || path.includes("..") || path.includes("\0")) throw new Error("Invalid path");
   return path;
+}
+
+function isImageGitPath(path: string) {
+  return [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(extname(path).toLowerCase());
+}
+
+async function sendGitImage(res: ServerResponse, options: { cwd: string; path: string; oldPath?: string; version: string; staged: boolean }) {
+  const filePath = safeGitPath(options.path);
+  const oldPath = options.oldPath ? safeGitPath(options.oldPath) : undefined;
+  const displayPath = options.version === "before" ? oldPath || filePath : filePath;
+  if (!isImageGitPath(displayPath)) return sendJson(res, 415, { ok: false, error: "Not an image file" });
+
+  const contentType = contentTypes[extname(displayPath).toLowerCase()] || "application/octet-stream";
+  if (options.version === "before") {
+    const data = await gitBuffer(["show", `HEAD:${oldPath || filePath}`], 15_000, options.cwd);
+    res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
+    res.end(data);
+    return;
+  }
+
+  if (options.version !== "after") throw new Error("Invalid image version");
+  if (options.staged) {
+    const data = await gitBuffer(["show", `:${filePath}`], 15_000, options.cwd);
+    res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
+    res.end(data);
+    return;
+  }
+
+  const resolved = resolve(options.cwd, filePath);
+  const rel = relative(options.cwd, resolved);
+  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Image path is outside the repository");
+  const info = await stat(resolved);
+  if (!info.isFile()) throw new Error("Image not found");
+  res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
+  createReadStream(resolved).pipe(res);
 }
 
 async function gitCwdFromRepoParam(repo: string | null) {
@@ -771,6 +819,23 @@ const server = createServer(async (req, res) => {
           return sendJson(res, 200, { ok: true, path: filePath, staged, diff: stdout });
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/git/image") {
+        try {
+          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"));
+          if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
+          await sendGitImage(res, {
+            cwd,
+            path: url.searchParams.get("path") || "",
+            oldPath: url.searchParams.get("oldPath") || undefined,
+            version: url.searchParams.get("version") || "",
+            staged: url.searchParams.get("staged") === "1",
+          });
+          return;
+        } catch (error) {
+          return sendJson(res, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 

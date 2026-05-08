@@ -2,8 +2,76 @@ import { Columns2, createElement, Rows2 } from "lucide";
 import { renderUnifiedPatch, setDiffLayout } from "../components/diff.js";
 import type { GitFileStatus } from "./types.js";
 
+const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+
 function mobileDefaultStacked() {
   return window.matchMedia("(max-width: 700px)").matches;
+}
+
+function isImagePath(path: string) {
+  const lower = path.toLowerCase();
+  return [...imageExtensions].some((extension) => lower.endsWith(extension));
+}
+
+function imageFileName(path: string) {
+  return path.split("/").filter(Boolean).at(-1) || path;
+}
+
+function gitImageUrl(file: GitFileStatus, repo: string | undefined, version: "before" | "after") {
+  const query = new URLSearchParams({
+    path: file.path,
+    version,
+    staged: file.staged && file.worktreeStatus === " " ? "1" : "0",
+  });
+  if (file.oldPath) query.set("oldPath", file.oldPath);
+  if (repo) query.set("repo", repo);
+  return `/api/git/image?${query}`;
+}
+
+async function loadPreviewImage(container: HTMLElement, url: string, headers: HeadersInit, alt: string) {
+  try {
+    const response = await fetch(url, { headers });
+    if (!response.ok) throw new Error(await response.text());
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const image = document.createElement("img");
+    image.src = objectUrl;
+    image.alt = alt;
+    image.addEventListener("load", () => container.classList.add("loaded"), { once: true });
+    container.textContent = "";
+    container.append(image);
+  } catch {
+    container.textContent = "No image";
+  }
+}
+
+function renderImageDiff(options: { file: GitFileStatus; repo?: string; apiHeaders: () => HeadersInit }) {
+  const { file, repo, apiHeaders } = options;
+  const wrapper = document.createElement("div");
+  wrapper.className = "gitImageDiff";
+
+  const before = createImagePane("Before", file.oldPath ? imageFileName(file.oldPath) : imageFileName(file.path));
+  const after = createImagePane("After", imageFileName(file.path));
+  wrapper.append(before.pane, after.pane);
+
+  void loadPreviewImage(before.preview, gitImageUrl(file, repo, "before"), apiHeaders(), `Before ${file.path}`);
+  void loadPreviewImage(after.preview, gitImageUrl(file, repo, "after"), apiHeaders(), `After ${file.path}`);
+  return wrapper;
+}
+
+function createImagePane(titleText: string, fileName: string) {
+  const pane = document.createElement("section");
+  pane.className = "gitImagePane";
+  const title = document.createElement("h4");
+  title.textContent = titleText;
+  const name = document.createElement("div");
+  name.className = "gitImageName";
+  name.textContent = fileName;
+  const preview = document.createElement("div");
+  preview.className = "gitImagePreview";
+  preview.textContent = "Loading image…";
+  pane.append(title, name, preview);
+  return { pane, preview };
 }
 
 export function renderUnifiedDiff(diff: string) {
@@ -39,11 +107,13 @@ export function renderUnifiedDiff(diff: string) {
 export function renderDiffView(options: {
   container: HTMLElement;
   file?: GitFileStatus;
+  repo?: string;
   diff?: string;
   loading?: boolean;
+  apiHeaders: () => HeadersInit;
   onBack?: () => void;
 }) {
-  const { container, file, diff, loading, onBack } = options;
+  const { container, file, repo, diff, loading, apiHeaders, onBack } = options;
   container.textContent = "";
   const header = document.createElement("div");
   header.className = "gitDetailHeader";
@@ -74,6 +144,12 @@ export function renderDiffView(options: {
     container.append(el);
     return;
   }
+
+  if (isImagePath(file.path) || Boolean(file.oldPath && isImagePath(file.oldPath))) {
+    container.append(renderImageDiff({ file, repo, apiHeaders }));
+    return;
+  }
+
   if (!diff) {
     const el = document.createElement("div");
     el.className = "gitEmpty";
