@@ -698,7 +698,10 @@ async function openFolderPicker(startPath: string) {
     }
   });
   load(startPath).catch((e) => { error.textContent = e.message; list.textContent = ""; });
-  input.focus();
+  // Don't auto-focus on touch devices — the on-screen keyboard would pop up immediately
+  if (!('ontouchstart' in window) && navigator.maxTouchPoints === 0) {
+    input.focus();
+  }
 }
 
 async function refreshMessages() {
