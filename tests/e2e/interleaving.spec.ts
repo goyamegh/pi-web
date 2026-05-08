@@ -10,7 +10,7 @@ function getMessageOrder(page: import("@playwright/test").Page) {
         const toolBadge = el.querySelector(".toolCardBadge")?.textContent?.trim();
         return `[toolCard: ${toolName} (${toolBadge})]`;
       }
-      const role = el.querySelector(".role")?.textContent?.trim();
+      const role = el.classList.contains("assistant") ? "assistant" : el.classList.contains("user") ? "user" : "system";
       const body = el.querySelector(".body")?.textContent?.trim().slice(0, 80);
       return `[${role}: "${body}"]`;
     });

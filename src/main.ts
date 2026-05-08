@@ -615,52 +615,52 @@ function imagesFromRawContent(content: unknown): AttachedImage[] {
     .map((part) => ({ data: part.data as string | undefined, mimeType: part.mimeType as string | undefined }));
 }
 
-function stripImagePathNote(text: string): { text: string; paths: string[] } {
+function stripImagePathNote(text: string) {
   const match = text.match(/(\n\nAttached image files?:\n(?:- .+\n?)+)/s);
-  if (!match) return { text, paths: [] };
-  const noteBlock = match[1];
-  const paths = [...noteBlock.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
-  return { text: text.replace(noteBlock, "").trimEnd(), paths };
+  return match ? text.replace(match[1], "").trimEnd() : text;
+}
+
+function imageFileName(path: string | undefined, fallback = "image") {
+  return path ? path.split("/").pop() || fallback : fallback;
+}
+
+function appendAttachedImage(container: HTMLElement, img: AttachedImage) {
+  if (img.data && img.mimeType) {
+    const el = document.createElement("img");
+    el.className = "messageImageThumb";
+    el.src = `data:${img.mimeType};base64,${img.data}`;
+    el.alt = imageFileName(img.path);
+    container.append(el);
+    attachImageActions(el);
+    return;
+  }
+
+  const missing = document.createElement("span");
+  missing.className = "messageImageMissing";
+  missing.title = img.path || "unknown path";
+  missing.textContent = `🖼️ ${imageFileName(img.path, "missing image")}`;
+  container.append(missing);
 }
 
 function addMessage(role: Role, text: string, extraClass = "", images: AttachedImage[] = []) {
   const div = document.createElement("div");
   const collapsible = shouldCollapseMessage(text);
   div.className = `message ${role} ${extraClass}${collapsible ? " collapsible collapsed" : ""}`.trim();
-  const label = document.createElement("span");
-  label.className = "role";
-  label.textContent = role;
   const body = document.createElement("div");
   body.className = "body";
 
   if (role === "user" && images.length > 0) {
-    // Render text (stripping the server-appended path note since we show images inline)
-    const { text: cleanText } = stripImagePathNote(text);
+    const cleanText = stripImagePathNote(text);
     if (cleanText) {
       const textNode = document.createElement("span");
       textNode.className = "messageText";
       textNode.textContent = cleanText;
       body.append(textNode);
     }
-    // Render image previews
+
     const imgWrap = document.createElement("div");
     imgWrap.className = "messageImages";
-    for (const img of images) {
-      if (img.data && img.mimeType) {
-        const el = document.createElement("img");
-        el.className = "messageImageThumb";
-        el.src = `data:${img.mimeType};base64,${img.data}`;
-        el.alt = img.path ? img.path.split("/").pop() || "image" : "image";
-        imgWrap.append(el);
-        attachImageActions(el);
-      } else {
-        const missing = document.createElement("span");
-        missing.className = "messageImageMissing";
-        missing.title = img.path || "unknown path";
-        missing.textContent = `🖼️ ${img.path ? img.path.split("/").pop() : "missing image"}`;
-        imgWrap.append(missing);
-      }
-    }
+    for (const img of images) appendAttachedImage(imgWrap, img);
     body.append(imgWrap);
   } else if (role === "assistant" && text) {
     body.textContent = text;
@@ -670,7 +670,7 @@ function addMessage(role: Role, text: string, extraClass = "", images: AttachedI
     body.textContent = text || "";
   }
 
-  div.append(label, body);
+  div.append(body);
 
   if (collapsible) {
     const toggle = document.createElement("button");
