@@ -581,7 +581,7 @@ const mockHarness = createMockHarness({
   isCurrentSession: (value: PiWebSession) => value === session,
   currentState,
 });
-const { mockSessions, createMockSession } = mockHarness;
+const { mockSessions, createMockSession, resetMockSessions } = mockHarness;
 
 function sessionPathKey(value: any) {
   return String(value.sessionFile || value.sessionId || "");
@@ -712,6 +712,7 @@ const server = createServer(async (req, res) => {
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
         for (const entry of liveSessions.values()) entry.unsubscribe?.();
         liveSessions.clear();
+        resetMockSessions();
         session = registerLiveSession(createMockSession());
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
@@ -790,12 +791,7 @@ const server = createServer(async (req, res) => {
       if (method === "GET" && url.pathname === "/api/state") {
         return sendJson(res, 200, {
           ok: true,
-          cwd: piCwd,
-          sessionFile: session.sessionFile,
-          sessionId: session.sessionId,
-          isStreaming: session.isStreaming,
-          model: simplifyModel(session.model),
-          thinkingLevel: session.thinkingLevel,
+          ...currentStateWithThinkingLevels(),
           tokenRequired: Boolean(token),
         });
       }
@@ -915,6 +911,19 @@ const server = createServer(async (req, res) => {
           error: error instanceof Error ? error.message : String(error),
         }));
         return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+      }
+
+      if (method === "POST" && url.pathname === "/api/session/name") {
+        const body = await readBody(req) as { sessionId?: unknown; name?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        if (typeof targetSession.setSessionName !== "function") return sendJson(res, 400, { ok: false, error: "Renaming sessions is not available" });
+
+        const name = String(body.name || "").trim();
+        targetSession.setSessionName(name);
+        const state = targetSession === session ? currentStateWithThinkingLevels() : { sessionId: targetSession.sessionId, sessionName: targetSession.getSessionName?.() };
+        return sendJson(res, 200, { ok: true, ...state });
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {

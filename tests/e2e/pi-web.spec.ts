@@ -103,6 +103,19 @@ test.describe("composer layout", () => {
     await expect(page.locator("#connectionStatus")).toBeHidden();
   });
 
+  test("renames the current session from the status title", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+
+    await page.locator("#statusTitle").click();
+    await page.locator("#statusTitle input").fill("Renamed from title");
+    await page.locator("#statusTitle input").press("Enter");
+
+    await expect(page.locator("#statusTitle")).toHaveText("Renamed from title");
+    const sessions = await (await page.request.get("/api/sessions")).json();
+    expect(sessions.sessions.find((item: any) => item.id === "mock-current").name).toBe("Renamed from title");
+  });
+
   test("new session resets status title", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");

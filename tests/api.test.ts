@@ -107,6 +107,23 @@ describe("pi-web mock API", () => {
     expect(messages.messages.at(-1).text).toContain("with image");
   });
 
+  it("renames the current session", async () => {
+    const res = await fetch(`${baseUrl}/api/session/name`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", name: "Renamed mock session" }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.sessionName).toBe("Renamed mock session");
+
+    const state = await (await fetch(`${baseUrl}/api/state`)).json();
+    expect(state.sessionName).toBe("Renamed mock session");
+
+    const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
+    expect(sessions.sessions.find((item: any) => item.id === "mock-current").name).toBe("Renamed mock session");
+  });
+
   it("rejects empty prompts", async () => {
     const res = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",

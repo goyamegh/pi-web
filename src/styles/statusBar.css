@@ -35,6 +35,21 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 240px;
+  cursor: pointer;
+}
+.statusTitle:hover {
+  color: var(--accent);
+}
+.statusTitleInput {
+  width: min(240px, 34vw);
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  padding: 0 6px;
 }
 .statusPath {
   flex: 1 1 auto;

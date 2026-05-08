@@ -290,6 +290,8 @@ let currentModelKey = "";
 let currentThinkingLevel = "off";
 let currentSessionId = "";
 let currentCwd = "";
+let currentSessionTitle = "New session";
+let statusTitleEditing = false;
 let isStreaming = false;
 let wsHasOpened = false;
 let wsDisconnected = false;
@@ -424,6 +426,79 @@ function apiHeaders() {
     ...(token ? { authorization: `Bearer ${token}` } : {}),
   };
 }
+
+function setStatusTitle(title: string) {
+  const value = title.trim() || "New session";
+  currentSessionTitle = value;
+  statusTitleEl.title = "Rename session";
+  statusTitleEl.setAttribute("aria-label", `Session: ${value}. Click to rename.`);
+  if (!statusTitleEditing) statusTitleEl.textContent = value;
+}
+
+async function renameCurrentSession(name: string) {
+  const previous = currentSessionTitle;
+  setStatusTitle(name || "New session");
+  try {
+    const res = await fetch("/api/session/name", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({ sessionId: currentSessionId, name }),
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok || data.ok === false) throw new Error(data.error || text);
+    updateMeta(data);
+    await refreshSessionTitle();
+    if (!sessionDrawer.hidden) refreshSessions().catch(() => undefined);
+  } catch (error) {
+    setStatusTitle(previous);
+    addMessage("system", error instanceof Error ? error.message : String(error), "error");
+  }
+}
+
+function beginRenameSessionTitle() {
+  if (statusTitleEditing || !currentSessionId) return;
+  statusTitleEditing = true;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "statusTitleInput";
+  input.value = currentSessionTitle === "New session" ? "" : currentSessionTitle;
+  input.placeholder = "New session";
+  input.maxLength = 200;
+  input.setAttribute("aria-label", "Session name");
+  const originalValue = input.value.trim();
+
+  let finished = false;
+  const finish = (save: boolean) => {
+    if (finished) return;
+    finished = true;
+    statusTitleEditing = false;
+    const next = input.value.trim();
+    if (save && next !== originalValue) void renameCurrentSession(next);
+    else setStatusTitle(currentSessionTitle);
+  };
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+
+  statusTitleEl.textContent = "";
+  statusTitleEl.append(input);
+  input.focus();
+  input.select();
+}
+
+statusTitleEl.setAttribute("role", "button");
+statusTitleEl.tabIndex = 0;
+setStatusTitle(currentSessionTitle);
 
 function wsUrl() {
   const url = new URL("/ws", location.href);
@@ -642,7 +717,7 @@ function updateMeta(data: any) {
   currentThinkingLevel = data.thinkingLevel || "off";
   currentSessionId = data.sessionId || currentSessionId;
   currentCwd = data.cwd || currentCwd;
-  if ("sessionName" in data) statusTitleEl.textContent = data.sessionName?.trim() || "New session";
+  if ("sessionName" in data) setStatusTitle(data.sessionName?.trim() || "New session");
   statusPathEl.textContent = currentCwd;
   updateThinkingButton();
 }
@@ -1153,7 +1228,7 @@ function addToolHistoryCard(toolName: string, isError: boolean, result: string, 
 function handlePiEvent(event: PiEvent) {
   switch (event.type) {
     case "session_info_changed":
-      if (event.name !== undefined) statusTitleEl.textContent = event.name || "New session";
+      if ("name" in event) setStatusTitle(event.name || "New session");
       break;
     case "agent_start":
       isStreaming = true;
@@ -1214,7 +1289,7 @@ async function refreshSessionTitle(sessionId = currentSessionId) {
     const data = await res.json();
     if (sessionId !== currentSessionId) return;
     const current = (data.sessions || []).find((s: any) => s.id === sessionId) || (data.sessions || []).find((s: any) => s.isCurrent);
-    statusTitleEl.textContent = current ? sessionTitle(current) : "New session";
+    setStatusTitle(current ? sessionTitle(current) : "New session");
   } catch (_e) { /* best-effort */ }
 }
 
@@ -1360,6 +1435,12 @@ queueToggle.addEventListener("click", () => {
   updateQueueToggle();
 });
 
+statusTitleEl.addEventListener("click", beginRenameSessionTitle);
+statusTitleEl.addEventListener("keydown", (event) => {
+  if (event.target !== statusTitleEl || (event.key !== "Enter" && event.key !== " ")) return;
+  event.preventDefault();
+  beginRenameSessionTitle();
+});
 sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
 newSessionHeaderButton.addEventListener("click", async () => {
   try {

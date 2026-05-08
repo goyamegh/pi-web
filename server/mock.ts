@@ -12,30 +12,38 @@ export function createMockHarness(options: MockSessionOptions) {
   const { piCwd, broadcast, isCurrentSession, currentState } = options;
   const mockModel = { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 };
 
-  const mockSessions: PiWebSessionInfo[] = [
-    {
-      id: "mock-current",
-      path: join(piCwd, ".mock-sessions/current.jsonl"),
-      name: "Current mock session",
-      firstMessage: "Can you add image attachments?",
-      created: new Date("2026-05-01T10:00:00Z"),
-      modified: new Date("2026-05-07T10:00:00Z"),
-      messageCount: 2,
-      allMessagesText: "Can you add image attachments?",
-      cwd: piCwd,
-    },
-    {
-      id: "mock-older",
-      path: join(piCwd, ".mock-sessions/older.jsonl"),
-      name: "Older mock session",
-      firstMessage: "Review the mobile composer layout",
-      created: new Date("2026-05-01T09:00:00Z"),
-      modified: new Date("2026-05-06T09:00:00Z"),
-      messageCount: 4,
-      allMessagesText: "Review the mobile composer layout",
-      cwd: piCwd,
-    },
-  ];
+  function initialMockSessions(): PiWebSessionInfo[] {
+    return [
+      {
+        id: "mock-current",
+        path: join(piCwd, ".mock-sessions/current.jsonl"),
+        name: "Current mock session",
+        firstMessage: "Can you add image attachments?",
+        created: new Date("2026-05-01T10:00:00Z"),
+        modified: new Date("2026-05-07T10:00:00Z"),
+        messageCount: 2,
+        allMessagesText: "Can you add image attachments?",
+        cwd: piCwd,
+      },
+      {
+        id: "mock-older",
+        path: join(piCwd, ".mock-sessions/older.jsonl"),
+        name: "Older mock session",
+        firstMessage: "Review the mobile composer layout",
+        created: new Date("2026-05-01T09:00:00Z"),
+        modified: new Date("2026-05-06T09:00:00Z"),
+        messageCount: 4,
+        allMessagesText: "Review the mobile composer layout",
+        cwd: piCwd,
+      },
+    ];
+  }
+
+  const mockSessions: PiWebSessionInfo[] = initialMockSessions();
+
+  function resetMockSessions() {
+    mockSessions.splice(0, mockSessions.length, ...initialMockSessions());
+  }
 
   function initialMessages(path: string): unknown[] {
     return path === mockSessions[1].path
@@ -82,6 +90,13 @@ export function createMockHarness(options: MockSessionOptions) {
         find: (provider: string, id: string) => provider === mockModel.provider && id === mockModel.id ? mockModel : undefined,
       },
       getAvailableThinkingLevels: () => ["off", "low", "medium", "high"],
+      getSessionName: () => mockSessions.find((info) => info.path === mockSession.sessionFile)?.name,
+      setSessionName: (name: string) => {
+        const info = mockSessions.find((item) => item.path === mockSession.sessionFile);
+        if (info) info.name = name.trim();
+        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "session_info_changed", name: name.trim() || undefined } });
+        if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+      },
       setModel: async (model: unknown) => { mockSession.model = model as typeof mockModel; },
       setThinkingLevel: (level: string) => { mockSession.thinkingLevel = level; },
       reload: async () => undefined,
@@ -148,5 +163,5 @@ export function createMockHarness(options: MockSessionOptions) {
     return mockSession;
   }
 
-  return { mockSessions, createMockSession };
+  return { mockSessions, createMockSession, resetMockSessions };
 }

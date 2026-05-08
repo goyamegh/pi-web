@@ -29,6 +29,7 @@ export interface PiWebSession {
   };
   getAvailableThinkingLevels(): string[];
   getSessionName?(): string | undefined;
+  setSessionName?(name: string): void;
   setModel(model: unknown): Promise<void>;
   setThinkingLevel(level: string): void;
   reload?(): Promise<void>;
