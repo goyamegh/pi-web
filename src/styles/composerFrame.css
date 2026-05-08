@@ -1,4 +1,5 @@
 .composer {
+  grid-row: 3;
   min-width: 0;
   overflow: hidden;
   background: color-mix(in srgb, var(--panel) 92%, transparent);

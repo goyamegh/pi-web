@@ -245,6 +245,10 @@ const thinkingButton = requiredElement<HTMLButtonElement>("#thinkingButton");
 const newSessionHeaderButton = requiredElement<HTMLButtonElement>("#newSessionHeaderButton");
 const gitButton = requiredElement<HTMLButtonElement>("#gitButton");
 const gitPanel = requiredElement<HTMLElement>("#gitPanel");
+const emptyCwdChooserEl = requiredElement<HTMLDivElement>("#emptyCwdChooser");
+const emptyCwdPathEl = requiredElement<HTMLDivElement>("#emptyCwdChooser .emptyCwdPath");
+requiredElement<HTMLButtonElement>("#emptyCwdChooser .emptyCwdButton")
+  .addEventListener("click", () => openFolderPicker(currentCwd));
 
 const requestIdle = window.requestIdleCallback || ((callback: IdleRequestCallback) => window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 1));
 const markdownRenderObserver = "IntersectionObserver" in window
@@ -597,24 +601,12 @@ async function refreshModels() {
   updateThinkingOptions(data.thinkingLevels || [currentThinkingLevel]);
 }
 
-function renderEmptyCwdChooser() {
-  if (messagesEl.children.length || isStreaming) return;
-  const panel = document.createElement("div");
-  panel.className = "emptyCwdChooser";
-  const label = document.createElement("div");
-  label.className = "emptyCwdLabel";
-  label.textContent = "Working directory";
-  const path = document.createElement("div");
-  path.className = "emptyCwdPath";
-  path.textContent = currentCwd;
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "emptyCwdButton";
-  button.textContent = "Change folder";
-  button.addEventListener("click", () => openFolderPicker(currentCwd));
-  panel.append(label, path, button);
-  messagesEl.append(panel);
+function updateEmptyCwdChooser() {
+  emptyCwdPathEl.textContent = currentCwd;
+  emptyCwdChooserEl.hidden = messagesEl.children.length > 0 || isStreaming;
 }
+
+new MutationObserver(updateEmptyCwdChooser).observe(messagesEl, { childList: true });
 
 async function selectSessionCwd(cwd: string) {
   const res = await fetch("/api/session/cwd", {
@@ -729,7 +721,7 @@ async function refreshMessages() {
     const rawImages = role === "user" ? imagesFromRawContent(message.raw?.content || message.content) : [];
     addMessage(role, text, "", rawImages);
   }
-  renderEmptyCwdChooser();
+  updateEmptyCwdChooser();
 }
 
 function formatSessionDate(value: string) {
@@ -762,7 +754,7 @@ async function startNewSession(cwd?: string) {
   messagesEl.textContent = "";
   streamingAssistant = null;
   await refreshState();
-  renderEmptyCwdChooser();
+  updateEmptyCwdChooser();
 }
 
 function setSessionDrawerOpen(open: boolean) {
@@ -867,6 +859,9 @@ async function refreshSessions() {
         spinner.className = "sessionSpinner";
         spinner.title = item.runtime.isCompacting ? "Compacting" : "Running";
         spinner.setAttribute("aria-label", spinner.title);
+        // Sync the animation phase to wall-clock time so re-creating the element
+        // (on every refreshSessions call) doesn't visibly reset the spin angle.
+        spinner.style.animationDelay = `-${Date.now() % 800}ms`;
         titleRow.append(spinner);
       }
 
