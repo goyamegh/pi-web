@@ -45,3 +45,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.connectionStatus {
+  flex: 0 0 auto;
+  max-width: min(220px, 34vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--muted) 32%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 17px;
+}
+.connectionStatus[hidden] { display: none; }
+.connectionStatus.reconnecting {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  color: var(--accent);
+}
+.connectionStatus.offline {
+  border-color: color-mix(in srgb, var(--danger, #ef4444) 45%, transparent);
+  color: var(--danger, #ef4444);
+}
+.connectionStatus.reconnected {
+  border-color: color-mix(in srgb, var(--success, #22c55e) 45%, transparent);
+  color: var(--success, #22c55e);
+}

@@ -15,6 +15,94 @@ test.describe("composer layout", () => {
     await expect(page.locator("#statusPath")).toContainText("pi-web");
   });
 
+  test("shows transient WebSocket reconnect state outside the chat", async ({ page }) => {
+    await page.clock.install({ time: 0 });
+    await page.addInitScript(() => {
+      const NativeWebSocket = window.WebSocket;
+      const fakeSockets: any[] = [];
+      (window as any).__piWebSockets = fakeSockets;
+      (window as any).__piWebSocketAutoOpen = true;
+
+      class FakeWebSocket extends EventTarget {
+        static readonly CONNECTING = 0;
+        static readonly OPEN = 1;
+        static readonly CLOSING = 2;
+        static readonly CLOSED = 3;
+        readonly url: string;
+        readonly protocol = "";
+        readonly extensions = "";
+        binaryType: BinaryType = "blob";
+        bufferedAmount = 0;
+        readyState = FakeWebSocket.CONNECTING;
+        onopen: ((event: Event) => void) | null = null;
+        onclose: ((event: CloseEvent) => void) | null = null;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        onerror: ((event: Event) => void) | null = null;
+
+        constructor(url: string | URL, protocols?: string | string[]) {
+          super();
+          const parsed = new URL(String(url), location.href);
+          if (parsed.pathname !== "/ws") {
+            return protocols === undefined ? new NativeWebSocket(url) : new NativeWebSocket(url, protocols);
+          }
+
+          this.url = parsed.href;
+          fakeSockets.push(this);
+          setTimeout(() => {
+            if (this.readyState !== FakeWebSocket.CONNECTING) return;
+            if ((window as any).__piWebSocketAutoOpen) this.emitOpen();
+            else this.emitClose();
+          }, 0);
+        }
+
+        send() {}
+        close() { this.emitClose(); }
+        emitOpen() {
+          this.readyState = FakeWebSocket.OPEN;
+          const event = new Event("open");
+          this.dispatchEvent(event);
+          this.onopen?.(event);
+        }
+        emitClose() {
+          if (this.readyState === FakeWebSocket.CLOSED) return;
+          this.readyState = FakeWebSocket.CLOSED;
+          const event = new CloseEvent("close");
+          this.dispatchEvent(event);
+          this.onclose?.(event);
+        }
+      }
+
+      (window as any).WebSocket = FakeWebSocket as any;
+    });
+
+    await page.goto("/");
+    await page.clock.runFor(1);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+
+    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emitClose());
+    await page.clock.runFor(2501);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    await expect(page.locator(".message.system", { hasText: "Disconnected" })).toHaveCount(0);
+
+    await page.evaluate(() => {
+      (window as any).__piWebSocketAutoOpen = false;
+      (window as any).__piWebSockets.at(-1).emitClose();
+    });
+    await page.clock.runFor(2501);
+    await expect(page.locator("#connectionStatus")).toHaveText("Live updates reconnecting…");
+    await expect(page.locator(".message.system", { hasText: "Disconnected" })).toHaveCount(0);
+
+    await page.clock.runFor(12_500);
+    await expect(page.locator("#connectionStatus")).toHaveText("Live updates unavailable");
+
+    await page.evaluate(() => { (window as any).__piWebSocketAutoOpen = true; });
+    await page.clock.runFor(1_501);
+    await expect(page.locator("#connectionStatus")).toHaveText("Reconnected");
+    await page.clock.runFor(1_500);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+  });
+
   test("new session resets status title", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");

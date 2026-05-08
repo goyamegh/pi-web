@@ -221,6 +221,7 @@ function requiredElement<T extends Element>(selector: string): T {
 const messagesEl = requiredElement<HTMLDivElement>("#messages");
 const statusTitleEl = requiredElement<HTMLSpanElement>("#statusTitle");
 const statusPathEl = requiredElement<HTMLSpanElement>("#statusPath");
+const connectionStatusEl = requiredElement<HTMLSpanElement>("#connectionStatus");
 const formEl = requiredElement<HTMLFormElement>("#promptForm");
 const promptEl = requiredElement<HTMLTextAreaElement>("#prompt");
 const primaryButton = requiredElement<HTMLButtonElement>("#primaryButton");
@@ -290,6 +291,14 @@ let currentThinkingLevel = "off";
 let currentSessionId = "";
 let currentCwd = "";
 let isStreaming = false;
+let wsHasOpened = false;
+let wsDisconnected = false;
+let reconnectNoticeTimer: number | undefined;
+let connectionLostTimer: number | undefined;
+let reconnectedClearTimer: number | undefined;
+const reconnectDelayMs = 1500;
+const reconnectNoticeDelayMs = 2500;
+const connectionLostDelayMs = 15000;
 const collapsedSessionFolders = new Set<string>(JSON.parse(localStorage.getItem("pi-web-collapsed-session-folders") || "[]"));
 const expandedSessionFolders = new Set<string>();
 const sessionFolderPreviewLimit = 8;
@@ -421,6 +430,84 @@ function wsUrl() {
   url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
   if (token) url.searchParams.set("token", token);
   return url;
+}
+
+function clearConnectionTimers() {
+  if (reconnectNoticeTimer !== undefined) window.clearTimeout(reconnectNoticeTimer);
+  if (connectionLostTimer !== undefined) window.clearTimeout(connectionLostTimer);
+  reconnectNoticeTimer = undefined;
+  connectionLostTimer = undefined;
+}
+
+function clearReconnectedTimer() {
+  if (reconnectedClearTimer !== undefined) window.clearTimeout(reconnectedClearTimer);
+  reconnectedClearTimer = undefined;
+}
+
+function setConnectionStatus(kind: "reconnecting" | "offline" | "reconnected", text: string, title = text) {
+  clearReconnectedTimer();
+  connectionStatusEl.className = `connectionStatus ${kind}`;
+  connectionStatusEl.textContent = text;
+  connectionStatusEl.title = title;
+  connectionStatusEl.hidden = false;
+}
+
+function hideConnectionStatus() {
+  clearReconnectedTimer();
+  connectionStatusEl.hidden = true;
+  connectionStatusEl.textContent = "";
+  connectionStatusEl.title = "";
+  connectionStatusEl.className = "connectionStatus";
+}
+
+function scheduleConnectionStatus() {
+  if (reconnectNoticeTimer === undefined) {
+    reconnectNoticeTimer = window.setTimeout(() => {
+      reconnectNoticeTimer = undefined;
+      if (wsDisconnected && tokenOverlay.hidden && !connectionStatusEl.classList.contains("offline")) {
+        setConnectionStatus("reconnecting", "Live updates reconnecting…");
+      }
+    }, reconnectNoticeDelayMs);
+  }
+  if (connectionLostTimer === undefined) {
+    connectionLostTimer = window.setTimeout(() => {
+      connectionLostTimer = undefined;
+      if (wsDisconnected && tokenOverlay.hidden) {
+        setConnectionStatus("offline", "Live updates unavailable", "Connection lost. Messages may still send, but live updates are unavailable.");
+      }
+    }, connectionLostDelayMs);
+  }
+}
+
+function markWebSocketOpen() {
+  const isReconnect = wsHasOpened && wsDisconnected;
+  const hadVisibleStatus = !connectionStatusEl.hidden;
+  wsHasOpened = true;
+  wsDisconnected = false;
+  clearConnectionTimers();
+
+  if (!isReconnect) {
+    hideConnectionStatus();
+    return;
+  }
+
+  void refreshState().catch((error) => console.warn("Could not refresh after reconnect", error));
+  if (!hadVisibleStatus) {
+    hideConnectionStatus();
+    return;
+  }
+
+  setConnectionStatus("reconnected", "Reconnected");
+  reconnectedClearTimer = window.setTimeout(() => {
+    reconnectedClearTimer = undefined;
+    if (!wsDisconnected) hideConnectionStatus();
+  }, reconnectDelayMs);
+}
+
+function markWebSocketClosed() {
+  wsDisconnected = true;
+  clearReconnectedTimer();
+  scheduleConnectionStatus();
 }
 
 function shouldCollapseMessage(text: string) {
@@ -1133,7 +1220,7 @@ async function refreshSessionTitle(sessionId = currentSessionId) {
 
 function connect() {
   const ws = new WebSocket(wsUrl());
-  ws.addEventListener("open", () => undefined);
+  ws.addEventListener("open", markWebSocketOpen);
   ws.addEventListener("message", (message) => {
     const data = JSON.parse(String(message.data));
     if (data.type === "hello" || data.type === "state_changed") {
@@ -1165,8 +1252,8 @@ function connect() {
     if (data.type === "server_error" && (!data.sessionId || data.sessionId === currentSessionId)) addMessage("system", data.error, "error");
   });
   ws.addEventListener("close", () => {
-    addMessage("system", "Disconnected. Reconnecting…");
-    setTimeout(connect, 1500);
+    markWebSocketClosed();
+    window.setTimeout(connect, reconnectDelayMs);
   });
 }
 
