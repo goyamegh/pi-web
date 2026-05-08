@@ -60,27 +60,36 @@
 .gitRepoItem:disabled { cursor: default; opacity: .65; }
 .gitRepoName { min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
 .gitRepoMeta, .gitRepoEmpty { color: var(--muted); font-size: 11px; }
-.gitRepoOverview h3, .gitChangesOverview h3, .gitStatusGroup h3 { margin: 10px 0 6px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-.gitRepoOverviewList { display: grid; gap: 5px; margin-bottom: 12px; }
-.gitRepoOverviewItem { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; border: 1px solid transparent; border-radius: 10px; }
-.gitRepoOverviewItem:hover, .gitRepoOverviewItem.selected { background: var(--panel-2); border-color: var(--border); }
-.gitRepoSelect { min-width: 0; display: grid; gap: 4px; border: 0; background: transparent; color: var(--text); padding: 8px; text-align: left; cursor: pointer; font: inherit; }
-.gitRepoMeta { display: flex; flex-wrap: wrap; gap: 4px; }
-.gitRepoMetaBadge { color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; line-height: 1.5; }
-.gitRebaseButton { width: 30px; min-width: 30px; height: 30px; min-height: 30px; margin-right: 5px; display: inline-grid; place-items: center; padding: 0; }
+.gitChangesOverview h3, .gitStatusGroup h3 { margin: 10px 0 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.gitRepoChangesList { display: grid; gap: 8px; }
+.gitRepoChangesAccordion { background: transparent; }
+.gitRepoChangesAccordion > summary { list-style: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; cursor: pointer; padding: 5px 0; color: var(--text); }
+.gitRepoChangesAccordion > summary::-webkit-details-marker { display: none; }
+.gitRepoDisclosure { color: var(--muted); font-size: 18px; line-height: 1; transition: transform .12s ease; }
+.gitRepoChangesAccordion[open] > summary .gitRepoDisclosure { transform: rotate(90deg); }
+.gitRepoHeaderText { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.gitRepoMeta { display: flex; flex-wrap: wrap; gap: 0; min-width: 0; }
+.gitRepoMetaItem { color: var(--muted); white-space: nowrap; }
+.gitRepoMetaItem:not(:last-child)::after { content: "·"; margin: 0 6px; color: color-mix(in srgb, var(--muted) 55%, transparent); }
+.gitRebaseButton { width: 28px; min-width: 28px; height: 28px; min-height: 28px; display: inline-grid; place-items: center; padding: 0; }
 .gitRebaseButton svg { width: 15px; height: 15px; }
 .gitRebaseButton:disabled { cursor: wait; opacity: .65; }
-.gitRepoChangesAccordion { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; overflow: hidden; background: color-mix(in srgb, var(--panel-2) 35%, transparent); }
-.gitRepoChangesAccordion summary { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; cursor: pointer; padding: 8px 10px; color: var(--text); }
-.gitRepoChangesBody { padding: 6px; border-top: 1px solid var(--border); }
-.gitTreeDir { margin-left: 8px; border-left: 1px solid var(--border); }
-.gitTreeDir > summary { cursor: pointer; color: var(--text); padding: 4px 0 4px 8px; font-size: 13px; overflow-wrap: anywhere; }
-.gitTreeChildren { margin-left: 10px; }
-.gitTreeFile { border-radius: 7px; padding: 5px 7px; }
+.gitRepoChangesBody { margin-left: 8px; padding: 1px 0 4px 10px; }
+.gitTreeDir { position: relative; margin: 0; }
+.gitTreeDir > summary { list-style: none; display: flex; align-items: center; gap: 4px; cursor: pointer; color: var(--text); padding: 1px 0; font-size: 13px; line-height: 1.25; overflow-wrap: anywhere; }
+.gitTreeDir > summary::-webkit-details-marker { display: none; }
+.gitTreeDir > summary::before { content: "›"; color: var(--muted); font-size: 14px; line-height: 1; transition: transform .12s ease; }
+.gitTreeDir[open] > summary::before { transform: rotate(90deg); }
+.gitTreeChildren { margin-left: 8px; padding-left: 10px; }
+.gitRepoChangesBody > .gitTreeDir, .gitRepoChangesBody > .gitTreeFile, .gitTreeChildren > .gitTreeDir, .gitTreeChildren > .gitTreeFile { position: relative; }
+.gitRepoChangesBody > .gitTreeDir::before, .gitRepoChangesBody > .gitTreeFile::before, .gitTreeChildren > .gitTreeDir::before, .gitTreeChildren > .gitTreeFile::before { content: ""; position: absolute; left: -10px; top: .78em; width: 8px; border-top: 1px solid var(--border); }
+.gitRepoChangesBody > .gitTreeDir::after, .gitRepoChangesBody > .gitTreeFile::after, .gitTreeChildren > .gitTreeDir::after, .gitTreeChildren > .gitTreeFile::after { content: ""; position: absolute; left: -10px; top: -.15em; bottom: -.15em; border-left: 1px solid var(--border); }
+.gitRepoChangesBody > .gitTreeDir:last-child::after, .gitRepoChangesBody > .gitTreeFile:last-child::after, .gitTreeChildren > .gitTreeDir:last-child::after, .gitTreeChildren > .gitTreeFile:last-child::after { bottom: auto; height: .93em; }
 .gitFileItem, .gitCommitItem { width: 100%; display: flex; gap: 8px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--text); padding: 8px; text-align: left; cursor: pointer; font: inherit; line-height: 1.35; }
-.gitFileItem.gitTreeFile { border-radius: 7px; padding: 5px 7px; }
+.gitFileItem.gitTreeFile { width: fit-content; max-width: 100%; height: auto; min-height: 0; position: relative; align-items: baseline; gap: 4px; border: 0; border-radius: 4px; padding: 1px 7px 1px 5px; line-height: 1.25; }
+.gitFileItem.gitTreeFile:hover, .gitFileItem.gitTreeFile.selected { background: color-mix(in srgb, var(--panel-2) 45%, transparent); }
 .gitFileItem:hover, .gitFileItem.selected, .gitCommitItem:hover, .gitCommitItem.selected { background: var(--panel-2); border-color: var(--border); }
-.gitStatusBadge { flex: 0 0 auto; min-width: 28px; color: var(--accent); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gitStatusBadge { flex: 0 0 auto; min-width: 14px; text-align: center; color: var(--accent); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .gitStatusBadge.deleted, .gitDiffLine.del { color: var(--danger); }
 .gitStatusBadge.untracked, .gitStatusBadge.added, .gitDiffLine.add { color: #86efac; }
 .gitStatusBadge.conflicted { color: #fbbf24; }

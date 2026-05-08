@@ -56,7 +56,7 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
   }
 
   async function loadStatuses(repos: GitRepo[]) {
-    const entries = await Promise.all(repos.map(async (repo) => [repo.path, await fetchGitStatus(apiHeaders(), repo.path)] as const));
+    const entries = await Promise.all(repos.map(async (repo) => [repo.path, await fetchGitStatus(apiHeaders(), repo.path, true)] as const));
     return Object.fromEntries(entries) as Record<string, GitStatusResponse>;
   }
 
@@ -133,7 +133,7 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     render();
     try {
       const [status, log] = await Promise.all([
-        state.statusesByRepo[repo.path] ? Promise.resolve(state.statusesByRepo[repo.path]!) : fetchGitStatus(apiHeaders(), repo.path),
+        state.statusesByRepo[repo.path] ? Promise.resolve(state.statusesByRepo[repo.path]!) : fetchGitStatus(apiHeaders(), repo.path, true),
         fetchGitLog(apiHeaders(), repo.path),
       ]);
       state.statusesByRepo = { ...state.statusesByRepo, [repo.path]: status };
@@ -288,7 +288,6 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
         selectedPath: state.selectedFile?.path,
         selectedRepoPath: state.selectedFileRepo || state.selectedRepo?.path,
         syncingRepo: state.syncingRepo,
-        onSelectRepo: (repo) => void selectRepo(repo),
         onSelectFile: (file, repo) => void selectFile(file, repo),
         onRebase: (repo) => void runRebase(repo),
       });

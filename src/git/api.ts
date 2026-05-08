@@ -22,8 +22,8 @@ export function fetchGitRepos(headers: HeadersInit) {
   return getJson<GitReposResponse>("/api/git/repos", headers);
 }
 
-export function fetchGitStatus(headers: HeadersInit, repo?: string) {
-  const query = queryWithRepo({}, repo);
+export function fetchGitStatus(headers: HeadersInit, repo?: string, fetchRemote = false) {
+  const query = queryWithRepo(fetchRemote ? { fetch: "1" } : {}, repo);
   return getJson<GitStatusResponse>(`/api/git/status?${query}`, headers);
 }
 

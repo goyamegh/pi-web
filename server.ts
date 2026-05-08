@@ -194,8 +194,9 @@ function parseStatusLine(line: string) {
   return { path: path || rawPath, oldPath, indexStatus, worktreeStatus, label: gitLabel(indexStatus, worktreeStatus), staged: indexStatus !== " " && indexStatus !== "?" };
 }
 
-async function gitStatus(cwd = piCwd) {
+async function gitStatus(cwd = piCwd, fetchRemote = false) {
   if (!await isGitRepo(cwd)) return { ok: true, isRepo: false, ahead: 0, behind: 0, files: [] };
+  if (fetchRemote) await git(["fetch", "--prune"], 60_000, cwd).catch(() => undefined);
   const [{ stdout: root }, { stdout: branchOut }, { stdout: porcelain }, upstreamResult, defaultResult] = await Promise.all([
     git(["rev-parse", "--show-toplevel"], 15_000, cwd),
     git(["branch", "--show-current"], 15_000, cwd).catch(() => ({ stdout: "" })),
@@ -732,7 +733,7 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/git/status") {
         try {
-          return sendJson(res, 200, await gitStatus(await gitCwdFromRepoParam(url.searchParams.get("repo"))));
+          return sendJson(res, 200, await gitStatus(await gitCwdFromRepoParam(url.searchParams.get("repo")), url.searchParams.get("fetch") === "1"));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }

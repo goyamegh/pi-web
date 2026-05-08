@@ -1,7 +1,7 @@
 import { createElement, GitPullRequestArrow } from "lucide";
 import type { GitFileStatus, GitRepo, GitStatusResponse } from "./types.js";
 
-function code(file: GitFileStatus) {
+function statusCode(file: GitFileStatus) {
   if (file.label === "untracked") return "U";
   if (file.label === "modified") return "M";
   if (file.label === "added") return "A";
@@ -13,21 +13,19 @@ function code(file: GitFileStatus) {
 
 type TreeNode = {
   name: string;
-  path: string;
   children: Map<string, TreeNode>;
   file?: GitFileStatus;
 };
 
 function buildTree(files: GitFileStatus[]) {
-  const root: TreeNode = { name: "", path: "", children: new Map() };
+  const root: TreeNode = { name: "", children: new Map() };
   for (const file of files) {
     const parts = file.path.split("/").filter(Boolean);
     let node = root;
-    for (const [index, part] of parts.entries()) {
-      const path = parts.slice(0, index + 1).join("/");
+    for (const part of parts) {
       let child = node.children.get(part);
       if (!child) {
-        child = { name: part, path, children: new Map() };
+        child = { name: part, children: new Map() };
         node.children.set(part, child);
       }
       node = child;
@@ -46,8 +44,12 @@ function sortedChildren(node: TreeNode) {
   });
 }
 
-function repoDisplayPath(repo: GitRepo) {
-  return repo.path === "." ? "." : repo.path;
+function baseName(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) || path;
+}
+
+function repoDisplayName(repo: GitRepo) {
+  return baseName(repo.root || repo.path) || "Repository";
 }
 
 function repoCounts(repo: GitRepo, status?: GitStatusResponse) {
@@ -60,21 +62,20 @@ function repoCounts(repo: GitRepo, status?: GitStatusResponse) {
   };
 }
 
+function appendMetaItem(container: HTMLElement, text: string) {
+  const item = document.createElement("span");
+  item.className = "gitRepoMetaItem";
+  item.textContent = text;
+  container.append(item);
+}
+
 function appendRepoMeta(container: HTMLElement, repo: GitRepo, status?: GitStatusResponse) {
   const counts = repoCounts(repo, status);
-  const values = [
-    counts.branch,
-    counts.upstream ? `⇄ ${counts.upstream}` : "",
-    `↑${counts.ahead}`,
-    `↓${counts.behind}`,
-    counts.dirtyCount ? `${counts.dirtyCount} changed` : "clean",
-  ].filter(Boolean);
-  for (const value of values) {
-    const item = document.createElement("span");
-    item.className = "gitRepoMetaBadge";
-    item.textContent = value;
-    container.append(item);
-  }
+  appendMetaItem(container, counts.branch);
+  if (counts.upstream) appendMetaItem(container, `⇄ ${counts.upstream}`);
+  if (counts.ahead > 0) appendMetaItem(container, `↑${counts.ahead}`);
+  if (counts.behind > 0) appendMetaItem(container, `↓${counts.behind}`);
+  appendMetaItem(container, counts.dirtyCount ? `${counts.dirtyCount} changed` : "clean");
 }
 
 function shouldShowRebase(repo: GitRepo, status?: GitStatusResponse) {
@@ -88,13 +89,29 @@ function createRebaseButton(repo: GitRepo, status: GitStatusResponse | undefined
   button.type = "button";
   button.className = "gitRebaseButton";
   button.title = "Fetch and rebase onto upstream";
-  button.setAttribute("aria-label", `Fetch and rebase ${repoDisplayPath(repo)} onto upstream`);
+  button.setAttribute("aria-label", `Fetch and rebase ${repoDisplayName(repo)} onto upstream`);
   button.disabled = syncingRepo === repo.path;
   button.append(createElement(GitPullRequestArrow, { "aria-hidden": "true" }));
   button.addEventListener("click", (event) => {
+    event.preventDefault();
     event.stopPropagation();
     onRebase(repo);
   });
+  return button;
+}
+
+function createFileRow(file: GitFileStatus, repo: GitRepo, selectedPath: string | undefined, selectedRepoPath: string | undefined, onSelectFile: (file: GitFileStatus, repo: GitRepo) => void) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `gitFileItem gitTreeFile${file.path === selectedPath && repo.path === selectedRepoPath ? " selected" : ""}`;
+  const badge = document.createElement("span");
+  badge.className = `gitStatusBadge ${file.label}`;
+  badge.textContent = statusCode(file);
+  const name = document.createElement("span");
+  name.className = "gitFilePath";
+  name.textContent = file.oldPath ? `${file.oldPath} → ${file.path}` : baseName(file.path);
+  button.append(badge, name);
+  button.addEventListener("click", () => onSelectFile(file, repo));
   return button;
 }
 
@@ -109,19 +126,7 @@ function renderTreeNode(options: {
   const { container, node, repo, selectedPath, selectedRepoPath, onSelectFile } = options;
   for (const child of sortedChildren(node)) {
     if (child.file && child.children.size === 0) {
-      const file = child.file;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `gitFileItem gitTreeFile${file.path === selectedPath && repo.path === selectedRepoPath ? " selected" : ""}`;
-      const badge = document.createElement("span");
-      badge.className = `gitStatusBadge ${file.label}`;
-      badge.textContent = code(file);
-      const name = document.createElement("span");
-      name.className = "gitFilePath";
-      name.textContent = file.oldPath ? `${file.oldPath} → ${file.path}` : child.name;
-      button.append(badge, name);
-      button.addEventListener("click", () => onSelectFile(file, repo));
-      container.append(button);
+      container.append(createFileRow(child.file, repo, selectedPath, selectedRepoPath, onSelectFile));
       continue;
     }
 
@@ -129,7 +134,10 @@ function renderTreeNode(options: {
     details.className = "gitTreeDir";
     details.open = true;
     const summary = document.createElement("summary");
-    summary.textContent = child.name;
+    const label = document.createElement("span");
+    label.className = "gitTreeDirName";
+    label.textContent = child.name;
+    summary.append(label);
     details.append(summary);
     const children = document.createElement("div");
     children.className = "gitTreeChildren";
@@ -139,6 +147,61 @@ function renderTreeNode(options: {
   }
 }
 
+function createRepoAccordion(options: {
+  repo: GitRepo;
+  status?: GitStatusResponse;
+  selectedPath?: string;
+  selectedRepoPath?: string;
+  syncingRepo?: string;
+  onSelectFile: (file: GitFileStatus, repo: GitRepo) => void;
+  onRebase: (repo: GitRepo) => void;
+}) {
+  const { repo, status, selectedPath, selectedRepoPath, syncingRepo, onSelectFile, onRebase } = options;
+  const files = status?.files || [];
+  const details = document.createElement("details");
+  details.className = "gitRepoChangesAccordion";
+  details.open = files.length > 0 || repo.path === selectedRepoPath;
+
+  const summary = document.createElement("summary");
+  const disclosure = document.createElement("span");
+  disclosure.className = "gitRepoDisclosure";
+  disclosure.textContent = "›";
+
+  const label = document.createElement("span");
+  label.className = "gitRepoHeaderText";
+  const name = document.createElement("span");
+  name.className = "gitRepoName";
+  name.textContent = repoDisplayName(repo);
+  name.title = repo.path === "." ? repo.root : repo.path;
+  const meta = document.createElement("span");
+  meta.className = "gitRepoMeta";
+  appendRepoMeta(meta, repo, status);
+  label.append(name, meta);
+
+  summary.append(disclosure, label);
+  const rebase = createRebaseButton(repo, status, syncingRepo, onRebase);
+  if (rebase) summary.append(rebase);
+  details.append(summary);
+
+  const body = document.createElement("div");
+  body.className = "gitRepoChangesBody";
+  if (!status) {
+    const empty = document.createElement("div");
+    empty.className = "gitEmpty";
+    empty.textContent = "Loading status…";
+    body.append(empty);
+  } else if (!files.length) {
+    const empty = document.createElement("div");
+    empty.className = "gitEmpty";
+    empty.textContent = "Working tree clean.";
+    body.append(empty);
+  } else {
+    renderTreeNode({ container: body, node: buildTree(files), repo, selectedPath, selectedRepoPath, onSelectFile });
+  }
+  details.append(body);
+  return details;
+}
+
 export function renderStatusView(options: {
   container: HTMLElement;
   repos: GitRepo[];
@@ -146,93 +209,23 @@ export function renderStatusView(options: {
   selectedPath?: string;
   selectedRepoPath?: string;
   syncingRepo?: string;
-  onSelectRepo: (repo: GitRepo) => void;
   onSelectFile: (file: GitFileStatus, repo: GitRepo) => void;
   onRebase: (repo: GitRepo) => void;
 }) {
-  const { container, repos, statusesByRepo, selectedPath, selectedRepoPath, syncingRepo, onSelectRepo, onSelectFile, onRebase } = options;
+  const { container, repos, statusesByRepo, selectedPath, selectedRepoPath, syncingRepo, onSelectFile, onRebase } = options;
   container.textContent = "";
 
-  const repoSection = document.createElement("section");
-  repoSection.className = "gitRepoOverview";
-  const repoHeading = document.createElement("h3");
-  repoHeading.textContent = "Repositories";
-  repoSection.append(repoHeading);
+  const section = document.createElement("section");
+  section.className = "gitChangesOverview";
+  const heading = document.createElement("h3");
+  heading.textContent = "Repositories";
+  section.append(heading);
 
-  const repoList = document.createElement("div");
-  repoList.className = "gitRepoOverviewList";
+  const list = document.createElement("div");
+  list.className = "gitRepoChangesList";
   for (const repo of repos) {
-    const status = statusesByRepo[repo.path];
-    const row = document.createElement("div");
-    row.className = `gitRepoOverviewItem${repo.path === selectedRepoPath ? " selected" : ""}`;
-
-    const select = document.createElement("button");
-    select.type = "button";
-    select.className = "gitRepoSelect";
-    select.addEventListener("click", () => onSelectRepo(repo));
-
-    const name = document.createElement("span");
-    name.className = "gitRepoName";
-    name.textContent = repoDisplayPath(repo);
-    const meta = document.createElement("span");
-    meta.className = "gitRepoMeta";
-    appendRepoMeta(meta, repo, status);
-    select.append(name, meta);
-    row.append(select);
-
-    const rebase = createRebaseButton(repo, status, syncingRepo, onRebase);
-    if (rebase) row.append(rebase);
-    repoList.append(row);
+    list.append(createRepoAccordion({ repo, status: statusesByRepo[repo.path], selectedPath, selectedRepoPath, syncingRepo, onSelectFile, onRebase }));
   }
-  repoSection.append(repoList);
-  container.append(repoSection);
-
-  const changesSection = document.createElement("section");
-  changesSection.className = "gitChangesOverview";
-  const changesHeading = document.createElement("h3");
-  changesHeading.textContent = "Changes";
-  changesSection.append(changesHeading);
-
-  let totalChanges = 0;
-  for (const repo of repos) {
-    const status = statusesByRepo[repo.path];
-    const files = status?.files || [];
-    totalChanges += files.length;
-    if (status && !files.length) continue;
-
-    const details = document.createElement("details");
-    details.className = "gitRepoChangesAccordion";
-    details.open = files.length > 0 || repo.path === selectedRepoPath;
-
-    const summary = document.createElement("summary");
-    const name = document.createElement("span");
-    name.className = "gitRepoName";
-    name.textContent = repoDisplayPath(repo);
-    const meta = document.createElement("span");
-    meta.className = "gitRepoMeta";
-    appendRepoMeta(meta, repo, status);
-    summary.append(name, meta);
-    details.append(summary);
-
-    const body = document.createElement("div");
-    body.className = "gitRepoChangesBody";
-    if (!status) {
-      const empty = document.createElement("div");
-      empty.className = "gitEmpty";
-      empty.textContent = "Loading status…";
-      body.append(empty);
-    } else {
-      renderTreeNode({ container: body, node: buildTree(files), repo, selectedPath, selectedRepoPath, onSelectFile });
-    }
-    details.append(body);
-    changesSection.append(details);
-  }
-
-  if (!totalChanges) {
-    const empty = document.createElement("div");
-    empty.className = "gitEmpty";
-    empty.textContent = "All working trees clean.";
-    changesSection.append(empty);
-  }
-  container.append(changesSection);
+  section.append(list);
+  container.append(section);
 }

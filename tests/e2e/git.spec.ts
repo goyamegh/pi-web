@@ -21,7 +21,7 @@ test("git panel opens, switches views, and commit rows do not overlap", async ({
   expect(overlaps).toBe(false);
 });
 
-test("git status repo list switches the selected repo", async ({ page }) => {
+test("git status repo accordions switch the selected file", async ({ page }) => {
   await page.route("**/api/git/repos", (route) => route.fulfill({ json: {
     ok: true,
     cwd: "/workspace",
@@ -50,14 +50,15 @@ test("git status repo list switches the selected repo", async ({ page }) => {
 
   await page.goto("/");
   await page.locator("#gitButton").click();
-  await expect(page.locator(".gitRepoOverviewList .gitRepoOverviewItem.selected .gitRepoName")).toHaveText("repo-a");
+  await expect(page.locator(".gitRepoChangesAccordion .gitRepoName")).toHaveText(["repo-a", "repo-b"]);
+  await expect(page.locator(".gitRepoChangesAccordion").first().locator("summary")).not.toContainText("↑0");
+  await expect(page.locator(".gitRepoChangesAccordion").first().locator("summary")).not.toContainText("↓0");
   await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("a.txt");
   await expect(page.locator(".gitRebaseButton")).toHaveCount(1);
   await expect(page.locator(".gitRebaseButton")).toHaveAttribute("aria-label", "Fetch and rebase repo-b onto upstream");
 
-  await page.locator(".gitRepoOverviewList .gitRepoOverviewItem", { hasText: "repo-b" }).locator(".gitRepoSelect").click();
+  await page.locator(".gitRepoChangesAccordion", { hasText: "repo-b" }).locator(".gitFileItem").click();
 
-  await expect(page.locator(".gitRepoOverviewList .gitRepoOverviewItem.selected .gitRepoName")).toHaveText("repo-b");
   await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("b.txt");
 });
 
