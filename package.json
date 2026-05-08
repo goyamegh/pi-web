@@ -22,10 +22,10 @@
     "start": "node --import tsx server.ts",
     "start:supervised": "node --import tsx supervisor.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "npm run typecheck && vitest run && playwright test",
+    "test:unit": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:all": "npm run typecheck && npm run test && npm run test:e2e",
     "release:pack": "rm -rf release && npm run build && mkdir -p release && npm pack --pack-destination release"
   },
   "engines": {
