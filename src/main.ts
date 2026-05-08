@@ -566,12 +566,12 @@ function markWebSocketOpen() {
     return;
   }
 
-  void refreshState().catch((error) => console.warn("Could not refresh after reconnect", error));
   if (!hadVisibleStatus) {
     hideConnectionStatus();
     return;
   }
 
+  void refreshState().catch((error) => console.warn("Could not refresh after reconnect", error));
   setConnectionStatus("reconnected", "Reconnected");
   reconnectedClearTimer = window.setTimeout(() => {
     reconnectedClearTimer = undefined;

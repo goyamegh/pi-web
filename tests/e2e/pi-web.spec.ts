@@ -16,6 +16,12 @@ test.describe("composer layout", () => {
   });
 
   test("shows transient WebSocket reconnect state outside the chat", async ({ page }) => {
+    let messagesRequestCount = 0;
+    await page.route("**/api/messages**", async (route) => {
+      messagesRequestCount += 1;
+      await route.continue();
+    });
+
     await page.clock.install({ time: 0 });
     await page.addInitScript(() => {
       const NativeWebSocket = window.WebSocket;
@@ -84,6 +90,7 @@ test.describe("composer layout", () => {
     await page.clock.runFor(2501);
     await expect(page.locator("#connectionStatus")).toBeHidden();
     await expect(page.locator(".message.system", { hasText: "Disconnected" })).toHaveCount(0);
+    expect(messagesRequestCount).toBe(1);
 
     await page.evaluate(() => {
       (window as any).__piWebSocketAutoOpen = false;
