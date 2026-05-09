@@ -1,6 +1,6 @@
 {
   "name": "pi-web",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local/Tailscale web UI for pi coding agent.",
   "type": "module",
   "bin": {
@@ -11,6 +11,7 @@
     "bin/",
     "contexts/",
     "dist/",
+    "docs/",
     "server/",
     "server.ts",
     "supervisor.ts",
@@ -27,7 +28,8 @@
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "release:pack": "rm -rf release && npm run build && mkdir -p release && npm pack --pack-destination release"
+    "release:pack": "rm -rf release && npm run build && mkdir -p release && npm pack --pack-destination release",
+    "test:all": "npm test"
   },
   "engines": {
     "node": ">=20"

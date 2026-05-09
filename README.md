@@ -10,7 +10,7 @@ The app is TypeScript end-to-end:
 - Shared diff viewer: side-by-side or stacked layouts with intraline highlighting, used by both edit tool cards and Git diffs
 - `supervisor.ts` is a small stable dev supervisor that owns the public port and restarts the app server safely
 - `server.ts` is the restartable Pi API/WebSocket server, run directly with `tsx`
-- `src/main.ts` is the Vite frontend with HMR
+- `src/main.ts` bootstraps the modular Vite frontend with HMR; see [docs/frontend-architecture.md](docs/frontend-architecture.md)
 - in dev, `server.ts` embeds Vite middleware while `supervisor.ts` proxies API, WebSocket, and HMR traffic
 - `contexts/web-ui.md` is always injected into agent sessions for web UI behavior like image/artifact rendering
 - bundled pi extensions add pi-web defaults, including automatic session naming from the first prompt

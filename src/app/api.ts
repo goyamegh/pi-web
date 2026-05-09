@@ -1,0 +1,25 @@
+import type { AppState } from "./types.js";
+
+export type ApiHeaders = () => Record<string, string>;
+
+export type ApiClient = {
+  headers: ApiHeaders;
+  wsUrl: () => URL;
+};
+
+export function createApiClient(state: AppState): ApiClient {
+  return {
+    headers() {
+      return {
+        "content-type": "application/json",
+        ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
+      };
+    },
+    wsUrl() {
+      const url = new URL("/ws", location.href);
+      url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      if (state.token) url.searchParams.set("token", state.token);
+      return url;
+    },
+  };
+}
