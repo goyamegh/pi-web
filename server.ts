@@ -17,6 +17,7 @@ import {
   SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
+import { resolveBundledExtensionPaths } from "./server/extensions.js";
 import type { PiWebSession } from "./server/types.js";
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -676,10 +677,7 @@ function registerLiveSession(value: any) {
 }
 
 function bundledExtensionPaths() {
-  // When developing pi-web from this repo, the same directory is already loaded
-  // by pi as the project-local .pi/extensions path. For other PI_WEB_CWD values
-  // and packaged installs, add pi-web's bundled extensions explicitly.
-  return resolve(piCwd) === appDir || !existsSync(bundledExtensionsDir) ? [] : [bundledExtensionsDir];
+  return resolveBundledExtensionPaths({ piCwd, appDir, bundledExtensionsDir });
 }
 
 async function makeAgentSession(path?: string) {
