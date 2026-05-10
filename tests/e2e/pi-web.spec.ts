@@ -447,6 +447,33 @@ test.describe("tool cards", () => {
     await expect(page.locator(".message.tool")).toHaveCount(0);
   });
 
+  test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.evaluate(() => { document.documentElement.dataset.density = "compact"; });
+    await page.locator("#prompt").fill("use tool");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator(".message.assistant", { hasText: "Done reading." }).last()).toContainText("Let me check that for you.");
+
+    const card = page.locator(".toolCard.toolCard--success").last();
+    await expect(card).toBeVisible();
+    await expect(card).toHaveClass(/toolCard--compactCollapsed/);
+    await expect(card.locator(".toolCardExpandToggle")).toHaveAttribute("aria-expanded", "false");
+    await expect(card.locator(".toolCardBody")).toBeHidden();
+
+    const collapsedHeight = await card.evaluate((el) => el.getBoundingClientRect().height);
+    expect(collapsedHeight).toBeLessThanOrEqual(32);
+
+    await card.locator(".toolCardExpandToggle").click();
+    await expect(card).not.toHaveClass(/toolCard--compactCollapsed/);
+    await expect(card.locator(".toolCardBody")).toBeVisible();
+    await expect(card.locator(".toolCardArgs")).toContainText('"path": "/some/file"');
+    await expect(card.locator(".toolCardExpandToggle")).toHaveAttribute("aria-expanded", "true");
+
+    const expandedHeight = await card.evaluate((el) => el.getBoundingClientRect().height);
+    expect(expandedHeight).toBeGreaterThan(collapsedHeight);
+  });
+
   test("renders edit tool calls as a side-by-side intraline diff with an icon layout toggle", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("edit diff");

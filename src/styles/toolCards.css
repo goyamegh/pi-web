@@ -22,11 +22,8 @@
   gap: 8px;
   padding: 8px 12px;
 }
+.toolCardExpandToggle,
 .toolCardCollapseToggle {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 24px;
@@ -41,6 +38,17 @@
   cursor: pointer;
   z-index: 1;
 }
+.toolCardExpandToggle {
+  display: none;
+  flex: 0 0 auto;
+}
+.toolCardCollapseToggle {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: inline-flex;
+}
+.toolCardExpandToggle:hover,
 .toolCardCollapseToggle:hover { color: var(--text); border: none; }
 .toolCardIcon {
   flex: 0 0 auto;
@@ -90,6 +98,7 @@
   margin-left: 0.4ch;
 }
 .toolCardDetails {
+  display: none;
   border-top: 1px solid var(--border);
 }
 .toolCardSummary {
@@ -152,6 +161,39 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
 .toolCard--running .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--panel-2) 80%, #1a3050); }
 .toolCard--success .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
 .toolCard--error   .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
+
+:root[data-density="compact"] .toolCard {
+  font-size: 12px;
+}
+:root[data-density="compact"] .toolCardHeader {
+  min-height: 29px;
+  height: 29px;
+  padding: 4px 10px;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+:root[data-density="compact"] .toolCardExpandToggle {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  font-size: 14px;
+}
+:root[data-density="compact"] .toolCardName {
+  font-size: 12px;
+}
+:root[data-density="compact"] .toolCardSubtitle {
+  font-size: 11px;
+}
+:root[data-density="compact"] .toolCardDetails {
+  display: block;
+}
+:root[data-density="compact"] .toolCard.toolCard--compactCollapsed {
+  height: 30px;
+  box-sizing: border-box;
+}
+:root[data-density="compact"] .toolCard.toolCard--compactCollapsed > :not(.toolCardHeader) {
+  display: none;
+}
 
 /* ── end Tool Cards ──────────────────────────────────────── */
 

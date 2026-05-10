@@ -23,6 +23,42 @@ function toolSubtitle(toolName: string, args: Record<string, unknown>): string {
   return "";
 }
 
+function isCompactDensity() {
+  return document.documentElement.dataset.density === "compact";
+}
+
+function updateCompactToggle(toggle: HTMLButtonElement, collapsed: boolean) {
+  toggle.textContent = collapsed ? "▸" : "▾";
+  toggle.setAttribute("aria-label", collapsed ? "Show tool details" : "Hide tool details");
+  toggle.title = collapsed ? "Show tool details" : "Hide tool details";
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+}
+
+function setCompactCollapsed(card: HTMLDivElement, collapsed: boolean) {
+  card.classList.toggle("toolCard--compactCollapsed", collapsed);
+  const toggle = card.querySelector<HTMLButtonElement>(".toolCardExpandToggle");
+  if (toggle) updateCompactToggle(toggle, collapsed);
+}
+
+function addToolArgsDetails(card: HTMLDivElement, args?: Record<string, unknown>) {
+  if (!args || Object.keys(args).length === 0) return;
+
+  const details = document.createElement("details");
+  details.className = "toolCardDetails";
+  details.open = true;
+
+  const summary = document.createElement("summary");
+  summary.className = "toolCardSummary";
+  summary.textContent = "Arguments";
+
+  const pre = document.createElement("pre");
+  pre.className = "toolCardArgs";
+  pre.textContent = JSON.stringify(args, null, 2);
+
+  details.append(summary, pre);
+  card.append(details);
+}
+
 function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<string, unknown>) {
   const header = document.createElement("div");
   header.className = "toolCardHeader";
@@ -46,12 +82,33 @@ function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<str
       subtitle.className = "toolCardSubtitle";
       subtitle.textContent = sub;
       label.append(subtitle);
-      label.addEventListener("click", () => label.classList.toggle("expanded"));
+      label.addEventListener("click", (event) => {
+        if (isCompactDensity()) return;
+        event.stopPropagation();
+        label.classList.toggle("expanded");
+      });
     }
   }
 
-  header.append(statusIcon, label);
+  const expandToggle = document.createElement("button");
+  expandToggle.type = "button";
+  expandToggle.className = "toolCardExpandToggle";
+  updateCompactToggle(expandToggle, true);
+  expandToggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setCompactCollapsed(card, !card.classList.contains("toolCard--compactCollapsed"));
+  });
+
+  header.addEventListener("click", (event) => {
+    const target = event.target instanceof HTMLElement ? event.target : undefined;
+    if (!isCompactDensity() || target?.closest("button")) return;
+    setCompactCollapsed(card, !card.classList.contains("toolCard--compactCollapsed"));
+  });
+
+  header.append(statusIcon, label, expandToggle);
   card.append(header);
+  addToolArgsDetails(card, args);
+  setCompactCollapsed(card, true);
 }
 
 function highlightToolResult(pre: HTMLPreElement, text: string) {
@@ -133,7 +190,6 @@ export function createToolCards(messagesEl: HTMLDivElement): ToolCards {
     card.classList.add(isError ? "toolCard--error" : "toolCard--success");
 
     card.querySelector(".toolCardBadge")?.remove();
-    card.querySelector(".toolCardDetails")?.remove();
 
     const resultStr = textFromToolResult(result);
     if (resultStr && (isError || card.dataset.toolName !== "edit")) addToolResultBody(card, resultStr);
