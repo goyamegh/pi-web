@@ -1,4 +1,4 @@
-import { Brain, CornerDownRight, createElement, GitBranch, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, SendHorizontal, Square, SquarePen, X } from "lucide";
+import { Brain, CornerDownRight, createElement, GitBranch, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, SendHorizontal, Settings, Square, SquarePen, X } from "lucide";
 
 const iconNodes = {
   brain: Brain,
@@ -9,6 +9,7 @@ const iconNodes = {
   paperclip: Paperclip,
   route: Route,
   "send-horizontal": SendHorizontal,
+  settings: Settings,
   square: Square,
   "square-pen": SquarePen,
   "maximize-2": Maximize2,

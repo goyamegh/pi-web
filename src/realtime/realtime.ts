@@ -6,6 +6,7 @@ import type { ComposerController } from "../composer/composer.js";
 import type { MessageList } from "../messages/messageList.js";
 import type { ModelSettings } from "../models/modelSettings.js";
 import type { SessionsController } from "../sessions/sessionDrawer.js";
+import type { SettingsController } from "../settings/settings.js";
 import type { StatusBar } from "../status/statusBar.js";
 import type { ToolCards } from "../tools/toolCards.js";
 
@@ -22,6 +23,7 @@ export function createRealtime(options: {
   messages: MessageList;
   models: ModelSettings;
   sessions: SessionsController;
+  settings: SettingsController;
   status: StatusBar;
   tools: ToolCards;
   updateMeta: (data: any) => void;
@@ -29,7 +31,7 @@ export function createRealtime(options: {
   refreshState: () => Promise<void>;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, status, tools, updateMeta, refreshMessages, refreshState, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, updateMeta, refreshMessages, refreshState, addMessage } = options;
 
   function handlePiEvent(event: PiEvent) {
     switch (event.type) {
@@ -93,6 +95,10 @@ export function createRealtime(options: {
       }
       if (data.type === "models_updated") {
         models.populateModelSelect(data.models || [], state.currentModelKey);
+        return;
+      }
+      if (data.type === "settings_updated") {
+        settings.applySettings(data.settings);
         return;
       }
       if (data.type === "pi_event") {

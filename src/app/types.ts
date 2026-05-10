@@ -14,6 +14,26 @@ export type ImageAttachment = {
   name: string;
 };
 
+export type PiWebModelSetting = {
+  provider: string;
+  id: string;
+};
+
+export type PiWebSettings = {
+  version: 1;
+  appearance: {
+    density: "comfortable" | "compact";
+  };
+  composer: {
+    queueMode: QueueMode;
+    expanded: boolean;
+  };
+  defaults: {
+    model?: PiWebModelSetting;
+    thinkingLevel?: string;
+  };
+};
+
 export type AttachedImage = {
   data?: string;
   mimeType?: string;
@@ -58,12 +78,20 @@ export type AppState = {
   queueMode: QueueMode;
   attachedImages: ImageAttachment[];
   editorExpanded: boolean;
+  settings: PiWebSettings;
 };
 
 export const reconnectDelayMs = 1500;
 export const reconnectNoticeDelayMs = 2500;
 export const connectionLostDelayMs = 15000;
 export const sessionFolderPreviewLimit = 8;
+
+export const defaultPiWebSettings: PiWebSettings = {
+  version: 1,
+  appearance: { density: "comfortable" },
+  composer: { queueMode: "steer", expanded: false },
+  defaults: {},
+};
 
 const tokenStorageKey = "pi-web-token";
 const collapsedFoldersStorageKey = "pi-web-collapsed-session-folders";
@@ -113,7 +141,8 @@ export function createAppState(): AppState {
     expandedSessionFolders: new Set(),
     queueMode: "steer",
     attachedImages: [],
-    editorExpanded: false,
+    editorExpanded: defaultPiWebSettings.composer.expanded,
+    settings: defaultPiWebSettings,
   };
 }
 

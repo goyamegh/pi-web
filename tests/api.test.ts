@@ -58,20 +58,23 @@ async function waitForServer(baseUrl: string) {
 describe("pi-web mock API", () => {
   let child: ChildProcess;
   let baseUrl: string;
+  let settingsDir: string;
 
   beforeAll(async () => {
+    settingsDir = await mkdtemp(join(tmpdir(), "pi-web-api-settings-"));
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json") },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
     await waitForServer(baseUrl);
   }, 20_000);
 
-  afterAll(() => {
+  afterAll(async () => {
     child?.kill();
+    if (settingsDir) await rm(settingsDir, { recursive: true, force: true });
   });
 
   it("returns state, models, messages, and sessions", async () => {
@@ -105,6 +108,49 @@ describe("pi-web mock API", () => {
     const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
     expect(messages.messages.at(-2).text).toContain("describe this");
     expect(messages.messages.at(-1).text).toContain("with image");
+  });
+
+  it("persists and returns settings", async () => {
+    const initial = await (await fetch(`${baseUrl}/api/settings`)).json();
+    expect(initial.settings.composer.queueMode).toBe("steer");
+
+    const patchedRes = await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        appearance: { density: "compact" },
+        composer: { queueMode: "followUp", expanded: true },
+        defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low" },
+      }),
+    });
+    expect(patchedRes.status).toBe(200);
+    const patched = await patchedRes.json();
+    expect(patched.settings).toMatchObject({
+      appearance: { density: "compact" },
+      composer: { queueMode: "followUp", expanded: true },
+      defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low" },
+    });
+
+    const current = await (await fetch(`${baseUrl}/api/settings`)).json();
+    expect(current.settings.composer.queueMode).toBe("followUp");
+  });
+
+  it("applies saved model defaults to new sessions", async () => {
+    try {
+      await fetch(`${baseUrl}/api/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "high" } }),
+      });
+
+      const newRes = await fetch(`${baseUrl}/api/sessions/new`, { method: "POST" });
+      expect(newRes.status).toBe(200);
+      const data = await newRes.json();
+      expect(data.model.provider).toBe("mock");
+      expect(data.thinkingLevel).toBe("high");
+    } finally {
+      await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    }
   });
 
   it("renames the current session", async () => {

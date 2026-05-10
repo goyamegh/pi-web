@@ -18,6 +18,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths } from "./server/extensions.js";
+import { createSettingsStore } from "./server/settings.js";
 import type { PiWebSession } from "./server/types.js";
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -613,6 +614,7 @@ async function switchToSessionId(id: string) {
 
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
+const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
@@ -716,6 +718,19 @@ async function getOrCreateLiveSession(path: string) {
   return registerLiveSession(created.session);
 }
 
+async function applyDefaultSessionSettings(value: any) {
+  const settings = await settingsStore.read();
+  const modelSetting = settings.defaults.model;
+  if (modelSetting) {
+    const model = value.modelRegistry.find(modelSetting.provider, modelSetting.id);
+    if (model) await value.setModel(model);
+  }
+  const thinkingLevel = settings.defaults.thinkingLevel;
+  if (thinkingLevel && value.getAvailableThinkingLevels().includes(thinkingLevel as any)) {
+    value.setThinkingLevel(thinkingLevel as any);
+  }
+}
+
 async function createNewLiveSession(cwd?: string) {
   if (cwd) await setPiCwd(cwd);
   const created = await makeAgentSession();
@@ -723,6 +738,7 @@ async function createNewLiveSession(cwd?: string) {
   const value = created.session;
   value.sessionManager.newSession();
   value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
+  await applyDefaultSessionSettings(value);
   return registerLiveSession(value);
 }
 
@@ -882,6 +898,16 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/sessions") {
         return sendJson(res, 200, { ok: true, sessions: await listSessionInfos() });
+      }
+
+      if (method === "GET" && url.pathname === "/api/settings") {
+        return sendJson(res, 200, { ok: true, settings: await settingsStore.read() });
+      }
+
+      if (method === "PATCH" && url.pathname === "/api/settings") {
+        const settings = await settingsStore.patch(await readBody(req));
+        broadcast({ type: "settings_updated", settings });
+        return sendJson(res, 200, { ok: true, settings });
       }
 
       if (method === "GET" && url.pathname === "/api/models") {

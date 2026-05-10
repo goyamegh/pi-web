@@ -33,6 +33,9 @@
         <button id="gitButton" class="iconButton statusBarButton" type="button" aria-label="Git" title="Git">
           <span data-icon="git-branch"></span>
         </button>
+        <button id="settingsButton" class="iconButton statusBarButton" type="button" aria-label="Settings" title="Settings">
+          <span data-icon="settings"></span>
+        </button>
       </div>
 
       <aside id="gitPanel" class="gitPanel" aria-label="Git" hidden>
@@ -67,6 +70,48 @@
         </div>
         <div id="sessionList" class="sessionList" aria-live="polite"></div>
         <button id="sessionNewButton" class="sessionNewButton" type="button">+ New session</button>
+      </aside>
+
+      <div id="settingsBackdrop" class="settingsBackdrop" hidden></div>
+      <aside id="settingsPanel" class="settingsPanel" aria-label="Settings" hidden>
+        <div class="settingsHeader">
+          <h2>Settings</h2>
+          <button id="settingsCloseButton" class="iconButton" type="button" aria-label="Close settings" title="Close settings">×</button>
+        </div>
+        <section class="settingsSection">
+          <h3>Appearance</h3>
+          <label class="settingsField">
+            <span>Density</span>
+            <select id="settingDensitySelect">
+              <option value="comfortable">Comfortable</option>
+              <option value="compact">Compact</option>
+            </select>
+          </label>
+        </section>
+        <section class="settingsSection">
+          <h3>Composer</h3>
+          <label class="settingsField">
+            <span>Default queue mode</span>
+            <select id="settingQueueModeSelect">
+              <option value="steer">Steer while running</option>
+              <option value="followUp">Follow up after running</option>
+            </select>
+          </label>
+          <label class="settingsCheckbox">
+            <input id="settingComposerExpandedCheckbox" type="checkbox" />
+            <span>Keep composer expanded</span>
+          </label>
+        </section>
+        <section class="settingsSection">
+          <h3>New sessions</h3>
+          <p class="settingsHint">Saved model defaults are applied when starting a new session.</p>
+          <div class="settingsValue" id="settingModelDefaultsValue">No default model saved</div>
+          <div class="settingsActions">
+            <button id="settingSaveModelDefaultsButton" type="button">Use current model</button>
+            <button id="settingClearModelDefaultsButton" type="button">Clear</button>
+          </div>
+        </section>
+        <span id="settingsStatus" class="settingsStatus" aria-live="polite"></span>
       </aside>
 
       <form id="promptForm" class="composer">

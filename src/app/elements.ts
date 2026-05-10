@@ -30,6 +30,17 @@ export type AppElements = {
   thinkingSelectEl: HTMLSelectElement;
   newSessionHeaderButton: HTMLButtonElement;
   gitButton: HTMLButtonElement;
+  settingsButton: HTMLButtonElement;
+  settingsPanel: HTMLElement;
+  settingsBackdrop: HTMLDivElement;
+  settingsCloseButton: HTMLButtonElement;
+  settingDensitySelect: HTMLSelectElement;
+  settingQueueModeSelect: HTMLSelectElement;
+  settingComposerExpandedCheckbox: HTMLInputElement;
+  settingModelDefaultsValue: HTMLSpanElement;
+  settingSaveModelDefaultsButton: HTMLButtonElement;
+  settingClearModelDefaultsButton: HTMLButtonElement;
+  settingsStatusEl: HTMLSpanElement;
   gitPanel: HTMLElement;
   emptyCwdChooserEl: HTMLDivElement;
   emptyCwdPathEl: HTMLDivElement;
@@ -75,6 +86,17 @@ export function getAppElements(): AppElements {
     thinkingSelectEl: requiredElement<HTMLSelectElement>("#thinkingSelect"),
     newSessionHeaderButton: requiredElement<HTMLButtonElement>("#newSessionHeaderButton"),
     gitButton: requiredElement<HTMLButtonElement>("#gitButton"),
+    settingsButton: requiredElement<HTMLButtonElement>("#settingsButton"),
+    settingsPanel: requiredElement<HTMLElement>("#settingsPanel"),
+    settingsBackdrop: requiredElement<HTMLDivElement>("#settingsBackdrop"),
+    settingsCloseButton: requiredElement<HTMLButtonElement>("#settingsCloseButton"),
+    settingDensitySelect: requiredElement<HTMLSelectElement>("#settingDensitySelect"),
+    settingQueueModeSelect: requiredElement<HTMLSelectElement>("#settingQueueModeSelect"),
+    settingComposerExpandedCheckbox: requiredElement<HTMLInputElement>("#settingComposerExpandedCheckbox"),
+    settingModelDefaultsValue: requiredElement<HTMLSpanElement>("#settingModelDefaultsValue"),
+    settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),
+    settingClearModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingClearModelDefaultsButton"),
+    settingsStatusEl: requiredElement<HTMLSpanElement>("#settingsStatus"),
     gitPanel: requiredElement<HTMLElement>("#gitPanel"),
     emptyCwdChooserEl: requiredElement<HTMLDivElement>("#emptyCwdChooser"),
     emptyCwdPathEl: requiredElement<HTMLDivElement>("#emptyCwdChooser .emptyCwdPath"),

@@ -1,0 +1,132 @@
+.settingsBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, .42);
+}
+.settingsPanel {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 31;
+  display: flex;
+  width: min(380px, calc(100vw - 32px));
+  max-width: 100vw;
+  flex-direction: column;
+  gap: 16px;
+  border-left: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 96%, black);
+  box-shadow: -18px 0 60px rgba(0,0,0,.35);
+  padding: 16px;
+}
+.settingsPanel[hidden], .settingsBackdrop[hidden] { display: none; }
+.settingsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settingsHeader h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.settingsHeader .iconButton {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+.settingsHeader .iconButton:hover {
+  border: 0;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.settingsSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-2) 42%, transparent);
+  padding: 12px;
+}
+.settingsSection h3 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: .01em;
+}
+.settingsField {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, auto);
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.settingsField select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 6px 8px;
+}
+.settingsCheckbox {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.settingsCheckbox input { accent-color: var(--accent); }
+.settingsHint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.settingsValue {
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.settingsActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.settingsActions button {
+  min-height: 32px;
+  font-size: 12px;
+}
+.settingsStatus {
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.settingsStatus.error { color: var(--danger); }
+
+:root[data-density="compact"] .message {
+  padding: 8px 10px;
+}
+:root[data-density="compact"] .message.user {
+  margin: 6px 12px 6px 0;
+}
+:root[data-density="compact"] .message.system {
+  margin: 4px 0;
+}
+:root[data-density="compact"] .markdownBody p,
+:root[data-density="compact"] .markdownBody ul,
+:root[data-density="compact"] .markdownBody ol,
+:root[data-density="compact"] .markdownBody blockquote,
+:root[data-density="compact"] .markdownBody pre,
+:root[data-density="compact"] .markdownBody table {
+  margin-bottom: .55em;
+}

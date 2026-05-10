@@ -13,6 +13,7 @@ import { createMessageList } from "./messages/messageList.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
+import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createToolCards } from "./tools/toolCards.js";
 
@@ -28,6 +29,7 @@ const messages = createMessageList({ messagesEl: elements.messagesEl, markdown }
 let composer: ComposerController;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
+let settings: SettingsController;
 let statusBar: StatusBar;
 
 function showSystemError(error: unknown) {
@@ -67,7 +69,7 @@ async function refreshState() {
   updateMeta(data);
   state.isStreaming = Boolean(data.isStreaming);
   composer.updatePrimaryAction();
-  await Promise.all([modelSettings.refreshModels(), refreshMessages(), statusBar.refreshSessionTitle()]);
+  await Promise.all([settings.refreshSettings(), modelSettings.refreshModels(), refreshMessages(), statusBar.refreshSessionTitle()]);
 }
 
 function initStaticIcons() {
@@ -77,6 +79,7 @@ function initStaticIcons() {
   setIcon(elements.primaryButton, "send-horizontal");
   setIcon(elements.expandButton, "maximize-2");
   setIcon(elements.gitButton, "git-branch");
+  setIcon(elements.settingsButton, "settings");
   setIcon(elements.stopButton, "square");
 }
 
@@ -96,6 +99,13 @@ statusBar = createStatusBar({
   addMessage: messages.addMessage,
   refreshSessions: () => sessions.refreshSessions(),
   refreshState,
+});
+
+settings = createSettings({
+  state,
+  elements,
+  api,
+  addMessage: messages.addMessage,
 });
 
 sessions = createSessions({
@@ -134,17 +144,19 @@ const realtime = createRealtime({
   sessions,
   status: statusBar,
   tools,
+  settings,
   updateMeta,
   refreshMessages,
   refreshState,
   addMessage: messages.addMessage,
 });
 
+initStaticIcons();
 statusBar.init();
 sessions.init();
 composer.init();
 modelSettings.init();
-initStaticIcons();
+settings.init();
 composer.updateQueueToggle();
 initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, apiHeaders: api.headers });
 composer.updatePrimaryAction();
