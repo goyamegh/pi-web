@@ -6,6 +6,7 @@ export type ToolCards = {
   addToolCard: (toolName: string, args: Record<string, unknown>) => HTMLDivElement;
   updateToolCard: (card: HTMLDivElement, toolName: string, isError: boolean, result?: unknown) => void;
   addToolHistoryCard: (toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) => void;
+  addRuntimeErrorCard: (title: string, subtitle: string, body: string) => void;
   startTool: (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>) => void;
   endTool: (toolCallId: string | undefined, toolName: string, isError: boolean, result?: unknown) => void;
   clearActiveToolCards: () => void;
@@ -59,7 +60,7 @@ function addToolArgsDetails(card: HTMLDivElement, args?: Record<string, unknown>
   card.append(details);
 }
 
-function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<string, unknown>) {
+function addCardHeader(card: HTMLDivElement, title: string, subtitleText = "") {
   const header = document.createElement("div");
   header.className = "toolCardHeader";
 
@@ -72,22 +73,19 @@ function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<str
 
   const name = document.createElement("span");
   name.className = "toolCardName";
-  name.textContent = toolName;
+  name.textContent = title;
   label.append(name);
 
-  if (args) {
-    const sub = toolSubtitle(toolName, args);
-    if (sub) {
-      const subtitle = document.createElement("span");
-      subtitle.className = "toolCardSubtitle";
-      subtitle.textContent = sub;
-      label.append(subtitle);
-      label.addEventListener("click", (event) => {
-        if (isCompactDensity()) return;
-        event.stopPropagation();
-        label.classList.toggle("expanded");
-      });
-    }
+  if (subtitleText) {
+    const subtitle = document.createElement("span");
+    subtitle.className = "toolCardSubtitle";
+    subtitle.textContent = subtitleText;
+    label.append(subtitle);
+    label.addEventListener("click", (event) => {
+      if (isCompactDensity()) return;
+      event.stopPropagation();
+      label.classList.toggle("expanded");
+    });
   }
 
   const expandToggle = document.createElement("button");
@@ -107,8 +105,12 @@ function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<str
 
   header.append(statusIcon, label, expandToggle);
   card.append(header);
-  addToolArgsDetails(card, args);
   setCompactCollapsed(card, true);
+}
+
+function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<string, unknown>) {
+  addCardHeader(card, toolName, args ? toolSubtitle(toolName, args) : "");
+  addToolArgsDetails(card, args);
 }
 
 function highlightToolResult(pre: HTMLPreElement, text: string) {
@@ -206,6 +208,14 @@ export function createToolCards(messagesEl: HTMLDivElement): ToolCards {
     messagesEl.append(card);
   }
 
+  function addRuntimeErrorCard(title: string, subtitle: string, body: string) {
+    const card = document.createElement("div");
+    card.className = "toolCard toolCard--error runtimeErrorCard";
+    addCardHeader(card, title, subtitle);
+    if (body) addToolResultBody(card, body);
+    messagesEl.append(card);
+  }
+
   function startTool(toolCallId: string | undefined, toolName: string, args: Record<string, unknown>) {
     const cardKey = toolCallId || toolName;
     const card = addToolCard(toolName, args);
@@ -224,6 +234,7 @@ export function createToolCards(messagesEl: HTMLDivElement): ToolCards {
     addToolCard,
     updateToolCard,
     addToolHistoryCard,
+    addRuntimeErrorCard,
     startTool,
     endTool,
     clearActiveToolCards() {

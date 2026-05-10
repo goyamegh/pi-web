@@ -1,0 +1,538 @@
+import type { ApiClient } from "../app/api.js";
+import type { AppElements } from "../app/elements.js";
+import type { AppState } from "../app/types.js";
+import type { ComposerController } from "../composer/composer.js";
+
+export type ConversationTreeController = {
+  init: () => void;
+  isOpen: () => boolean;
+  refreshTree: () => Promise<void>;
+  setOpen: (open: boolean) => void;
+};
+
+type ConversationTreeNode = {
+  id: string;
+  parentId: string | null;
+  type: string;
+  role: string;
+  preview: string;
+  timestamp: string;
+  label?: string;
+  labelTimestamp?: string;
+  childCount: number;
+  isOnActivePath: boolean;
+  isCurrentLeaf: boolean;
+  children: ConversationTreeNode[];
+};
+
+type ConversationTreeResponse = {
+  ok: boolean;
+  sessionId: string;
+  leafId: string | null;
+  activePathIds: string[];
+  entryCount: number;
+  branchPointCount: number;
+  nodes: ConversationTreeNode[];
+};
+
+type FilterMode = "default" | "no-tools" | "user" | "labeled" | "all";
+
+type NavigateOptions = {
+  summarize?: boolean;
+  customInstructions?: string;
+};
+
+function roleLabel(role: string, type: string) {
+  switch (role) {
+    case "user": return "user";
+    case "assistant": return "assistant";
+    case "toolCall": return "tool";
+    case "toolResult": return "result";
+    case "branchSummary": return "summary";
+    case "compaction": return "compact";
+    case "error": return "error";
+    case "model": return "model";
+    case "thinking": return "thinking";
+    case "session": return "session";
+    case "label": return "label";
+    case "custom": return "custom";
+    default: return type.replace(/_/g, " ");
+  }
+}
+
+function formatTimestamp(value: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+}
+
+function projectTree(nodes: ConversationTreeNode[], mode: FilterMode): ConversationTreeNode[] {
+  const projected: ConversationTreeNode[] = [];
+  for (const node of nodes) {
+    const children = projectTree(node.children || [], mode);
+    if (matchesFilter(node, mode)) projected.push({ ...node, children, childCount: children.length });
+    else projected.push(...children);
+  }
+  return projected;
+}
+
+function countVisibleNodes(nodes: ConversationTreeNode[]): number {
+  return nodes.reduce((sum, node) => sum + 1 + countVisibleNodes(node.children || []), 0);
+}
+
+function collectVisibleIds(nodes: ConversationTreeNode[], ids = new Set<string>()) {
+  for (const node of nodes) {
+    ids.add(node.id);
+    collectVisibleIds(node.children || [], ids);
+  }
+  return ids;
+}
+
+function searchTree(nodes: ConversationTreeNode[], query: string): ConversationTreeNode[] {
+  if (!query) return nodes;
+  const matches: ConversationTreeNode[] = [];
+  for (const node of nodes) {
+    const children = searchTree(node.children || [], query);
+    if (matchesSearch(node, query) || children.length > 0) matches.push({ ...node, children, childCount: children.length });
+  }
+  return matches;
+}
+
+function findNode(nodes: ConversationTreeNode[], id: string): ConversationTreeNode | undefined {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    const child = findNode(node.children || [], id);
+    if (child) return child;
+  }
+  return undefined;
+}
+
+function isToolNode(node: ConversationTreeNode) {
+  return node.role === "toolCall" || node.role === "toolResult";
+}
+
+function isConversationNode(node: ConversationTreeNode) {
+  return ["user", "assistant", "branchSummary", "compaction", "custom"].includes(node.role);
+}
+
+function matchesFilter(node: ConversationTreeNode, mode: FilterMode) {
+  if (mode === "all") return true;
+  if (mode === "user") return node.role === "user" || node.role === "custom";
+  if (mode === "labeled") return Boolean(node.label);
+  if (mode === "no-tools") return !isToolNode(node) && node.role !== "label" && node.role !== "error";
+  return isConversationNode(node);
+}
+
+function matchesSearch(node: ConversationTreeNode, query: string) {
+  if (!query) return true;
+  const haystack = `${node.preview} ${node.label || ""} ${roleLabel(node.role, node.type)} ${node.id}`.toLowerCase();
+  return haystack.includes(query);
+}
+
+function isMobileViewport() {
+  return window.matchMedia("(max-width: 700px)").matches;
+}
+
+function plural(value: number, singular: string, pluralValue = `${singular}s`) {
+  return `${value} ${value === 1 ? singular : pluralValue}`;
+}
+
+export function createConversationTree(options: {
+  state: AppState;
+  elements: AppElements;
+  api: ApiClient;
+  composer: ComposerController;
+  updateMeta: (data: any) => void;
+  refreshMessages: () => Promise<void>;
+  addMessage: (role: "system", text: string, extraClass?: string) => void;
+}): ConversationTreeController {
+  const { state, elements, api, composer, updateMeta, refreshMessages, addMessage } = options;
+
+  let treeData: ConversationTreeResponse | null = null;
+  let selectedId = "";
+  let loading = false;
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "conversationTreeBackdrop";
+  backdrop.hidden = true;
+
+  const panel = document.createElement("aside");
+  panel.className = "conversationTreePanel";
+  panel.setAttribute("aria-label", "Conversation tree");
+  panel.hidden = true;
+
+  const header = document.createElement("div");
+  header.className = "conversationTreeHeader";
+  const title = document.createElement("div");
+  title.className = "conversationTreeTitle";
+  const h2 = document.createElement("h2");
+  h2.textContent = "Conversation tree";
+  const summary = document.createElement("span");
+  summary.className = "conversationTreeSummary";
+  title.append(h2, summary);
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "iconButton conversationTreeCloseButton";
+  closeButton.title = "Close conversation tree";
+  closeButton.setAttribute("aria-label", closeButton.title);
+  closeButton.textContent = "×";
+  header.append(title, closeButton);
+
+  const controls = document.createElement("div");
+  controls.className = "conversationTreeControls";
+  const search = document.createElement("input");
+  search.className = "conversationTreeSearch";
+  search.type = "search";
+  search.placeholder = "Search tree";
+  search.setAttribute("aria-label", "Search conversation tree");
+  const filter = document.createElement("select");
+  filter.className = "conversationTreeFilter";
+  filter.setAttribute("aria-label", "Conversation tree filter");
+  const filters: Array<[FilterMode, string]> = [
+    ["default", "Default"],
+    ["no-tools", "No tools"],
+    ["user", "User only"],
+    ["labeled", "Labeled"],
+    ["all", "All entries"],
+  ];
+  for (const [value, label] of filters) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    filter.append(option);
+  }
+  controls.append(search, filter);
+
+  const status = document.createElement("div");
+  status.className = "conversationTreeStatus";
+  status.setAttribute("aria-live", "polite");
+
+  const list = document.createElement("div");
+  list.className = "conversationTreeList";
+  list.setAttribute("role", "tree");
+
+  const selection = document.createElement("div");
+  selection.className = "conversationTreeSelection";
+  selection.hidden = true;
+  const selectionText = document.createElement("div");
+  selectionText.className = "conversationTreeSelectionText";
+  const selectionTitle = document.createElement("strong");
+  const selectionMeta = document.createElement("span");
+  selectionText.append(selectionTitle, selectionMeta);
+  const selectionActions = document.createElement("div");
+  selectionActions.className = "conversationTreeSelectionActions";
+  const jumpButton = document.createElement("button");
+  jumpButton.type = "button";
+  jumpButton.className = "primaryAction conversationTreeJumpButton";
+  jumpButton.textContent = "Jump here";
+  const summaryButton = document.createElement("button");
+  summaryButton.type = "button";
+  summaryButton.className = "conversationTreeSummaryButton";
+  summaryButton.textContent = "Summarize & jump";
+  const customButton = document.createElement("button");
+  customButton.type = "button";
+  customButton.className = "conversationTreeCustomButton";
+  customButton.textContent = "Custom focus…";
+  selectionActions.append(jumpButton, summaryButton, customButton);
+
+  const customForm = document.createElement("div");
+  customForm.className = "conversationTreeCustomForm";
+  customForm.hidden = true;
+  const customLabel = document.createElement("label");
+  customLabel.textContent = "Summary focus";
+  const customInstructions = document.createElement("textarea");
+  customInstructions.rows = 3;
+  customInstructions.placeholder = "What should the branch summary preserve?";
+  customLabel.append(customInstructions);
+  const customActions = document.createElement("div");
+  customActions.className = "conversationTreeCustomActions";
+  const customCancel = document.createElement("button");
+  customCancel.type = "button";
+  customCancel.textContent = "Cancel";
+  const customSubmit = document.createElement("button");
+  customSubmit.type = "button";
+  customSubmit.className = "primaryAction";
+  customSubmit.textContent = "Summarize & jump";
+  customActions.append(customCancel, customSubmit);
+  customForm.append(customLabel, customActions);
+
+  selection.append(selectionText, selectionActions, customForm);
+  panel.append(header, controls, status, list, selection);
+  document.body.append(backdrop, panel);
+
+  function setStatus(message: string, isError = false) {
+    status.textContent = message;
+    status.classList.toggle("error", isError);
+  }
+
+  function isOpen() {
+    return !panel.hidden;
+  }
+
+  function selectedNode() {
+    return selectedId && treeData ? findNode(treeData.nodes, selectedId) : undefined;
+  }
+
+  function setLoading(next: boolean) {
+    loading = next;
+    panel.classList.toggle("loading", loading);
+    renderSelection();
+  }
+
+  function renderSummary(visibleCount?: number) {
+    if (!treeData) {
+      summary.textContent = "";
+      return;
+    }
+    const parts = typeof visibleCount === "number" && visibleCount !== treeData.entryCount
+      ? [`${visibleCount} shown`, plural(treeData.entryCount, "entry", "entries")]
+      : [plural(treeData.entryCount, "entry", "entries")];
+    if (treeData.branchPointCount > 0) parts.push(plural(treeData.branchPointCount, "branch point"));
+    summary.textContent = parts.join(" · ");
+  }
+
+  function renderSelection(visibleIds?: Set<string>) {
+    const node = selectedNode();
+    selection.hidden = !node || Boolean(visibleIds && !visibleIds.has(node.id));
+    if (!node || selection.hidden) return;
+
+    const label = roleLabel(node.role, node.type);
+    selectionTitle.textContent = `${label}: ${node.preview || node.id}`;
+    const meta = [formatTimestamp(node.timestamp), node.label ? `#${node.label}` : "", node.isCurrentLeaf ? "current position" : ""].filter(Boolean).join(" · ");
+    selectionMeta.textContent = meta;
+
+    const actionText = node.role === "user" || node.role === "custom" ? "Edit from here" : "Continue from here";
+    jumpButton.textContent = node.isCurrentLeaf ? "Current position" : actionText;
+    jumpButton.disabled = loading || state.isStreaming || node.isCurrentLeaf;
+    summaryButton.disabled = loading || state.isStreaming || node.isCurrentLeaf;
+    customButton.disabled = loading || state.isStreaming || node.isCurrentLeaf;
+    summaryButton.hidden = node.isCurrentLeaf;
+    customButton.hidden = node.isCurrentLeaf;
+  }
+
+  function createRow(node: ConversationTreeNode) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "conversationTreeNode";
+    row.classList.toggle("selected", node.id === selectedId);
+    row.classList.toggle("activePath", node.isOnActivePath);
+    row.classList.toggle("currentLeaf", node.isCurrentLeaf);
+    row.classList.toggle("inactivePath", !node.isOnActivePath);
+    row.classList.toggle("toolEntry", isToolNode(node));
+    row.setAttribute("role", "treeitem");
+    row.setAttribute("aria-selected", String(node.id === selectedId));
+    if (node.isCurrentLeaf) row.setAttribute("aria-current", "true");
+
+    const rail = document.createElement("span");
+    rail.className = "conversationTreeRail";
+    const glyph = document.createElement("span");
+    glyph.className = `conversationTreeGlyph ${node.role}`;
+    rail.append(glyph);
+
+    const main = document.createElement("span");
+    main.className = "conversationTreeNodeMain";
+    const top = document.createElement("span");
+    top.className = "conversationTreeNodeTop";
+    const role = document.createElement("span");
+    role.className = `conversationTreeRole ${node.role}`;
+    role.textContent = `${roleLabel(node.role, node.type)}:`;
+    const time = document.createElement("span");
+    time.className = "conversationTreeTime";
+    time.textContent = formatTimestamp(node.timestamp);
+    top.append(role, time);
+
+    const preview = document.createElement("span");
+    preview.className = "conversationTreePreview";
+    preview.textContent = node.preview || node.type.replace(/_/g, " ");
+
+    const badges = document.createElement("span");
+    badges.className = "conversationTreeBadges";
+    if (node.label) {
+      const label = document.createElement("span");
+      label.className = "conversationTreeBadge label";
+      label.textContent = node.label;
+      badges.append(label);
+    }
+    if (node.childCount > 1) {
+      const branches = document.createElement("span");
+      branches.className = "conversationTreeBadge branch";
+      branches.textContent = `${node.childCount} branches`;
+      badges.append(branches);
+    }
+    if (node.isCurrentLeaf) {
+      const current = document.createElement("span");
+      current.className = "conversationTreeBadge current";
+      current.textContent = "current";
+      badges.append(current);
+    }
+
+    main.append(top, preview);
+    if (badges.children.length) main.append(badges);
+    row.append(rail, main);
+    row.addEventListener("click", () => {
+      selectedId = node.id;
+      customForm.hidden = true;
+      renderTree();
+    });
+    return row;
+  }
+
+  function renderNode(node: ConversationTreeNode, container: HTMLElement, inBranchGroup = false) {
+    const item = document.createElement("div");
+    item.className = "conversationTreeItem";
+    item.classList.toggle("branchItem", inBranchGroup);
+    item.classList.toggle("activePath", node.isOnActivePath);
+    item.classList.toggle("inactivePath", !node.isOnActivePath);
+    item.append(createRow(node));
+    container.append(item);
+
+    const children = node.children || [];
+    if (children.length === 1) {
+      renderNode(children[0], inBranchGroup ? container : container, inBranchGroup);
+      return;
+    }
+    if (children.length > 1) {
+      const childWrap = document.createElement("div");
+      childWrap.className = "conversationTreeChildren";
+      item.append(childWrap);
+      for (const child of children) renderNode(child, childWrap, true);
+    }
+  }
+
+  function renderNodes(nodes: ConversationTreeNode[], container: HTMLElement) {
+    for (const node of nodes) renderNode(node, container);
+  }
+
+  function renderTree() {
+    list.textContent = "";
+    const mode = filter.value as FilterMode;
+    const projectedTree = treeData ? projectTree(treeData.nodes, mode) : [];
+    const query = search.value.trim().toLowerCase();
+    const visibleTree = searchTree(projectedTree, query);
+    const visibleIds = collectVisibleIds(visibleTree);
+    const visibleCount = countVisibleNodes(visibleTree);
+    renderSummary(visibleCount);
+
+    if (!treeData) {
+      const empty = document.createElement("p");
+      empty.className = "conversationTreeEmpty";
+      empty.textContent = "Open a session to view its tree.";
+      list.append(empty);
+      renderSelection(visibleIds);
+      return;
+    }
+
+    if (visibleCount === 0) {
+      const empty = document.createElement("p");
+      empty.className = "conversationTreeEmpty";
+      empty.textContent = projectedTree.length === 0 ? "No conversation entries yet." : "No entries match the current filter.";
+      list.append(empty);
+      renderSelection(visibleIds);
+      return;
+    }
+
+    renderNodes(visibleTree, list);
+    renderSelection(visibleIds);
+  }
+
+  async function refreshTree() {
+    if (!isOpen()) return;
+    setStatus("Loading tree…");
+    try {
+      const query = state.currentSessionId ? `?sessionId=${encodeURIComponent(state.currentSessionId)}` : "";
+      const res = await fetch(`/api/session/tree${query}`, { headers: api.headers() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+      const nextTree = data as ConversationTreeResponse;
+      treeData = nextTree;
+      if (selectedId && !findNode(nextTree.nodes || [], selectedId)) selectedId = "";
+      if (!selectedId && nextTree.leafId) selectedId = nextTree.leafId;
+      setStatus(nextTree.entryCount ? "Tap an entry to choose how to continue." : "This session has no tree entries yet.");
+      renderTree();
+    } catch (error) {
+      treeData = null;
+      setStatus(error instanceof Error ? error.message : String(error), true);
+      renderTree();
+    }
+  }
+
+  async function navigateSelected(navigateOptions: NavigateOptions = {}) {
+    const node = selectedNode();
+    if (!node || loading || node.isCurrentLeaf) return;
+    setLoading(true);
+    setStatus(navigateOptions.summarize ? "Summarizing branch and navigating…" : "Navigating…");
+    try {
+      const res = await fetch("/api/session/tree/navigate", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({
+          sessionId: state.currentSessionId,
+          targetId: node.id,
+          summarize: Boolean(navigateOptions.summarize),
+          customInstructions: navigateOptions.customInstructions || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+      if (data.cancelled) {
+        setStatus("Navigation cancelled.");
+        return;
+      }
+      if (data.state) {
+        updateMeta(data.state);
+        state.isStreaming = Boolean(data.state.isStreaming);
+      }
+      composer.setPromptText(typeof data.editorText === "string" ? data.editorText : "");
+      await refreshMessages();
+      await refreshTree();
+      if (typeof data.editorText === "string") addMessage("system", "Loaded an earlier prompt — edit and send to create a new branch.");
+      else setStatus("Moved to the selected point.");
+      if (isMobileViewport()) setOpen(false);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function setOpen(open: boolean) {
+    panel.hidden = !open;
+    backdrop.hidden = !open;
+    document.body.classList.toggle("conversationTreeOpen", open);
+    elements.conversationTreeButton.setAttribute("aria-expanded", String(open));
+    if (open) {
+      refreshTree().catch((error) => setStatus(error instanceof Error ? error.message : String(error), true));
+      if (!isMobileViewport()) search.focus();
+    }
+  }
+
+  function init() {
+    elements.conversationTreeButton.addEventListener("click", () => setOpen(true));
+    closeButton.addEventListener("click", () => setOpen(false));
+    backdrop.addEventListener("click", () => setOpen(false));
+    search.addEventListener("input", renderTree);
+    filter.addEventListener("change", renderTree);
+    jumpButton.addEventListener("click", () => navigateSelected().catch((error) => setStatus(error instanceof Error ? error.message : String(error), true)));
+    summaryButton.addEventListener("click", () => navigateSelected({ summarize: true }).catch((error) => setStatus(error instanceof Error ? error.message : String(error), true)));
+    customButton.addEventListener("click", () => {
+      customForm.hidden = false;
+      customInstructions.focus();
+    });
+    customCancel.addEventListener("click", () => {
+      customForm.hidden = true;
+      customInstructions.value = "";
+    });
+    customSubmit.addEventListener("click", () => navigateSelected({ summarize: true, customInstructions: customInstructions.value.trim() }).catch((error) => setStatus(error instanceof Error ? error.message : String(error), true)));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && isOpen()) setOpen(false);
+    });
+  }
+
+  return {
+    init,
+    isOpen,
+    refreshTree,
+    setOpen,
+  };
+}

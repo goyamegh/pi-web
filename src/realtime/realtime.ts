@@ -9,6 +9,7 @@ import type { SessionsController } from "../sessions/sessionDrawer.js";
 import type { SettingsController } from "../settings/settings.js";
 import type { StatusBar } from "../status/statusBar.js";
 import type { ToolCards } from "../tools/toolCards.js";
+import type { ConversationTreeController } from "../tree/conversationTree.js";
 
 export type RealtimeController = {
   connect: () => void;
@@ -26,12 +27,13 @@ export function createRealtime(options: {
   settings: SettingsController;
   status: StatusBar;
   tools: ToolCards;
+  conversationTree?: ConversationTreeController;
   updateMeta: (data: any) => void;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, updateMeta, refreshMessages, refreshState, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, refreshMessages, refreshState, addMessage } = options;
 
   function handlePiEvent(event: PiEvent) {
     switch (event.type) {
@@ -60,6 +62,7 @@ export function createRealtime(options: {
         messages.resetStreamingAssistant();
         tools.clearActiveToolCards();
         refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
         status.refreshSessionTitle();
         break;
       case "thinking_level_changed":
@@ -84,6 +87,7 @@ export function createRealtime(options: {
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
         if (data.type === "state_changed") {
           refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+          if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
           status.refreshSessionTitle();
           if (!elements.sessionDrawer.hidden) sessions.refreshSessions().catch(() => undefined);
         }

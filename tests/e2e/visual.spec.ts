@@ -98,6 +98,13 @@ async function mockGitApi(page: import("@playwright/test").Page) {
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
+  await page.request.patch("/api/settings", {
+    data: {
+      appearance: { density: "comfortable" },
+      composer: { queueMode: "steer", expanded: false },
+      defaults: { model: null, thinkingLevel: null },
+    },
+  });
   const artifactDir = join(process.cwd(), ".pi-web-uploads", "artifacts");
   await mkdir(artifactDir, { recursive: true });
   await writeFile(join(artifactDir, "e2e-test.jpg"), await readFile(join(process.cwd(), "tests", "fixtures", "showcase-artifact.jpg")));
@@ -147,6 +154,22 @@ test.describe("visual regression", () => {
     await expect(page.locator(".sessionSpinner")).toBeVisible();
 
     await expect(page).toHaveScreenshot(`sessions-drawer-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+    });
+  });
+
+  test("conversation tree", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
+    if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 1000 });
+
+    await page.goto("/");
+    await page.locator("#conversationTreeButton").click();
+    await expect(page.locator(".conversationTreePanel")).toBeVisible();
+    await expect(page.locator(".conversationTreeChildren")).toBeVisible();
+    await expect(page.locator(".conversationTreeBadge.branch")).toHaveText("2 branches");
+
+    await expect(page).toHaveScreenshot(`conversation-tree-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
     });

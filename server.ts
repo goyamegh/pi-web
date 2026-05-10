@@ -32,6 +32,7 @@ const token = process.env.PI_WEB_TOKEN || "";
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 let artifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
 const knownCwds = new Set<string>([piCwd]);
+
 const webUiContextFile = join(appDir, "contexts", "web-ui.md");
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
 const noSession = process.env.PI_WEB_NO_SESSION === "1";
@@ -439,11 +440,177 @@ function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<str
       raw: m,
     };
   }
+  const text = textFromContent(m.content);
+  const errorText = m.role === "assistant" && !text && m.errorMessage ? assistantErrorPreview(m) : "";
   return {
     role: m.role,
-    text: textFromContent(m.content),
+    text: errorText || text,
+    isError: Boolean(m.errorMessage || m.stopReason === "error"),
     timestamp: m.timestamp,
     raw: m,
+  };
+}
+
+function truncatePreview(value: string, max = 220) {
+  const text = value.replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function entryMessage(entry: any) {
+  if (entry?.type === "message") return entry.message;
+  if (entry?.type === "custom_message") return { role: "custom", content: entry.content, timestamp: entry.timestamp };
+  return undefined;
+}
+
+function messageToolCalls(message: any) {
+  return Array.isArray(message?.content)
+    ? message.content.filter((part: any) => part?.type === "toolCall")
+    : [];
+}
+
+function toolCallName(part: any) {
+  return String(part?.toolName || part?.name || "tool");
+}
+
+function toolCallArgs(part: any) {
+  const args = part?.arguments || part?.args;
+  return args && typeof args === "object" ? args as Record<string, unknown> : {};
+}
+
+function shortArg(value: unknown, max = 90) {
+  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function toolCallPreview(part: any) {
+  const name = toolCallName(part);
+  const args = toolCallArgs(part);
+  if (name === "bash" && typeof args.command === "string") return `Tool call: bash ${shortArg(args.command, 120)}`;
+  if (typeof args.path === "string") return `Tool call: ${name} ${shortArg(args.path, 120)}`;
+  if (typeof args.query === "string") return `Tool call: ${name} ${shortArg(args.query, 120)}`;
+  if (typeof args.pattern === "string") return `Tool call: ${name} ${shortArg(args.pattern, 120)}`;
+  const first = Object.entries(args).find(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean");
+  return first ? `Tool call: ${name} ${first[0]}=${shortArg(first[1], 90)}` : `Tool call: ${name}`;
+}
+
+function toolCallsPreview(message: any) {
+  const calls = messageToolCalls(message);
+  if (calls.length === 0) return "";
+  const [first] = calls;
+  const suffix = calls.length > 1 ? ` + ${calls.length - 1} more` : "";
+  return `${toolCallPreview(first)}${suffix}`;
+}
+
+function messageTextPreview(message: any) {
+  return textFromContent(message?.content || "");
+}
+
+function assistantErrorPreview(message: any) {
+  const raw = String(message?.errorMessage || "").trim();
+  if (!raw) return "";
+  const jsonText = raw.replace(/^Codex error:\s*/, "");
+  try {
+    const parsed = JSON.parse(jsonText);
+    const detail = parsed?.error?.message || parsed?.message || raw;
+    return `Error: ${detail}`;
+  } catch {
+    return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw;
+  }
+}
+
+function entryRole(entry: any) {
+  const message = entryMessage(entry);
+  if (message?.role === "assistant" && !messageTextPreview(message).trim()) {
+    if (messageToolCalls(message).length > 0) return "toolCall";
+    if (message.errorMessage) return "error";
+  }
+  if (message?.role) return String(message.role);
+  switch (entry?.type) {
+    case "branch_summary": return "branchSummary";
+    case "compaction": return "compaction";
+    case "model_change": return "model";
+    case "thinking_level_change": return "thinking";
+    case "session_info": return "session";
+    case "label": return "label";
+    case "custom": return "custom";
+    default: return String(entry?.type || "entry");
+  }
+}
+
+function entryPreview(entry: any) {
+  const message = entryMessage(entry);
+  if (message) {
+    if (message.role === "toolResult") {
+      const text = textFromContent(message.content);
+      return `Tool result: ${message.toolName || "tool"}${text ? ` — ${text}` : ""}`;
+    }
+    const text = messageTextPreview(message);
+    if (text.trim()) return text;
+    const calls = toolCallsPreview(message);
+    if (calls) return calls;
+    const error = assistantErrorPreview(message);
+    if (error) return error;
+    return message.role === "assistant" ? "Empty assistant message" : `${message.role || "Message"} message`;
+  }
+  switch (entry?.type) {
+    case "branch_summary": return entry.summary || "Branch summary";
+    case "compaction": return entry.summary || "Compaction summary";
+    case "model_change": return `Model changed to ${entry.provider || "provider"}/${entry.modelId || "model"}`;
+    case "thinking_level_change": return `Thinking level changed to ${entry.thinkingLevel || "unknown"}`;
+    case "session_info": return entry.name ? `Session named ${entry.name}` : "Session name cleared";
+    case "label": return entry.label ? `Label ${entry.targetId || "entry"} as ${entry.label}` : `Clear label on ${entry.targetId || "entry"}`;
+    case "custom": return `Custom entry${entry.customType ? `: ${entry.customType}` : ""}`;
+    default: return String(entry?.type || "Entry");
+  }
+}
+
+function countTreeNodes(nodes: any[]): number {
+  return nodes.reduce((sum, node) => sum + 1 + countTreeNodes(Array.isArray(node.children) ? node.children : []), 0);
+}
+
+function countBranchPoints(nodes: any[]): number {
+  return nodes.reduce((sum, node) => {
+    const children = Array.isArray(node.children) ? node.children : [];
+    return sum + (children.length > 1 ? 1 : 0) + countBranchPoints(children);
+  }, 0);
+}
+
+function simplifyTreeNode(node: any, activePathIds: Set<string>, leafId: string | null): any {
+  const entry = node?.entry || node;
+  const children = Array.isArray(node?.children) ? node.children.map((child: any) => simplifyTreeNode(child, activePathIds, leafId)) : [];
+  const id = String(entry?.id || "");
+  return {
+    id,
+    parentId: typeof entry?.parentId === "string" ? entry.parentId : null,
+    type: String(entry?.type || "entry"),
+    role: entryRole(entry),
+    preview: truncatePreview(entryPreview(entry)),
+    timestamp: String(entry?.timestamp || ""),
+    label: typeof node?.label === "string" ? node.label : undefined,
+    labelTimestamp: typeof node?.labelTimestamp === "string" ? node.labelTimestamp : undefined,
+    childCount: children.length,
+    isOnActivePath: activePathIds.has(id),
+    isCurrentLeaf: Boolean(leafId && id === leafId),
+    children,
+  };
+}
+
+function conversationTreeForSession(targetSession: PiWebSession) {
+  const manager = targetSession.sessionManager;
+  if (typeof manager.getTree !== "function") throw new Error("Session tree is not available");
+  const leafId = typeof manager.getLeafId === "function" ? manager.getLeafId() : null;
+  const activePath = typeof manager.getBranch === "function" ? manager.getBranch() : [];
+  const activePathIds = new Set(activePath.map((entry: any) => String(entry?.id || "")).filter(Boolean));
+  const roots = manager.getTree();
+  const nodes = roots.map((node: any) => simplifyTreeNode(node, activePathIds, leafId));
+  return {
+    ok: true,
+    sessionId: targetSession.sessionId,
+    leafId,
+    activePathIds: Array.from(activePathIds),
+    entryCount: countTreeNodes(nodes),
+    branchPointCount: countBranchPoints(nodes),
+    nodes,
   };
 }
 
@@ -874,6 +1041,58 @@ const server = createServer(async (req, res) => {
           ...currentStateWithThinkingLevels(),
           tokenRequired: Boolean(token),
         });
+      }
+
+      if (method === "GET" && url.pathname === "/api/session/tree") {
+        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        try {
+          return sendJson(res, 200, conversationTreeForSession(targetSession));
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/session/tree/navigate") {
+        const body = await readBody(req) as { sessionId?: unknown; targetId?: unknown; summarize?: unknown; customInstructions?: unknown; replaceInstructions?: unknown; label?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        if (targetSession !== session) return sendJson(res, 400, { ok: false, error: "Open the session before navigating its tree" });
+        if (targetSession.isStreaming) return sendJson(res, 409, { ok: false, error: "Wait for the current response to finish before navigating the tree" });
+        if (targetSession.isCompacting) return sendJson(res, 409, { ok: false, error: "Wait for the current compaction to finish before navigating the tree" });
+        if (typeof targetSession.navigateTree !== "function") return sendJson(res, 400, { ok: false, error: "Tree navigation is not available" });
+
+        const targetId = String(body.targetId || "").trim();
+        if (!targetId) return sendJson(res, 400, { ok: false, error: "targetId is required" });
+
+        try {
+          const navigation = targetSession.navigateTree(targetId, {
+            summarize: Boolean(body.summarize),
+            customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
+            replaceInstructions: Boolean(body.replaceInstructions),
+            label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
+          });
+          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
+          const result = await navigation;
+          const state = currentStateWithThinkingLevels();
+          broadcast({ type: "state_changed", ...state });
+          return sendJson(res, 200, { ok: true, ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state });
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        } finally {
+          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/session/tree/abort-summary") {
+        const body = await readBody(req) as { sessionId?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        targetSession.abortBranchSummary?.();
+        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
       }
 
       if (method === "GET" && url.pathname === "/api/messages") {

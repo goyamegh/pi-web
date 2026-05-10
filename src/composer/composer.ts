@@ -7,6 +7,7 @@ import { setIcon } from "../app/icons.js";
 export type ComposerController = {
   init: () => void;
   renderAttachments: () => void;
+  setPromptText: (text: string) => void;
   updatePrimaryAction: () => void;
   updateQueueToggle: () => void;
 };
@@ -49,6 +50,12 @@ export function createComposer(options: {
     elements.queueToggle.title = isSteer ? "Queue mode: steer while running" : "Queue mode: follow up after running";
     elements.queueToggle.setAttribute("aria-label", elements.queueToggle.title);
     setIcon(elements.queueToggle, isSteer ? "route" : "corner-down-right");
+  }
+
+  function setPromptText(text: string) {
+    elements.promptEl.value = text;
+    updatePrimaryAction();
+    elements.promptEl.focus();
   }
 
   function renderAttachments() {
@@ -209,6 +216,7 @@ export function createComposer(options: {
   return {
     init,
     renderAttachments,
+    setPromptText,
     updatePrimaryAction,
     updateQueueToggle,
   };

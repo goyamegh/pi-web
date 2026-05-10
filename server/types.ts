@@ -22,6 +22,14 @@ export interface PiWebSession {
     setSessionFile?(path: string): void;
     buildSessionContext(): { messages: unknown[] };
     getSessionDir?(): string;
+    getLeafId?(): string | null;
+    getEntry?(id: string): unknown;
+    getBranch?(fromId?: string): unknown[];
+    getTree?(): unknown[];
+    getLabel?(id: string): string | undefined;
+    branch?(entryId: string): void;
+    resetLeaf?(): void;
+    appendLabelChange?(targetId: string, label: string | undefined): string;
   };
   modelRegistry: {
     getAvailable(): PiWebModel[];
@@ -33,7 +41,9 @@ export interface PiWebSession {
   setModel(model: unknown): Promise<void>;
   setThinkingLevel(level: string): void;
   reload?(): Promise<void>;
-  prompt(message: string, options?: { images?: unknown[] }): Promise<void>;
+  navigateTree?(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: unknown }>;
+  abortBranchSummary?(): void;
+  prompt(message: string, options?: { images?: unknown[]; streamingBehavior?: string }): Promise<void>;
   abort(): Promise<void>;
   clearQueue?(): void;
   subscribe?(listener: (event: unknown) => void): (() => void) | undefined;

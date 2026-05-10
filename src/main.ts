@@ -16,6 +16,7 @@ import { createSessions, type SessionsController } from "./sessions/sessionDrawe
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createToolCards } from "./tools/toolCards.js";
+import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
 
 initAppHeightSync();
 
@@ -31,6 +32,7 @@ let modelSettings: ModelSettings;
 let sessions: SessionsController;
 let settings: SettingsController;
 let statusBar: StatusBar;
+let conversationTree: ConversationTreeController;
 
 function showSystemError(error: unknown) {
   messages.addMessage("system", error instanceof Error ? error.message : String(error), "error");
@@ -52,6 +54,7 @@ async function refreshMessages() {
     sessionId: state.currentSessionId,
     headers: api.headers,
     addToolHistoryCard: tools.addToolHistoryCard,
+    addRuntimeErrorCard: tools.addRuntimeErrorCard,
     clearActiveToolCards: tools.clearActiveToolCards,
     updateEmptyCwdChooser: () => sessions.updateEmptyCwdChooser(),
   });
@@ -75,6 +78,7 @@ async function refreshState() {
 function initStaticIcons() {
   setIcon(elements.sessionButton, "menu");
   setIcon(elements.newSessionHeaderButton, "square-pen");
+  setIcon(elements.conversationTreeButton, "git-fork");
   setIcon(elements.attachButton, "paperclip");
   setIcon(elements.primaryButton, "send-horizontal");
   setIcon(elements.expandButton, "maximize-2");
@@ -134,6 +138,16 @@ composer = createComposer({
   refreshState,
 });
 
+conversationTree = createConversationTree({
+  state,
+  elements,
+  api,
+  composer,
+  updateMeta,
+  refreshMessages,
+  addMessage: messages.addMessage,
+});
+
 const realtime = createRealtime({
   state,
   elements,
@@ -145,6 +159,7 @@ const realtime = createRealtime({
   status: statusBar,
   tools,
   settings,
+  conversationTree,
   updateMeta,
   refreshMessages,
   refreshState,
@@ -155,6 +170,7 @@ initStaticIcons();
 statusBar.init();
 sessions.init();
 composer.init();
+conversationTree.init();
 modelSettings.init();
 settings.init();
 composer.updateQueueToggle();

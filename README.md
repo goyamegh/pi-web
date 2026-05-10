@@ -83,6 +83,15 @@ The Git button in the header opens a responsive Git panel. Desktop uses a split 
   <img alt="pi-web Git commit diff viewer" src="tests/e2e/visual.spec.ts-snapshots/git-diff-viewer-desktop.png">
 </picture>
 
+### Conversation tree
+
+Navigate in-file pi session branches with a compact tree drawer. The default view keeps tool noise hidden, while the full session structure remains available from the filter.
+
+<picture>
+  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/conversation-tree-mobile.png">
+  <img alt="pi-web conversation tree" src="tests/e2e/visual.spec.ts-snapshots/conversation-tree-desktop.png">
+</picture>
+
 ![pi-web mobile sessions](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png)
 
 ## Production build

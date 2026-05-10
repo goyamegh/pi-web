@@ -1,9 +1,10 @@
-import { Brain, CornerDownRight, createElement, GitBranch, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, SendHorizontal, Settings, Square, SquarePen, X } from "lucide";
+import { Brain, CornerDownRight, createElement, GitBranch, GitFork, KeyRound, Maximize2, Minimize2, Menu, Paperclip, Route, SendHorizontal, Settings, Square, SquarePen, X } from "lucide";
 
 const iconNodes = {
   brain: Brain,
   "corner-down-right": CornerDownRight,
   "git-branch": GitBranch,
+  "git-fork": GitFork,
   "key-round": KeyRound,
   menu: Menu,
   paperclip: Paperclip,

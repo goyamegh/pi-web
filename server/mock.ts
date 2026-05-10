@@ -57,23 +57,125 @@ export function createMockHarness(options: MockSessionOptions) {
       ];
   }
 
+  function textFromMockContent(content: unknown): string {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content.map((part) => {
+      if (!part || typeof part !== "object") return "";
+      const value = part as Record<string, unknown>;
+      return value.type === "text" && typeof value.text === "string" ? value.text : "";
+    }).filter(Boolean).join("\n");
+  }
+
+  function createInitialEntries(path: string) {
+    const [first, second] = initialMessages(path) as Array<Record<string, unknown>>;
+    const entries = [
+      { type: "message", id: "mock-u1", parentId: null, timestamp: String(first.timestamp), message: first },
+      { type: "message", id: "mock-a1", parentId: "mock-u1", timestamp: String(second.timestamp), message: second },
+    ];
+    if (path === mockSessions[0].path) {
+      entries.push(
+        { type: "message", id: "mock-u-alt", parentId: "mock-u1", timestamp: "2026-05-07T10:02:00Z", message: { role: "user", content: "Actually, make the attachment picker mobile-first.", timestamp: "2026-05-07T10:02:00Z" } },
+        { type: "message", id: "mock-a-alt", parentId: "mock-u-alt", timestamp: "2026-05-07T10:03:00Z", message: { role: "assistant", content: "Use a bottom sheet with large tap targets for image actions.", timestamp: "2026-05-07T10:03:00Z" } },
+      );
+    }
+    return entries;
+  }
+
   function createMockSession(path = mockSessions[0].path): PiWebSession {
-    const mockMessages = initialMessages(path);
+    let mockEntries = createInitialEntries(path);
+    let mockLeafId: string | null = "mock-a1";
+    let entrySequence = 2;
+    const labelsById = new Map<string, string>();
+    const mockMessages: unknown[] = [];
+
+    function entryById(id: string) {
+      return mockEntries.find((entry) => entry.id === id);
+    }
+
+    function getBranch(fromId = mockLeafId): any[] {
+      if (!fromId) return [];
+      const branch = [];
+      let current: string | null = fromId;
+      while (current) {
+        const entry = entryById(current);
+        if (!entry) break;
+        branch.unshift(entry);
+        current = entry.parentId;
+      }
+      return branch;
+    }
+
+    function syncMessagesToLeaf() {
+      mockMessages.length = 0;
+      mockMessages.push(...getBranch().filter((entry) => entry.type === "message").map((entry) => entry.message));
+    }
+
+    function buildTree(parentId: string | null): any[] {
+      return mockEntries
+        .filter((entry) => entry.parentId === parentId)
+        .map((entry) => ({
+          entry,
+          label: labelsById.get(entry.id),
+          children: buildTree(entry.id),
+        }));
+    }
+
+    function appendMockMessage(message: Record<string, unknown>) {
+      const timestamp = String(message.timestamp || new Date().toISOString());
+      message.timestamp = timestamp;
+      const id = `mock-e${++entrySequence}`;
+      mockEntries.push({ type: "message", id, parentId: mockLeafId, timestamp, message });
+      mockLeafId = id;
+      syncMessagesToLeaf();
+      return id;
+    }
+
+    function resetMockEntries(nextPath: string) {
+      mockEntries = createInitialEntries(nextPath);
+      mockLeafId = "mock-a1";
+      entrySequence = 2;
+      labelsById.clear();
+      syncMessagesToLeaf();
+    }
+
+    syncMessagesToLeaf();
     let mockSession: PiWebSession;
     const mockSessionManager = {
       newSession() {
         mockSession.sessionId = `mock-${Date.now()}`;
         mockSession.sessionFile = join(piCwd, `.mock-sessions/${mockSession.sessionId}.jsonl`);
-        mockMessages.length = 0;
+        mockEntries = [];
+        mockLeafId = null;
+        labelsById.clear();
+        syncMessagesToLeaf();
       },
       setSessionFile(path: string) {
         mockSession.sessionFile = path;
         mockSession.sessionId = mockSessions.find((info) => info.path === path)?.id || "mock-opened";
-        mockMessages.length = 0;
-        mockMessages.push(...initialMessages(path));
+        resetMockEntries(path);
       },
       buildSessionContext() { return { messages: mockMessages }; },
       getSessionDir() { return join(piCwd, ".mock-sessions"); },
+      getLeafId() { return mockLeafId; },
+      getEntry(id: string) { return entryById(id); },
+      getBranch,
+      getTree() { return buildTree(null); },
+      getLabel(id: string) { return labelsById.get(id); },
+      branch(entryId: string) {
+        if (!entryById(entryId)) throw new Error("Entry not found");
+        mockLeafId = entryId;
+        syncMessagesToLeaf();
+      },
+      resetLeaf() {
+        mockLeafId = null;
+        syncMessagesToLeaf();
+      },
+      appendLabelChange(targetId: string, label: string | undefined) {
+        if (label) labelsById.set(targetId, label);
+        else labelsById.delete(targetId);
+        return `mock-label-${Date.now()}`;
+      },
     };
 
     mockSession = {
@@ -100,27 +202,67 @@ export function createMockHarness(options: MockSessionOptions) {
       setModel: async (model: unknown) => { mockSession.model = model as typeof mockModel; },
       setThinkingLevel: (level: string) => { mockSession.thinkingLevel = level; },
       reload: async () => undefined,
+      navigateTree: async (targetId: string, navigateOptions?: { summarize?: boolean; customInstructions?: string; label?: string }) => {
+        const target = entryById(targetId);
+        if (!target) throw new Error("Entry not found");
+        const oldLeafId = mockLeafId;
+        let nextLeafId: string | null = targetId;
+        let editorText: string | undefined;
+        if (target.type === "message" && target.message.role === "user") {
+          nextLeafId = target.parentId;
+          editorText = textFromMockContent(target.message.content);
+        }
+
+        if (navigateOptions?.summarize && oldLeafId && oldLeafId !== targetId) {
+          const timestamp = new Date().toISOString();
+          const id = `mock-summary-${Date.now()}`;
+          mockEntries.push({
+            type: "branch_summary",
+            id,
+            parentId: nextLeafId,
+            timestamp,
+            fromId: oldLeafId,
+            summary: navigateOptions.customInstructions ? `Mock branch summary focused on: ${navigateOptions.customInstructions}` : "Mock branch summary of the branch you left.",
+          } as any);
+          mockLeafId = id;
+          if (navigateOptions.label) labelsById.set(id, navigateOptions.label);
+        } else {
+          mockLeafId = nextLeafId;
+          if (navigateOptions?.label) labelsById.set(targetId, navigateOptions.label);
+        }
+        syncMessagesToLeaf();
+        return { editorText, cancelled: false };
+      },
       prompt: async (message: string, promptOptions?: { images?: unknown[] }) => {
-        mockMessages.push({ role: "user", content: message, timestamp: new Date().toISOString() });
+        appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
         const slow = /slow|running/i.test(message);
         const withShowcase = /showcase/i.test(message);
+        const withProviderError = /provider error|assistant error|usage limit/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
         const withEditTool = !withShowcase && !withMalformedEditTool && /edit diff/i.test(message);
         const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && /tool|interleav/i.test(message);
         mockSession.isStreaming = true;
         broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_start" } });
         if (slow) await new Promise((resolve) => setTimeout(resolve, 750));
-        if (withShowcase) {
+        if (withProviderError) {
+          appendMockMessage({
+            role: "assistant",
+            content: [],
+            stopReason: "error",
+            errorMessage: "Codex error: {\"type\":\"error\",\"error\":{\"type\":\"usage_limit_reached\",\"message\":\"The usage limit has been reached\",\"resets_in_seconds\":120},\"status_code\":429}",
+            timestamp: new Date().toISOString(),
+          });
+        } else if (withShowcase) {
           const editArgs = { path: "/Users/ashwin/projects/pi-web/src/style.css", edits: [{ oldText: ".sessionItem {\n  min-height: 40px;\n}", newText: ".sessionItem {\n  height: auto;\n  min-height: 0;\n}\n\n@media (max-width: 700px) {\n  .sessionDrawer { width: 100vw; }\n}" }] };
-          mockMessages.push({ role: "assistant", content: [
+          appendMockMessage({ role: "assistant", content: [
             { type: "text", text: "## Mobile-first coding UI\n\nI reviewed the session drawer, checked the CSS, and tightened the responsive layout.\n\n```ts\nawait runVisualRegression({ projects: [\"mobile\", \"desktop\"] });\n```" },
             { type: "toolCall", id: "call-showcase-read", toolName: "read", arguments: { path: "/Users/ashwin/projects/pi-web/src/style.css" } },
             { type: "text", text: "The global button height was constraining session rows, so I patched the drawer-specific styles." },
             { type: "toolCall", id: "call-showcase-edit", toolName: "edit", arguments: editArgs },
             { type: "text", text: "Visual snapshots now cover the polished desktop and mobile states.\n\n![pi-web workflow](/api/artifacts/e2e-test.jpg)" },
           ], timestamp: new Date().toISOString() });
-          mockMessages.push({ role: "toolResult", toolCallId: "call-showcase-read", toolName: "read", content: "session drawer CSS and responsive composer styles", timestamp: new Date().toISOString() });
-          mockMessages.push({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /Users/ashwin/projects/pi-web/src/style.css.", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-read", toolName: "read", content: "session drawer CSS and responsive composer styles", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /Users/ashwin/projects/pi-web/src/style.css.", timestamp: new Date().toISOString() });
         } else if (withEditTool || withMalformedEditTool) {
           const editArgs = withMalformedEditTool
             ? { path: "/some/file.ts", edits: [{ newText: "const answer = 42;" }, { oldText: "console.log(answer);" }] }
@@ -128,8 +270,8 @@ export function createMockHarness(options: MockSessionOptions) {
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_start", toolName: "edit", toolCallId: "call-edit", args: editArgs } });
           await new Promise((resolve) => setTimeout(resolve, 80));
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "edit", toolCallId: "call-edit", isError: false, result: "Successfully replaced 1 block(s) in /some/file.ts." } });
-          mockMessages.push({ role: "assistant", content: [{ type: "toolCall", id: "call-edit", toolName: "edit", arguments: editArgs }], timestamp: new Date().toISOString() });
-          mockMessages.push({ role: "toolResult", toolCallId: "call-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /some/file.ts.", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "assistant", content: [{ type: "toolCall", id: "call-edit", toolName: "edit", arguments: editArgs }], timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /some/file.ts.", timestamp: new Date().toISOString() });
         } else if (withTools) {
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Let me check that for you. " } } });
           await new Promise((resolve) => setTimeout(resolve, 80));
@@ -139,18 +281,18 @@ export function createMockHarness(options: MockSessionOptions) {
           await new Promise((resolve) => setTimeout(resolve, 80));
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Done reading." } } });
           await new Promise((resolve) => setTimeout(resolve, 80));
-          mockMessages.push({ role: "assistant", content: [
+          appendMockMessage({ role: "assistant", content: [
             { type: "text", text: "Let me check that for you. " },
             { type: "toolCall", id: "call-1", toolName: "read", arguments: { path: "/some/file" } },
             { type: "text", text: "Done reading." },
           ], timestamp: new Date().toISOString() });
-          mockMessages.push({ role: "toolResult", toolCallId: "call-1", toolName: "read", content: "file contents here", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-1", toolName: "read", content: "file contents here", timestamp: new Date().toISOString() });
         } else if (/artifact/i.test(message)) {
-          mockMessages.push({ role: "assistant", content: "Here is a screenshot:\n\n![e2e-test](/api/artifacts/e2e-test.png)", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "assistant", content: "Here is a screenshot:\n\n![e2e-test](/api/artifacts/e2e-test.png)", timestamp: new Date().toISOString() });
         } else if (/markdown/i.test(message)) {
-          mockMessages.push({ role: "assistant", content: "Here is **bold** markdown.\n\n- one\n- two\n\n```ts\nconst answer = 42;\n```", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "assistant", content: "Here is **bold** markdown.\n\n- one\n- two\n\n```ts\nconst answer = 42;\n```", timestamp: new Date().toISOString() });
         } else {
-          mockMessages.push({ role: "assistant", content: `Mock response${promptOptions?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "assistant", content: `Mock response${promptOptions?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
         }
         mockSession.isStreaming = false;
         broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });

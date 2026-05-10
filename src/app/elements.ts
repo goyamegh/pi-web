@@ -29,6 +29,7 @@ export type AppElements = {
   modelSelectEl: HTMLSelectElement;
   thinkingSelectEl: HTMLSelectElement;
   newSessionHeaderButton: HTMLButtonElement;
+  conversationTreeButton: HTMLButtonElement;
   gitButton: HTMLButtonElement;
   settingsButton: HTMLButtonElement;
   settingsPanel: HTMLElement;
@@ -85,6 +86,7 @@ export function getAppElements(): AppElements {
     modelSelectEl: requiredElement<HTMLSelectElement>("#modelSelect"),
     thinkingSelectEl: requiredElement<HTMLSelectElement>("#thinkingSelect"),
     newSessionHeaderButton: requiredElement<HTMLButtonElement>("#newSessionHeaderButton"),
+    conversationTreeButton: requiredElement<HTMLButtonElement>("#conversationTreeButton"),
     gitButton: requiredElement<HTMLButtonElement>("#gitButton"),
     settingsButton: requiredElement<HTMLButtonElement>("#settingsButton"),
     settingsPanel: requiredElement<HTMLElement>("#settingsPanel"),

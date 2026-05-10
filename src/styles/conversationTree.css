@@ -1,0 +1,406 @@
+.conversationTreeBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, .42);
+}
+
+.conversationTreePanel {
+  --tree-panel-bg: color-mix(in srgb, var(--panel) 96%, black);
+  --tree-line: color-mix(in srgb, var(--muted) 44%, transparent);
+  --tree-line-active: color-mix(in srgb, var(--accent) 72%, transparent);
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 31;
+  display: flex;
+  width: min(440px, calc(100vw - 28px));
+  max-width: 100vw;
+  flex-direction: column;
+  gap: 12px;
+  border-left: 1px solid var(--border);
+  background: var(--tree-panel-bg);
+  box-shadow: -18px 0 60px rgba(0,0,0,.35);
+  padding: 16px;
+}
+
+.conversationTreePanel[hidden],
+.conversationTreeBackdrop[hidden] { display: none; }
+
+.conversationTreeHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.conversationTreeTitle {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.conversationTreeTitle h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.conversationTreeSummary,
+.conversationTreeStatus,
+.conversationTreeTime,
+.conversationTreeSelectionText span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.conversationTreeCloseButton {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.conversationTreeCloseButton:hover {
+  border: 0;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.conversationTreeControls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.conversationTreeSearch,
+.conversationTreeFilter {
+  width: 100%;
+  height: 36px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.conversationTreeFilter { width: 132px; }
+
+.conversationTreeSearch:focus,
+.conversationTreeFilter:focus,
+.conversationTreeCustomForm textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.conversationTreeStatus {
+  min-height: 18px;
+}
+
+.conversationTreeStatus.error { color: var(--danger); }
+
+.conversationTreeList {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.conversationTreeEmpty {
+  margin: 16px 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.conversationTreeNode {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: auto;
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  padding: 2px 6px;
+  text-align: left;
+}
+
+.conversationTreeNode:hover,
+.conversationTreeNode.selected {
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+  background: color-mix(in srgb, var(--panel-2) 58%, transparent);
+}
+
+.conversationTreeNode.activePath .conversationTreeRail::before {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.conversationTreeNode.currentLeaf {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.conversationTreeItem {
+  position: relative;
+  min-width: 0;
+}
+
+.conversationTreeChildren {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 8px;
+  padding-left: 14px;
+}
+
+.conversationTreeChildren::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  border-radius: 999px;
+  background: var(--tree-line);
+}
+
+.conversationTreeChildren > .conversationTreeItem::before {
+  content: "";
+  position: absolute;
+  left: -9px;
+  top: 14px;
+  width: 10px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: var(--tree-line);
+}
+
+.conversationTreeChildren > .conversationTreeItem.activePath::before {
+  background: var(--tree-line-active);
+}
+
+.conversationTreeChildren > .conversationTreeItem:last-child::after {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 16px;
+  bottom: 0;
+  width: 4px;
+  background: var(--tree-panel-bg);
+}
+
+.conversationTreeItem.branchItem.inactivePath > .conversationTreeNode:not(.selected) {
+  opacity: .72;
+}
+
+.conversationTreeRail {
+  display: flex;
+  justify-content: center;
+}
+
+.conversationTreeGlyph {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  min-width: 7px;
+  align-self: center;
+  border-radius: 999px;
+  background: var(--muted);
+  box-shadow: 0 0 0 3px var(--tree-panel-bg);
+}
+
+.conversationTreeGlyph.user { background: #60a5fa; }
+.conversationTreeGlyph.assistant { background: var(--accent); }
+.conversationTreeGlyph.toolCall,
+.conversationTreeGlyph.toolResult { background: #8b5cf6; }
+.conversationTreeGlyph.branchSummary,
+.conversationTreeGlyph.compaction { background: #facc15; }
+.conversationTreeGlyph.error { background: var(--danger); }
+
+.conversationTreeNodeMain {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.conversationTreeNodeTop {
+  display: contents;
+}
+
+.conversationTreeBadges {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.conversationTreeRole {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.conversationTreeRole.user { color: #93c5fd; }
+.conversationTreeRole.assistant { color: #bef264; }
+.conversationTreeRole.toolCall,
+.conversationTreeRole.toolResult { color: color-mix(in srgb, var(--muted) 78%, transparent); }
+.conversationTreeRole.branchSummary,
+.conversationTreeRole.compaction { color: #fde68a; }
+.conversationTreeRole.error { color: var(--danger); }
+
+.conversationTreeTime {
+  display: none;
+}
+
+.conversationTreePreview {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--text) 90%, var(--muted));
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversationTreeNode.toolEntry .conversationTreePreview {
+  color: color-mix(in srgb, var(--muted) 76%, transparent);
+}
+
+.conversationTreeBadge {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--muted) 28%, transparent);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.25;
+  padding: 0 5px;
+}
+
+.conversationTreeBadge.label { color: #fde68a; border-color: color-mix(in srgb, #facc15 38%, transparent); }
+.conversationTreeBadge.branch { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 34%, transparent); }
+.conversationTreeBadge.current { color: #86efac; border-color: color-mix(in srgb, #22c55e 36%, transparent); }
+
+.conversationTreeSelection {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-2) 50%, transparent);
+  padding: 10px;
+}
+
+.conversationTreeSelection[hidden] { display: none; }
+
+.conversationTreeSelectionText {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.conversationTreeSelectionText strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.conversationTreeSelectionActions,
+.conversationTreeCustomActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.conversationTreeSelectionActions button,
+.conversationTreeCustomActions button {
+  height: 34px;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 10px;
+}
+
+.conversationTreeCustomForm {
+  display: grid;
+  gap: 8px;
+}
+
+.conversationTreeCustomForm[hidden] { display: none; }
+
+.conversationTreeCustomForm label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.conversationTreeCustomForm textarea {
+  width: 100%;
+  min-height: 74px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.conversationTreePanel.loading .conversationTreeNode,
+.conversationTreePanel.loading .conversationTreeSelectionActions button {
+  pointer-events: none;
+}
+
+@media (max-width: 700px) {
+  .conversationTreePanel {
+    inset: auto 0 0 0;
+    width: 100vw;
+    max-height: min(88vh, calc(var(--app-height) - 16px));
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 22px 22px 0 0;
+    box-shadow: 0 -18px 60px rgba(0,0,0,.42);
+    padding: 14px max(12px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  }
+
+  .conversationTreeControls {
+    grid-template-columns: 1fr;
+  }
+
+  .conversationTreeFilter {
+    width: 100%;
+  }
+
+  .conversationTreeNode {
+    min-height: 32px;
+    padding-left: 6px;
+  }
+
+  .conversationTreeSelectionActions button,
+  .conversationTreeCustomActions button {
+    flex: 1 1 auto;
+    height: 40px;
+    min-height: 40px;
+  }
+}

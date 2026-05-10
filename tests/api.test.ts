@@ -94,6 +94,29 @@ describe("pi-web mock API", () => {
     expect(sessions.sessions[0].isCurrent).toBe(true);
   });
 
+  it("returns and navigates the conversation tree", async () => {
+    const tree = await (await fetch(`${baseUrl}/api/session/tree`)).json();
+    expect(tree.sessionId).toBe("mock-current");
+    expect(tree.leafId).toBe("mock-a1");
+    expect(tree.entryCount).toBeGreaterThanOrEqual(4);
+    expect(tree.branchPointCount).toBeGreaterThanOrEqual(1);
+
+    const navigateRes = await fetch(`${baseUrl}/api/session/tree/navigate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", targetId: "mock-u1" }),
+    });
+    expect(navigateRes.status).toBe(200);
+    const navigate = await navigateRes.json();
+    expect(navigate.editorText).toContain("image attachments");
+    expect(navigate.leafId).toBeNull();
+
+    const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
+    expect(messages.messages).toHaveLength(0);
+
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+  });
+
   it("accepts text and image prompts", async () => {
     const res = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",

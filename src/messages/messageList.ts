@@ -5,6 +5,7 @@ import type { MarkdownRenderer } from "../markdown/render.js";
 import { imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote } from "./content.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) => void;
+export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => void;
 
 export type MessageList = {
   addMessage: (role: Role, text: string, extraClass?: string, images?: AttachedImage[]) => HTMLDivElement;
@@ -14,6 +15,7 @@ export type MessageList = {
     sessionId: string;
     headers: ApiHeaders;
     addToolHistoryCard: AddToolHistoryCard;
+    addRuntimeErrorCard: AddRuntimeErrorCard;
     clearActiveToolCards: () => void;
     updateEmptyCwdChooser?: () => void;
   }) => Promise<void>;
@@ -119,10 +121,11 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     scrollToBottom();
   }
 
-  async function refreshMessages({ sessionId, headers, addToolHistoryCard, clearActiveToolCards, updateEmptyCwdChooser }: {
+  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addRuntimeErrorCard, clearActiveToolCards, updateEmptyCwdChooser }: {
     sessionId: string;
     headers: ApiHeaders;
     addToolHistoryCard: AddToolHistoryCard;
+    addRuntimeErrorCard: AddRuntimeErrorCard;
     clearActiveToolCards: () => void;
     updateEmptyCwdChooser?: () => void;
   }) {
@@ -143,8 +146,13 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
       const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
       const text = messageText(message);
       if (!text) continue;
+      if (role === "assistant" && message.isError) {
+        const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
+        addRuntimeErrorCard("assistant error", text, rawError);
+        continue;
+      }
       const rawImages = role === "user" ? imagesFromRawContent(message.raw?.content || message.content) : [];
-      addMessage(role, text, "", rawImages);
+      addMessage(role, text, message.isError ? "error" : "", rawImages);
     }
     updateEmptyCwdChooser?.();
   }

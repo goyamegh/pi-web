@@ -33,6 +33,19 @@ export function textFromRawContent(content: unknown): string {
   }).filter(Boolean).join("\n");
 }
 
+function errorTextFromRaw(message: any) {
+  const raw = String(message?.raw?.errorMessage || message?.errorMessage || "").trim();
+  if (!raw) return "";
+  const jsonText = raw.replace(/^Codex error:\s*/, "");
+  try {
+    const parsed = JSON.parse(jsonText);
+    const detail = parsed?.error?.message || parsed?.message || raw;
+    return `Error: ${detail}`;
+  } catch {
+    return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw;
+  }
+}
+
 export function messageText(message: any): string {
   // Prefer server-precomputed text, but fall back to raw content parsing.
   // Also reparse from raw if the precomputed text looks like a pure tool-call placeholder.
@@ -40,5 +53,5 @@ export function messageText(message: any): string {
   if (precomputed && !/^(\[tool call: [^\]]+\]\n?)+$/.test(precomputed.trim())) {
     return precomputed;
   }
-  return textFromRawContent(message?.raw?.content || message?.content) || "";
+  return textFromRawContent(message?.raw?.content || message?.content) || errorTextFromRaw(message) || "";
 }
