@@ -105,7 +105,7 @@ test.beforeEach(async ({ page }) => {
       defaults: { model: null, thinkingLevel: null },
     },
   });
-  const artifactDir = join(process.cwd(), ".pi-web-uploads", "artifacts");
+  const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
   await mkdir(artifactDir, { recursive: true });
   await writeFile(join(artifactDir, "e2e-test.jpg"), await readFile(join(process.cwd(), "tests", "fixtures", "showcase-artifact.jpg")));
   await page.addStyleTag({

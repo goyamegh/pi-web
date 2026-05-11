@@ -361,13 +361,17 @@ describe("artifact serving", () => {
   let child: ChildProcess;
   let baseUrl: string;
   let artifactDir: string;
+  let legacyArtifactDir: string;
 
   beforeAll(async () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
-    artifactDir = join(process.cwd(), ".pi-web-uploads", "artifacts");
+    artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
+    legacyArtifactDir = join(process.cwd(), ".pi-web-uploads", "artifacts");
     await mkdir(artifactDir, { recursive: true });
+    await mkdir(legacyArtifactDir, { recursive: true });
     await writeFile(join(artifactDir, "test.png"), Buffer.from("PNG"));
+    await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
 
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
       env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
@@ -381,6 +385,7 @@ describe("artifact serving", () => {
     child?.kill();
     await rm(join(artifactDir, "test.png"), { force: true });
     await rm(join(artifactDir, "e2e-test.png"), { force: true });
+    await rm(join(legacyArtifactDir, "legacy.png"), { force: true });
   });
 
   it("serves an artifact file without authentication", async () => {
@@ -389,6 +394,13 @@ describe("artifact serving", () => {
     expect(res.headers.get("content-type")).toContain("image/png");
     const body = await res.arrayBuffer();
     expect(Buffer.from(body).toString()).toBe("PNG");
+  });
+
+  it("serves legacy artifacts as a read-only fallback", async () => {
+    const res = await fetch(`${baseUrl}/api/artifacts/legacy.png`);
+    expect(res.status).toBe(200);
+    const body = await res.arrayBuffer();
+    expect(Buffer.from(body).toString()).toBe("LEGACY");
   });
 
   it("serves artifacts even when a token is configured", async () => {

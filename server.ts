@@ -30,7 +30,8 @@ const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
-let artifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
+let artifactDir = join(piCwd, ".pi", "web", "artifacts");
+let legacyArtifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
 const knownCwds = new Set<string>([piCwd]);
 
 const webUiContextFile = join(appDir, "contexts", "web-ui.md");
@@ -94,13 +95,19 @@ function serveArtifact(req: IncomingMessage, res: ServerResponse) {
   if (!name || rawName.includes("..") || rawName.includes("/") || name !== rawName) return sendJson(res, 400, { ok: false, error: "Invalid artifact name" });
 
   const file = resolve(artifactDir, name);
-  if (!file.startsWith(artifactDir) || !existsSync(file)) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
+  const legacyFile = resolve(legacyArtifactDir, name);
+  const resolvedFile = file.startsWith(artifactDir) && existsSync(file)
+    ? file
+    : legacyFile.startsWith(legacyArtifactDir) && existsSync(legacyFile)
+      ? legacyFile
+      : "";
+  if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
   res.writeHead(200, {
-    "content-type": contentTypes[extname(file).toLowerCase()] || "application/octet-stream",
+    "content-type": contentTypes[extname(resolvedFile).toLowerCase()] || "application/octet-stream",
     "cache-control": "no-store",
   });
-  createReadStream(file).pipe(res);
+  createReadStream(resolvedFile).pipe(res);
 }
 
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
@@ -185,10 +192,19 @@ function hasUserMessages(value: PiWebSession) {
   return value.messages.some((message: any) => message?.role === "user");
 }
 
+async function ensurePiWebStorage(cwd = piCwd) {
+  const webDir = join(cwd, ".pi", "web");
+  await mkdir(webDir, { recursive: true });
+  const ignoreFile = join(webDir, ".gitignore");
+  if (!existsSync(ignoreFile)) await writeFile(ignoreFile, "*\n");
+}
+
 async function setPiCwd(path: string) {
   piCwd = await assertDirectory(path);
   knownCwds.add(piCwd);
-  artifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
+  artifactDir = join(piCwd, ".pi", "web", "artifacts");
+  legacyArtifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
+  await ensurePiWebStorage(piCwd);
 }
 
 function gitLabel(indexStatus: string, worktreeStatus: string) {
@@ -297,7 +313,7 @@ async function gitCwdFromRepoParam(repo: string | null) {
   return resolved;
 }
 
-const ignoredGitRepoDirs = new Set([".git", ".pi-web-uploads", "node_modules", "dist", "build", ".cache", ".next", "target", "vendor"]);
+const ignoredGitRepoDirs = new Set([".git", ".pi", ".pi-web-uploads", "node_modules", "dist", "build", ".cache", ".next", "target", "vendor"]);
 
 async function gitRepoSummary(path: string, cwd: string) {
   const status = await gitStatus(cwd) as any;
@@ -408,7 +424,8 @@ const imageExtensions: Record<string, string> = {
 
 async function persistPromptImages(images: Array<{ data: string; mimeType: string; name?: string }>) {
   if (!images.length) return "";
-  const uploadDir = join(piCwd, ".pi-web-uploads");
+  await ensurePiWebStorage();
+  const uploadDir = join(piCwd, ".pi", "web", "uploads");
   await mkdir(uploadDir, { recursive: true });
 
   const lines: string[] = [];
@@ -916,6 +933,8 @@ async function switchEmptySessionCwd(cwd: string) {
   session = await createNewLiveSession(cwd);
   return currentStateWithThinkingLevels();
 }
+
+await ensurePiWebStorage();
 
 const createdSession = await makeAgentSession();
 session = registerLiveSession(createdSession.session);

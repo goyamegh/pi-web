@@ -604,7 +604,7 @@ const VALID_PNG = Buffer.from(
 
 test.describe("image rendering", () => {
   test.beforeAll(async () => {
-    const artifactDir = join(process.cwd(), ".pi-web-uploads", "artifacts");
+    const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
   });
