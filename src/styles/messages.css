@@ -187,4 +187,22 @@
 .imageOverlay img { max-width: 92vw; max-height: 92vh; border-radius: 8px; object-fit: contain; }
 .message.assistant { --message-bg: var(--bg); align-self: stretch; background: transparent; border: none; max-width: 100%; width: 100%; }
 .message.system { align-self: center; max-width: 100%; background: transparent; color: var(--muted); margin: 8px 0; }
+.message.system.compaction {
+  align-self: stretch;
+  background: rgba(250, 204, 21, .08);
+  border-color: rgba(250, 204, 21, .28);
+  color: #fde68a;
+  margin: 10px 16px;
+}
+.message.system.compaction .compactionCancel {
+  margin-top: 8px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-color: rgba(250, 204, 21, .35);
+  color: #fde68a;
+  background: rgba(250, 204, 21, .08);
+}
+.message.system.compaction .compactionCancel:hover:not(:disabled) {
+  background: rgba(250, 204, 21, .14);
+}
 .message.error { border-color: var(--danger); color: #fecdd3; }

@@ -47,6 +47,13 @@ function errorTextFromRaw(message: any) {
 }
 
 export function messageText(message: any): string {
+  if (message?.role === "compactionSummary" || message?.raw?.role === "compactionSummary") {
+    const raw = message.raw || message;
+    const tokenText = typeof raw.tokensBefore === "number" ? raw.tokensBefore.toLocaleString() : "unknown";
+    const header = `Context compacted from ${tokenText} tokens.`;
+    return raw.summary ? `${header}\n\n${raw.summary}` : header;
+  }
+
   // Prefer server-precomputed text, but fall back to raw content parsing.
   // Also reparse from raw if the precomputed text looks like a pure tool-call placeholder.
   const precomputed: string = message?.text || "";

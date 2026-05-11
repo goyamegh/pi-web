@@ -602,6 +602,77 @@ const VALID_PNG = Buffer.from(
   "base64",
 );
 
+test.describe("context compaction", () => {
+  test("shows cancellable compaction progress and handles cancellation", async ({ page }) => {
+    let abortRequested = false;
+    await page.route("**/api/compaction/abort", async (route) => {
+      abortRequested = true;
+      await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ ok: true, sessionId: "mock-current" }) });
+    });
+    await page.addInitScript(() => {
+      const fakeSockets: any[] = [];
+      (window as any).__piWebSockets = fakeSockets;
+      class FakeWebSocket extends EventTarget {
+        static readonly CONNECTING = 0;
+        static readonly OPEN = 1;
+        static readonly CLOSING = 2;
+        static readonly CLOSED = 3;
+        readyState = FakeWebSocket.OPEN;
+        onopen: ((event: Event) => void) | null = null;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        onclose: ((event: Event) => void) | null = null;
+        constructor() {
+          super();
+          fakeSockets.push(this);
+          queueMicrotask(() => {
+            const event = new Event("open");
+            this.dispatchEvent(event);
+            this.onopen?.(event);
+          });
+        }
+        send() {}
+        close() {
+          this.readyState = FakeWebSocket.CLOSED;
+          const event = new Event("close");
+          this.dispatchEvent(event);
+          this.onclose?.(event);
+        }
+        emit(value: unknown) {
+          const event = new MessageEvent("message", { data: JSON.stringify(value) });
+          this.dispatchEvent(event);
+          this.onmessage?.(event);
+        }
+      }
+      (window as any).WebSocket = FakeWebSocket as any;
+    });
+
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "pi_event", event: { type: "compaction_start", reason: "manual" } }));
+
+    const compaction = page.locator(".message.system.compaction").last();
+    await expect(compaction).toContainText("Compacting context…");
+    await expect(compaction.locator(".compactionCancel")).toBeVisible();
+
+    await compaction.locator(".compactionCancel").click();
+    await expect.poll(() => abortRequested).toBe(true);
+    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "pi_event", event: { type: "compaction_end", reason: "manual", aborted: true } }));
+    await expect(compaction).toContainText("Compaction cancelled.");
+    await expect(compaction.locator(".compactionCancel")).toHaveCount(0);
+  });
+
+  test("renders completed compaction summaries", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.locator("#prompt").fill("compact context");
+    await page.locator("#primaryButton").click();
+
+    const compaction = page.locator(".message.system.compaction").last();
+    await expect(compaction).toContainText("Context compacted from 12,345 tokens.");
+    await expect(compaction).toContainText("Mock compacted context summary.");
+  });
+});
+
 test.describe("image rendering", () => {
   test.beforeAll(async () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");

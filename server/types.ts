@@ -43,6 +43,7 @@ export interface PiWebSession {
   reload?(): Promise<void>;
   navigateTree?(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: unknown }>;
   abortBranchSummary?(): void;
+  abortCompaction?(): void;
   prompt(message: string, options?: { images?: unknown[]; streamingBehavior?: string }): Promise<void>;
   abort(): Promise<void>;
   clearQueue?(): void;

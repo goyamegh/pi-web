@@ -31,9 +31,64 @@ export function createRealtime(options: {
   updateMeta: (data: any) => void;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
-  addMessage: (role: "system", text: string, extraClass?: string) => void;
+  addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
   const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, refreshMessages, refreshState, addMessage } = options;
+  let compactionMessage: HTMLDivElement | null = null;
+
+  function formatTokenCount(tokens: unknown) {
+    return typeof tokens === "number" && Number.isFinite(tokens) ? tokens.toLocaleString() : "unknown";
+  }
+
+  function compactionStartText(event: PiEvent) {
+    if (event.reason === "manual") return "Compacting context…";
+    if (event.reason === "overflow") return "Context overflow detected. Auto-compacting context…";
+    return "Auto-compacting context…";
+  }
+
+  function compactionEndText(event: PiEvent) {
+    if (event.aborted) return event.reason === "manual" ? "Compaction cancelled." : "Auto-compaction cancelled.";
+    if (event.errorMessage) return `Compaction failed: ${event.errorMessage}`;
+    const result = event.result || {};
+    const header = `Context compacted from ${formatTokenCount(result.tokensBefore)} tokens.`;
+    return result.summary ? `${header}\n\n${result.summary}` : header;
+  }
+
+  async function abortCompaction(button: HTMLButtonElement) {
+    button.disabled = true;
+    button.textContent = "Cancelling…";
+    try {
+      const res = await fetch("/api/compaction/abort", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ sessionId: state.currentSessionId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Cancel";
+      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  function setCompactionMessage(text: string, extraClass = "compaction", cancellable = false) {
+    const target = compactionMessage?.isConnected ? compactionMessage : addMessage("system", "", extraClass);
+    compactionMessage = target;
+    target.className = `message system ${extraClass}`.trim();
+    target.querySelector(".compactionCancel")?.remove();
+    const body = target.querySelector<HTMLElement>(".body");
+    if (body) body.textContent = text;
+    if (cancellable) {
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.className = "compactionCancel";
+      cancelButton.textContent = "Cancel";
+      cancelButton.addEventListener("click", () => abortCompaction(cancelButton));
+      target.append(cancelButton);
+    }
+    messages.scrollToBottom();
+  }
 
   function handlePiEvent(event: PiEvent) {
     switch (event.type) {
@@ -65,6 +120,20 @@ export function createRealtime(options: {
         if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
         status.refreshSessionTitle();
         break;
+      case "compaction_start":
+        setCompactionMessage(compactionStartText(event), "compaction", true);
+        break;
+      case "compaction_end": {
+        const extraClass = event.errorMessage && !event.aborted ? "compaction error" : "compaction";
+        setCompactionMessage(compactionEndText(event), extraClass);
+        compactionMessage = null;
+        if (event.result) {
+          refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+          if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
+          status.refreshSessionTitle();
+        }
+        break;
+      }
       case "thinking_level_changed":
         state.currentThinkingLevel = event.level || state.currentThinkingLevel;
         elements.thinkingSelectEl.value = state.currentThinkingLevel;

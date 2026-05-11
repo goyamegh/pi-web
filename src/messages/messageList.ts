@@ -152,7 +152,8 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
         continue;
       }
       const rawImages = role === "user" ? imagesFromRawContent(message.raw?.content || message.content) : [];
-      addMessage(role, text, message.isError ? "error" : "", rawImages);
+      const extraClass = message.role === "compactionSummary" ? "compaction" : message.isError ? "error" : "";
+      addMessage(role, text, extraClass, rawImages);
     }
     updateEmptyCwdChooser?.();
   }

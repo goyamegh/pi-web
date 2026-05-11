@@ -1241,6 +1241,16 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
       }
 
+      if (method === "POST" && url.pathname === "/api/compaction/abort") {
+        const body = await readBody(req) as { sessionId?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        if (typeof targetSession.abortCompaction !== "function") return sendJson(res, 400, { ok: false, error: "Compaction cancellation is not available" });
+        targetSession.abortCompaction();
+        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+      }
+
       if (method === "POST" && url.pathname === "/api/session/name") {
         const body = await readBody(req) as { sessionId?: unknown; name?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;

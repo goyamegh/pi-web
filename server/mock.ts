@@ -141,6 +141,7 @@ export function createMockHarness(options: MockSessionOptions) {
 
     syncMessagesToLeaf();
     let mockSession: PiWebSession;
+    let compactionAbortRequested = false;
     const mockSessionManager = {
       newSession() {
         mockSession.sessionId = `mock-${Date.now()}`;
@@ -235,6 +236,25 @@ export function createMockHarness(options: MockSessionOptions) {
       },
       prompt: async (message: string, promptOptions?: { images?: unknown[] }) => {
         appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
+        const withCompaction = /compact|compaction/i.test(message);
+        if (withCompaction) {
+          mockSession.isCompacting = true;
+          compactionAbortRequested = false;
+          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_start", reason: "manual" } });
+          if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+          const deadline = Date.now() + (/slow/i.test(message) ? 5_000 : 1_000);
+          while (!compactionAbortRequested && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+          mockSession.isCompacting = false;
+          if (compactionAbortRequested) {
+            broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", aborted: true } });
+          } else {
+            const result = { tokensBefore: 12345, summary: "Mock compacted context summary." };
+            appendMockMessage({ role: "compactionSummary", content: result.summary, tokensBefore: result.tokensBefore, summary: result.summary, timestamp: new Date().toISOString() } as any);
+            broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", result } });
+          }
+          if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+          return;
+        }
         const slow = /slow|running/i.test(message);
         const withShowcase = /showcase/i.test(message);
         const withProviderError = /provider error|assistant error|usage limit/i.test(message);
@@ -299,6 +319,7 @@ export function createMockHarness(options: MockSessionOptions) {
         if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       },
       abort: async () => { mockSession.isStreaming = false; },
+      abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,
       subscribe: () => undefined,
     };
