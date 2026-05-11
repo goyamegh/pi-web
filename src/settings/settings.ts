@@ -7,6 +7,7 @@ export type SettingsController = {
   init: () => void;
   refreshSettings: () => Promise<void>;
   applySettings: (settings: PiWebSettings) => void;
+  isNavPinned: () => boolean;
 };
 
 function cloneSettings(settings: PiWebSettings): PiWebSettings {
@@ -23,6 +24,7 @@ function normalizeSettings(value: unknown): PiWebSettings {
 
   const appearance = isRecord(value.appearance) ? value.appearance : undefined;
   if (appearance?.density === "compact" || appearance?.density === "comfortable") settings.appearance.density = appearance.density;
+  if (typeof appearance?.navPinned === "boolean") settings.appearance.navPinned = appearance.navPinned;
 
   const composer = isRecord(value.composer) ? value.composer : undefined;
   if (composer?.queueMode === "steer" || composer?.queueMode === "followUp") settings.composer.queueMode = composer.queueMode;
@@ -60,8 +62,9 @@ export function createSettings(options: {
   elements: AppElements;
   api: ApiClient;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
+  onNavPinnedChange?: (pinned: boolean) => void;
 }): SettingsController {
-  const { state, elements, api, addMessage } = options;
+  const { state, elements, api, addMessage, onNavPinnedChange } = options;
 
   function updateQueueToggle() {
     const isSteer = state.queueMode === "steer";
@@ -86,12 +89,14 @@ export function createSettings(options: {
 
     document.documentElement.dataset.density = settings.appearance.density;
     elements.settingDensitySelect.value = settings.appearance.density;
+    elements.settingNavPinnedCheckbox.checked = settings.appearance.navPinned;
     elements.settingQueueModeSelect.value = settings.composer.queueMode;
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
     elements.settingModelDefaultsValue.textContent = settingsLabel(settings);
 
     updateQueueToggle();
     updateExpandedComposer();
+    onNavPinnedChange?.(settings.appearance.navPinned);
   }
 
   function setSettingsStatus(message: string, isError = false) {
@@ -164,6 +169,13 @@ export function createSettings(options: {
       });
     });
 
+    elements.settingNavPinnedCheckbox.addEventListener("change", () => {
+      patchSettings({ appearance: { navPinned: elements.settingNavPinnedCheckbox.checked } }).catch((error) => {
+        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      });
+    });
+
     elements.settingSaveModelDefaultsButton.addEventListener("click", () => {
       const model = splitModelKey(state.currentModelKey);
       if (!model) {
@@ -184,5 +196,5 @@ export function createSettings(options: {
     });
   }
 
-  return { init, refreshSettings, applySettings };
+  return { init, refreshSettings, applySettings, isNavPinned: () => state.settings.appearance.navPinned };
 }

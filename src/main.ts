@@ -121,6 +121,13 @@ settings = createSettings({
   elements,
   api,
   addMessage: messages.addMessage,
+  onNavPinnedChange: (pinned) => {
+    if (pinned && window.innerWidth > 700) {
+      sessions.setSessionDrawerOpen(true);
+    } else if (!pinned) {
+      sessions.setSessionDrawerOpen(false, true);
+    }
+  },
 });
 
 contextMeter = createContextMeter({ state, elements });
@@ -129,6 +136,7 @@ sessions = createSessions({
   state,
   elements,
   api,
+  isNavPinned: () => settings.isNavPinned(),
   updateMeta,
   updateThinkingOptions: (levels) => modelSettings.updateThinkingOptions(levels),
   refreshModels: () => modelSettings.refreshModels(),

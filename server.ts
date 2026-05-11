@@ -1,10 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -686,6 +686,7 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     messageCount: info.messageCount,
     cwd,
     isCurrent: cwd === piCwd && info.id === session.sessionId,
+    inactive: inactiveSessionIds.has(info.id),
     runtime: runtimeForPath(info.path),
   };
 }
@@ -969,6 +970,23 @@ async function switchToSessionId(id: string) {
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
+
+// Inactive sessions store
+const inactiveSessionsFile = join(getAgentDir(), "pi-web-inactive-sessions.json");
+let inactiveSessionIds: Set<string> = new Set();
+(async () => {
+  try {
+    const data = JSON.parse(await readFile(inactiveSessionsFile, "utf-8"));
+    if (Array.isArray(data)) inactiveSessionIds = new Set(data);
+  } catch {}
+})();
+async function persistInactiveSessions() {
+  await mkdir(dirname(inactiveSessionsFile), { recursive: true });
+  const tmp = `${inactiveSessionsFile}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, JSON.stringify([...inactiveSessionIds]), "utf-8");
+  await rename(tmp, inactiveSessionsFile);
+}
+
 const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
@@ -1672,6 +1690,17 @@ const server = createServer(async (req, res) => {
         targetSession.setSessionName(name);
         const state = targetSession === session ? currentStateWithThinkingLevels() : { sessionId: targetSession.sessionId, sessionName: sessionDisplayName(targetSession) };
         return sendJson(res, 200, { ok: true, ...state });
+      }
+
+      if (method === "POST" && url.pathname === "/api/session/active") {
+        const body = await readBody(req) as { sessionId?: unknown; inactive?: unknown };
+        const targetId = typeof body.sessionId === "string" ? body.sessionId : "";
+        if (!targetId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
+        const inactive = Boolean(body.inactive);
+        if (inactive) inactiveSessionIds.add(targetId);
+        else inactiveSessionIds.delete(targetId);
+        await persistInactiveSessions();
+        return sendJson(res, 200, { ok: true, sessionId: targetId, inactive });
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {

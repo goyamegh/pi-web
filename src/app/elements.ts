@@ -44,6 +44,7 @@ export type AppElements = {
   settingDensitySelect: HTMLSelectElement;
   settingQueueModeSelect: HTMLSelectElement;
   settingComposerExpandedCheckbox: HTMLInputElement;
+  settingNavPinnedCheckbox: HTMLInputElement;
   settingModelDefaultsValue: HTMLSpanElement;
   settingSaveModelDefaultsButton: HTMLButtonElement;
   settingClearModelDefaultsButton: HTMLButtonElement;
@@ -107,6 +108,7 @@ export function getAppElements(): AppElements {
     settingDensitySelect: requiredElement<HTMLSelectElement>("#settingDensitySelect"),
     settingQueueModeSelect: requiredElement<HTMLSelectElement>("#settingQueueModeSelect"),
     settingComposerExpandedCheckbox: requiredElement<HTMLInputElement>("#settingComposerExpandedCheckbox"),
+    settingNavPinnedCheckbox: requiredElement<HTMLInputElement>("#settingNavPinnedCheckbox"),
     settingModelDefaultsValue: requiredElement<HTMLSpanElement>("#settingModelDefaultsValue"),
     settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),
     settingClearModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingClearModelDefaultsButton"),
