@@ -678,6 +678,34 @@ test.describe("image rendering", () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
+    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n```ts\nconst preview = true;\n```\n");
+    await writeFile(join(artifactDir, "preview.html"), "<!doctype html><html><body><h1>HTML artifact</h1><p>Rendered in a sandboxed iframe.</p></body></html>");
+  });
+
+  test("renders markdown artifact links inline", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--markdown").last();
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("report.md");
+    await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
+    await expect(preview.locator(".artifactPreviewContent strong")).toHaveText("markdown");
+    await expect(preview.locator(".artifactPreviewContent pre code")).toContainText("const preview = true;");
+  });
+
+  test("renders html artifact links in a sandboxed iframe", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.locator("#prompt").fill("show html artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--html").last();
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("preview.html");
+    const frame = preview.locator("iframe.artifactPreviewFrame");
+    await expect(frame).toHaveAttribute("sandbox", "");
+    await expect(frame).toHaveAttribute("src", "/api/artifacts/preview.html");
   });
 
   test("image actions appear on hover with fullscreen, download and open buttons", async ({ page }) => {

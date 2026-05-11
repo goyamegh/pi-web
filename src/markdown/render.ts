@@ -133,11 +133,83 @@ function enhanceImages(root: ParentNode) {
   for (const img of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) attachImageActions(img);
 }
 
+function artifactName(pathname: string) {
+  try { return decodeURIComponent(pathname.split("/").pop() || "artifact"); } catch { return pathname.split("/").pop() || "artifact"; }
+}
+
+function artifactKind(pathname: string) {
+  const lower = pathname.toLowerCase();
+  if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
+  return "";
+}
+
+function enhanceArtifactLinks(root: ParentNode) {
+  for (const link of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="/api/artifacts/"]'))) {
+    if (link.dataset.artifactPreviewEnhanced) continue;
+    const url = new URL(link.href, window.location.origin);
+    const kind = artifactKind(url.pathname);
+    if (!kind) continue;
+    link.dataset.artifactPreviewEnhanced = "true";
+
+    const card = document.createElement("div");
+    card.className = `artifactPreview artifactPreview--${kind}`;
+    const header = document.createElement("div");
+    header.className = "artifactPreviewHeader";
+    const title = document.createElement("span");
+    title.className = "artifactPreviewTitle";
+    title.textContent = artifactName(url.pathname);
+    const open = document.createElement("a");
+    open.href = url.pathname;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.textContent = "Open";
+    header.append(title, open);
+    const content = document.createElement("div");
+    content.className = "artifactPreviewContent";
+    content.textContent = "Loading preview…";
+    card.append(header, content);
+
+    const container = link.closest("p") || link;
+    container.insertAdjacentElement("afterend", card);
+
+    if (kind === "html") {
+      content.textContent = "";
+      const iframe = document.createElement("iframe");
+      iframe.className = "artifactPreviewFrame";
+      iframe.src = url.pathname;
+      iframe.title = `Preview of ${title.textContent}`;
+      iframe.setAttribute("sandbox", "");
+      content.append(iframe);
+      continue;
+    }
+
+    fetch(url.pathname)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Preview failed (${res.status})`);
+        return res.text();
+      })
+      .then((text) => {
+        if (!card.isConnected) return;
+        content.classList.add("markdownBody");
+        content.innerHTML = markdownHtml(text);
+        enhanceCodeBlocks(content);
+        enhanceImages(content);
+        enhanceArtifactLinks(content);
+      })
+      .catch((error) => {
+        content.textContent = error instanceof Error ? error.message : String(error);
+        card.classList.add("artifactPreview--error");
+      });
+  }
+}
+
 function renderAssistantMarkdown(body: HTMLElement, text: string) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
   enhanceCodeBlocks(body);
   enhanceImages(body);
+  enhanceArtifactLinks(body);
   body.dataset.markdownRendered = "true";
   delete body.dataset.markdownText;
 }

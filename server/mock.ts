@@ -307,6 +307,10 @@ export function createMockHarness(options: MockSessionOptions) {
             { type: "text", text: "Done reading." },
           ], timestamp: new Date().toISOString() });
           appendMockMessage({ role: "toolResult", toolCallId: "call-1", toolName: "read", content: "file contents here", timestamp: new Date().toISOString() });
+        } else if (/markdown artifact/i.test(message)) {
+          appendMockMessage({ role: "assistant", content: "Here is a markdown artifact:\n\n[report.md](/api/artifacts/report.md)", timestamp: new Date().toISOString() });
+        } else if (/html artifact/i.test(message)) {
+          appendMockMessage({ role: "assistant", content: "Here is an HTML artifact:\n\n[preview.html](/api/artifacts/preview.html)", timestamp: new Date().toISOString() });
         } else if (/artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a screenshot:\n\n![e2e-test](/api/artifacts/e2e-test.png)", timestamp: new Date().toISOString() });
         } else if (/markdown/i.test(message)) {

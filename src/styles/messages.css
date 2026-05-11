@@ -98,6 +98,27 @@
   padding: 6px 8px;
 }
 .markdownBody a { color: var(--accent); }
+.artifactPreview {
+  margin: 10px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.artifactPreviewHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+.artifactPreviewTitle { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: auto; }
+.artifactPreviewFrame { display: block; width: 100%; height: min(70vh, 720px); border: 0; background: #fff; border-radius: 0 0 12px 12px; }
+.artifactPreview--error .artifactPreviewContent { color: #fecdd3; }
 .markdownBody img {
   display: block;
   max-width: min(100%, 900px);
