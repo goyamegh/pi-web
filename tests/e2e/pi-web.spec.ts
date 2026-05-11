@@ -353,6 +353,24 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Older mock session" }).locator(".sessionSpinner")).toHaveCount(0);
   });
 
+  test("includes browser-remembered cwds when listing sessions", async ({ page }) => {
+    const rememberedCwd = "/Users/ashwin/projects/remembered";
+    await page.addInitScript((cwd) => {
+      localStorage.setItem("pi-web-known-session-cwds", JSON.stringify([cwd]));
+    }, rememberedCwd);
+
+    let sessionsUrl = "";
+    await page.route("**/api/sessions?**", async (route) => {
+      sessionsUrl = route.request().url();
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect.poll(() => sessionsUrl).toContain("/api/sessions?");
+    expect(new URL(sessionsUrl).searchParams.getAll("cwd")).toContain(rememberedCwd);
+  });
+
   test("opens, lists sessions, resumes an older session, and creates new session", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();

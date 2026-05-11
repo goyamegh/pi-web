@@ -27,6 +27,25 @@ function folderName(path: string) {
   return parts.at(-1) || path || "Folder";
 }
 
+const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
+
+function readKnownSessionCwds() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(knownSessionCwdsStorageKey) || "[]");
+    return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberSessionCwd(cwd?: string) {
+  const value = cwd?.trim();
+  if (!value) return;
+  const cwds = new Set(readKnownSessionCwds());
+  cwds.add(value);
+  localStorage.setItem(knownSessionCwdsStorageKey, JSON.stringify(Array.from(cwds)));
+}
+
 export function createSessions(options: {
   state: AppState;
   elements: AppElements;
@@ -67,6 +86,7 @@ export function createSessions(options: {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    rememberSessionCwd(cwd);
     updateMeta(data);
     if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
     await refreshModels();
@@ -154,6 +174,7 @@ export function createSessions(options: {
       body: cwd ? JSON.stringify({ cwd }) : undefined,
     });
     if (!res.ok) throw new Error(await res.text());
+    rememberSessionCwd(cwd || state.currentCwd);
     setSessionDrawerOpen(false);
     clearMessages();
     await refreshState();
@@ -168,7 +189,11 @@ export function createSessions(options: {
   }
 
   async function refreshSessions() {
-    const res = await fetch("/api/sessions", { headers: api.headers() });
+    rememberSessionCwd(state.currentCwd);
+    const params = new URLSearchParams();
+    for (const cwd of readKnownSessionCwds()) params.append("cwd", cwd);
+    const url = params.toString() ? `/api/sessions?${params}` : "/api/sessions";
+    const res = await fetch(url, { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     const sessions: SessionInfo[] = data.sessions || [];
@@ -279,6 +304,7 @@ export function createSessions(options: {
               body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd }),
             });
             if (!openRes.ok) throw new Error(await openRes.text());
+            rememberSessionCwd(item.cwd || cwd);
             setSessionDrawerOpen(false);
             await refreshState();
           } catch (error) {

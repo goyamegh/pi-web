@@ -670,10 +670,15 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
   };
 }
 
-async function listSessionInfos() {
+async function listSessionInfos(extraCwds: string[] = []) {
   if (noSession) return [];
   if (mockMode) return mockSessions.map((info) => simplifySessionInfo(info as any, info.cwd || piCwd));
-  const groups = await Promise.all(Array.from(knownCwds).map(async (cwd) => {
+  const cwds = new Set<string>(knownCwds);
+  for (const cwd of extraCwds) {
+    if (typeof cwd !== "string" || !cwd.trim()) continue;
+    cwds.add(resolve(cwd));
+  }
+  const groups = await Promise.all(Array.from(cwds).map(async (cwd) => {
     try {
       const sessions = await SessionManager.list(cwd);
       return sessions.map((info) => simplifySessionInfo(info, cwd));
@@ -1146,7 +1151,8 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
-        return sendJson(res, 200, { ok: true, sessions: await listSessionInfos() });
+        const extraCwds = url.searchParams.getAll("cwd");
+        return sendJson(res, 200, { ok: true, sessions: await listSessionInfos(extraCwds) });
       }
 
       if (method === "GET" && url.pathname === "/api/settings") {
