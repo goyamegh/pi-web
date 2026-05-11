@@ -90,7 +90,7 @@ export function createRealtime(options: {
     messages.scrollToBottom();
   }
 
-  function handlePiEvent(event: PiEvent) {
+  function handlePiEvent(event: PiEvent, isReplay = false) {
     switch (event.type) {
       case "session_info_changed":
         if ("name" in event) status.setStatusTitle(event.name || "New session");
@@ -118,8 +118,8 @@ export function createRealtime(options: {
         messages.resetStreamingAssistant();
         messages.endStreamFollow();
         tools.clearActiveToolCards();
-        refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
-        if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
+        if (!isReplay) refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        if (!isReplay && conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
         status.refreshSessionTitle();
         break;
       case "compaction_start":
@@ -130,8 +130,8 @@ export function createRealtime(options: {
         setCompactionMessage(compactionEndText(event), extraClass);
         compactionMessage = null;
         if (event.result) {
-          refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
-          if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
+          if (!isReplay) refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+          if (!isReplay && conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
           status.refreshSessionTitle();
         }
         break;
@@ -150,13 +150,24 @@ export function createRealtime(options: {
     ws.addEventListener("open", status.markWebSocketOpen);
     ws.addEventListener("message", (message) => {
       const data = JSON.parse(String(message.data));
+      if (typeof data.seq === "number" && Number.isFinite(data.seq) && data.seq > state.lastRealtimeSeq) {
+        state.lastRealtimeSeq = data.seq;
+      }
+      if (data.type === "sync_required") {
+        if (typeof data.latestSeq === "number" && Number.isFinite(data.latestSeq) && data.latestSeq >= 0) {
+          state.lastRealtimeSeq = data.latestSeq;
+        }
+        status.markSyncRequired();
+        return;
+      }
+      const isReplay = data.replay === true;
       if (data.type === "hello" || data.type === "state_changed") {
         updateMeta(data);
         state.isStreaming = Boolean(data.isStreaming);
         composer.updatePrimaryAction();
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
-        if (data.type === "state_changed") {
+        if (data.type === "state_changed" && !isReplay) {
           refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
           if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
           status.refreshSessionTitle();
@@ -178,7 +189,7 @@ export function createRealtime(options: {
       }
       if (data.type === "pi_event") {
         if (!elements.sessionDrawer.hidden) sessions.refreshSessions().catch(() => undefined);
-        if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event);
+        if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event, isReplay);
         return;
       }
       if (data.type === "server_error" && (!data.sessionId || data.sessionId === state.currentSessionId)) addMessage("system", data.error, "error");

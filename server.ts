@@ -820,8 +820,21 @@ let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
 
 const clients = new Set<WebSocket>();
+type RealtimeEnvelope = Record<string, unknown> & { seq: number };
+const realtimeEventLog: RealtimeEnvelope[] = [];
+const maxRealtimeEventLogSize = 1000;
+let nextRealtimeSeq = 1;
+
+function recordRealtimeMessage(value: unknown): RealtimeEnvelope {
+  const envelope = { ...(typeof value === "object" && value !== null ? value as Record<string, unknown> : { value }), seq: nextRealtimeSeq++ };
+  realtimeEventLog.push(envelope);
+  if (realtimeEventLog.length > maxRealtimeEventLogSize) realtimeEventLog.splice(0, realtimeEventLog.length - maxRealtimeEventLogSize);
+  return envelope;
+}
+
 function broadcast(value: unknown) {
-  const data = JSON.stringify(value);
+  const envelope = recordRealtimeMessage(value);
+  const data = JSON.stringify(envelope);
   for (const client of clients) {
     if (client.readyState === client.OPEN) client.send(data);
   }
@@ -1348,10 +1361,26 @@ server.on("upgrade", (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
 });
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
   clients.add(ws);
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
+  const latestSeq = nextRealtimeSeq - 1;
+  const oldestSeq = realtimeEventLog[0]?.seq || nextRealtimeSeq;
+
+  if (Number.isFinite(lastSeq) && lastSeq > 0) {
+    if (lastSeq > latestSeq || lastSeq < oldestSeq - 1) {
+      ws.send(JSON.stringify({ type: "sync_required", latestSeq }));
+    } else {
+      for (const event of realtimeEventLog) {
+        if (event.seq > lastSeq) ws.send(JSON.stringify({ ...event, replay: true }));
+      }
+    }
+  }
+
   ws.send(JSON.stringify({
     type: "hello",
+    seq: latestSeq,
     cwd: piCwd,
     sessionFile: session.sessionFile,
     sessionId: session.sessionId,

@@ -14,6 +14,7 @@ export type StatusBar = {
   refreshSessionTitle: (sessionId?: string) => Promise<void>;
   markWebSocketOpen: () => void;
   markWebSocketClosed: () => void;
+  markSyncRequired: () => void;
 };
 
 function sessionTitle(session: SessionTitleInfo) {
@@ -112,7 +113,7 @@ export function createStatusBar(options: {
     state.reconnectedClearTimer = undefined;
   }
 
-  function setConnectionStatus(kind: "reconnecting" | "offline" | "reconnected", text: string, title = text) {
+  function setConnectionStatus(kind: "reconnecting" | "offline" | "reconnected" | "syncRequired", text: string, title = text) {
     clearReconnectedTimer();
     elements.connectionStatusEl.className = `connectionStatus ${kind}`;
     elements.connectionStatusEl.textContent = text;
@@ -164,7 +165,6 @@ export function createStatusBar(options: {
       return;
     }
 
-    void refreshState().catch((error) => console.warn("Could not refresh after reconnect", error));
     setConnectionStatus("reconnected", "Reconnected");
     state.reconnectedClearTimer = window.setTimeout(() => {
       state.reconnectedClearTimer = undefined;
@@ -176,6 +176,10 @@ export function createStatusBar(options: {
     state.wsDisconnected = true;
     clearReconnectedTimer();
     scheduleConnectionStatus();
+  }
+
+  function markSyncRequired() {
+    setConnectionStatus("syncRequired", "Sync needed", "Some live updates were missed. Click to sync when you are ready.");
   }
 
   async function refreshSessionTitle(sessionId = state.currentSessionId) {
@@ -199,6 +203,10 @@ export function createStatusBar(options: {
       event.preventDefault();
       beginRenameSessionTitle();
     });
+    elements.connectionStatusEl.addEventListener("click", () => {
+      if (!elements.connectionStatusEl.classList.contains("syncRequired")) return;
+      void refreshState().then(hideConnectionStatus).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+    });
   }
 
   return {
@@ -207,5 +215,6 @@ export function createStatusBar(options: {
     refreshSessionTitle,
     markWebSocketOpen,
     markWebSocketClosed,
+    markSyncRequired,
   };
 }

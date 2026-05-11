@@ -106,6 +106,7 @@ test.describe("composer layout", () => {
     await page.evaluate(() => { (window as any).__piWebSocketAutoOpen = true; });
     await page.clock.runFor(1_501);
     await expect(page.locator("#connectionStatus")).toHaveText("Reconnected");
+    expect(messagesRequestCount).toBe(1);
     await page.clock.runFor(1_500);
     await expect(page.locator("#connectionStatus")).toBeHidden();
   });

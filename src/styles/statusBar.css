@@ -86,3 +86,8 @@
   border-color: color-mix(in srgb, var(--success, #22c55e) 45%, transparent);
   color: var(--success, #22c55e);
 }
+.connectionStatus.syncRequired {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+  cursor: pointer;
+}
