@@ -218,6 +218,8 @@ export function createToolCards(messagesEl: HTMLDivElement): ToolCards {
 
   function startTool(toolCallId: string | undefined, toolName: string, args: Record<string, unknown>) {
     const cardKey = toolCallId || toolName;
+    const existing = activeToolCards.get(cardKey);
+    if (existing?.isConnected) return;
     const card = addToolCard(toolName, args);
     activeToolCards.set(cardKey, card);
   }

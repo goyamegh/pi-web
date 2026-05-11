@@ -54,8 +54,10 @@ async function refreshMessages() {
     sessionId: state.currentSessionId,
     headers: api.headers,
     addToolHistoryCard: tools.addToolHistoryCard,
+    addPendingToolCard: tools.startTool,
     addRuntimeErrorCard: tools.addRuntimeErrorCard,
     clearActiveToolCards: tools.clearActiveToolCards,
+    isStreaming: state.isStreaming,
     updateEmptyCwdChooser: () => sessions.updateEmptyCwdChooser(),
   });
 }

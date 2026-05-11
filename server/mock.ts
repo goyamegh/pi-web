@@ -260,6 +260,7 @@ export function createMockHarness(options: MockSessionOptions) {
         const withProviderError = /provider error|assistant error|usage limit/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
         const withEditTool = !withShowcase && !withMalformedEditTool && /edit diff/i.test(message);
+        const withPendingToolRefresh = /pending tool refresh/i.test(message);
         const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && /tool|interleav/i.test(message);
         mockSession.isStreaming = true;
         broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_start" } });
@@ -293,20 +294,29 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: [{ type: "toolCall", id: "call-edit", toolName: "edit", arguments: editArgs }], timestamp: new Date().toISOString() });
           appendMockMessage({ role: "toolResult", toolCallId: "call-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /some/file.ts.", timestamp: new Date().toISOString() });
         } else if (withTools) {
+          const toolCallId = withPendingToolRefresh ? `call-pending-${Date.now()}` : "call-1";
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Let me check that for you. " } } });
           await new Promise((resolve) => setTimeout(resolve, 80));
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_start", toolName: "read", toolCallId: "call-1", args: { path: "/some/file" } } });
-          await new Promise((resolve) => setTimeout(resolve, 150));
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "read", toolCallId: "call-1", isError: false, result: "file contents here" } });
+          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_start", toolName: "read", toolCallId, args: { path: "/some/file" } } });
+          if (withPendingToolRefresh) {
+            appendMockMessage({ role: "assistant", content: [
+              { type: "text", text: "Let me check that for you. " },
+              { type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/some/file" } },
+            ], timestamp: new Date().toISOString() });
+          }
+          await new Promise((resolve) => setTimeout(resolve, withPendingToolRefresh ? 3_000 : 150));
+          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "read", toolCallId, isError: false, result: "file contents here" } });
           await new Promise((resolve) => setTimeout(resolve, 80));
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Done reading." } } });
           await new Promise((resolve) => setTimeout(resolve, 80));
-          appendMockMessage({ role: "assistant", content: [
-            { type: "text", text: "Let me check that for you. " },
-            { type: "toolCall", id: "call-1", toolName: "read", arguments: { path: "/some/file" } },
-            { type: "text", text: "Done reading." },
-          ], timestamp: new Date().toISOString() });
-          appendMockMessage({ role: "toolResult", toolCallId: "call-1", toolName: "read", content: "file contents here", timestamp: new Date().toISOString() });
+          if (!withPendingToolRefresh) {
+            appendMockMessage({ role: "assistant", content: [
+              { type: "text", text: "Let me check that for you. " },
+              { type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/some/file" } },
+              { type: "text", text: "Done reading." },
+            ], timestamp: new Date().toISOString() });
+          }
+          appendMockMessage({ role: "toolResult", toolCallId, toolName: "read", content: "file contents here", timestamp: new Date().toISOString() });
         } else if (/markdown artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a markdown artifact:\n\n[report.md](/api/artifacts/report.md)", timestamp: new Date().toISOString() });
         } else if (/html artifact/i.test(message)) {

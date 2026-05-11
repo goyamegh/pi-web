@@ -447,6 +447,23 @@ test.describe("tool cards", () => {
     await expect(page.locator(".message.tool")).toHaveCount(0);
   });
 
+  test("restores pending tool calls after refresh", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("pending tool refresh");
+    await page.locator("#primaryButton").click();
+
+    const liveCard = page.locator(".toolCard.toolCard--running", { hasText: "read" }).last();
+    await expect(liveCard).toBeVisible();
+    await expect(liveCard.locator(".toolCardSubtitle")).toHaveText("/some/file");
+
+    await page.reload();
+
+    const restoredCard = page.locator(".toolCard.toolCard--running", { hasText: "read" }).last();
+    await expect(restoredCard).toBeVisible();
+    await expect(restoredCard.locator(".toolCardSubtitle")).toHaveText("/some/file");
+    await expect(page.locator(".message.tool")).toHaveCount(0);
+  });
+
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");

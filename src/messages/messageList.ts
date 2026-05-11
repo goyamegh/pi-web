@@ -5,7 +5,14 @@ import type { MarkdownRenderer } from "../markdown/render.js";
 import { imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote } from "./content.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) => void;
+export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>) => void;
 export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => void;
+
+type ToolCallSummary = {
+  id?: string;
+  toolName: string;
+  args: Record<string, unknown>;
+};
 
 export type MessageList = {
   addMessage: (role: Role, text: string, extraClass?: string, images?: AttachedImage[]) => HTMLDivElement;
@@ -15,8 +22,10 @@ export type MessageList = {
     sessionId: string;
     headers: ApiHeaders;
     addToolHistoryCard: AddToolHistoryCard;
+    addPendingToolCard: AddPendingToolCard;
     addRuntimeErrorCard: AddRuntimeErrorCard;
     clearActiveToolCards: () => void;
+    isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
   }) => Promise<void>;
   resetStreamingAssistant: () => void;
@@ -121,12 +130,32 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     scrollToBottom();
   }
 
-  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addRuntimeErrorCard, clearActiveToolCards, updateEmptyCwdChooser }: {
+  function messageToolCalls(message: any): ToolCallSummary[] {
+    const calls = Array.isArray(message?.toolCalls)
+      ? message.toolCalls
+      : Array.isArray(message?.raw?.content)
+        ? message.raw.content.filter((part: any) => part?.type === "toolCall").map((part: any) => ({
+          id: part.id,
+          toolName: part.toolName || part.name || "tool",
+          args: part.arguments || part.args || {},
+        }))
+        : [];
+
+    return calls.map((call: any) => ({
+      id: typeof call.id === "string" ? call.id : undefined,
+      toolName: typeof call.toolName === "string" ? call.toolName : typeof call.name === "string" ? call.name : "tool",
+      args: call.args && typeof call.args === "object" ? call.args : {},
+    }));
+  }
+
+  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser }: {
     sessionId: string;
     headers: ApiHeaders;
     addToolHistoryCard: AddToolHistoryCard;
+    addPendingToolCard: AddPendingToolCard;
     addRuntimeErrorCard: AddRuntimeErrorCard;
     clearActiveToolCards: () => void;
+    isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
   }) {
     const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
@@ -135,7 +164,13 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     const data = await res.json();
     clear();
     clearActiveToolCards();
-    for (const message of data.messages || []) {
+    const allMessages = data.messages || [];
+    const completedToolCallIds = new Set<string>();
+    for (const message of allMessages) {
+      const id = message?.toolCallId || message?.raw?.toolCallId;
+      if (message?.role === "toolResult" && typeof id === "string") completedToolCallIds.add(id);
+    }
+    for (const message of allMessages) {
       if (message.role === "toolResult") {
         const toolName = message.toolName || message.raw?.toolName || message.name || "tool";
         const isError = Boolean(message.isError);
@@ -145,15 +180,22 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
       }
       const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
       const text = messageText(message);
-      if (!text) continue;
-      if (role === "assistant" && message.isError) {
-        const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
-        addRuntimeErrorCard("assistant error", text, rawError);
-        continue;
+      if (text) {
+        if (role === "assistant" && message.isError) {
+          const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
+          addRuntimeErrorCard("assistant error", text, rawError);
+          continue;
+        }
+        const rawImages = role === "user" ? imagesFromRawContent(message.raw?.content || message.content) : [];
+        const extraClass = message.role === "compactionSummary" ? "compaction" : message.isError ? "error" : "";
+        addMessage(role, text, extraClass, rawImages);
       }
-      const rawImages = role === "user" ? imagesFromRawContent(message.raw?.content || message.content) : [];
-      const extraClass = message.role === "compactionSummary" ? "compaction" : message.isError ? "error" : "";
-      addMessage(role, text, extraClass, rawImages);
+      if (role === "assistant" && isStreaming) {
+        for (const call of messageToolCalls(message)) {
+          if (call.id && completedToolCallIds.has(call.id)) continue;
+          addPendingToolCard(call.id, call.toolName, call.args);
+        }
+      }
     }
     updateEmptyCwdChooser?.();
   }

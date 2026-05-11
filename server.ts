@@ -451,6 +451,7 @@ function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<str
     const args = toolCallArgs?.get(m.toolCallId as string);
     return {
       role: "toolResult",
+      toolCallId: m.toolCallId,
       toolName: m.toolName,
       toolArgs: args,
       isError: Boolean(m.isError),
@@ -461,9 +462,17 @@ function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<str
   }
   const text = textFromContent(m.content);
   const errorText = m.role === "assistant" && !text && m.errorMessage ? assistantErrorPreview(m) : "";
+  const toolCalls = m.role === "assistant" && Array.isArray(m.content)
+    ? m.content.filter((part: any) => part?.type === "toolCall").map((part: any) => ({
+      id: part.id,
+      toolName: part.toolName || part.name || "tool",
+      args: part.arguments || part.args || {},
+    }))
+    : undefined;
   return {
     role: m.role,
     text: errorText || text,
+    toolCalls,
     isError: Boolean(m.errorMessage || m.stopReason === "error"),
     timestamp: m.timestamp,
     raw: m,
