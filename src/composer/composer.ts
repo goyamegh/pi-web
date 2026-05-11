@@ -35,8 +35,10 @@ export function createComposer(options: {
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  beginStreamFollow?: () => void;
+  endStreamFollow?: () => void;
 }): ComposerController {
-  const { state, elements, api, addMessage, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState } = options;
+  const { state, elements, api, addMessage, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginStreamFollow, endStreamFollow } = options;
 
   function updatePrimaryAction() {
     const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0;
@@ -145,6 +147,7 @@ export function createComposer(options: {
       state.attachedImages = [];
       renderAttachments();
       updatePrimaryAction();
+      beginStreamFollow?.();
       addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
 
       try {
@@ -155,6 +158,7 @@ export function createComposer(options: {
         });
         if (!res.ok) throw new Error(await res.text());
       } catch (error) {
+        endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       } finally {
         elements.promptEl.focus();

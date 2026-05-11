@@ -697,6 +697,7 @@ test.describe("image rendering", () => {
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
     await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n```ts\nconst preview = true;\n```\n");
     await writeFile(join(artifactDir, "preview.html"), "<!doctype html><html><body><h1>HTML artifact</h1><p>Rendered in a sandboxed iframe.</p></body></html>");
+    await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
   });
 
   test("renders markdown artifact links inline", async ({ page }) => {
@@ -723,6 +724,20 @@ test.describe("image rendering", () => {
     const frame = preview.locator("iframe.artifactPreviewFrame");
     await expect(frame).toHaveAttribute("sandbox", "");
     await expect(frame).toHaveAttribute("src", "/api/artifacts/preview.html");
+  });
+
+  test("renders video artifact links inline", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.locator("#prompt").fill("show video artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--video").last();
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-video-artifact.webm");
+    const video = preview.locator("video.artifactPreviewVideo");
+    await expect(video).toBeVisible();
+    await expect(video.locator("source")).toHaveAttribute("src", "/api/artifacts/e2e-video-artifact.webm");
+    await expect(video.locator("source")).toHaveAttribute("type", "video/webm");
   });
 
   test("image actions appear on hover with fullscreen, download and open buttons", async ({ page }) => {

@@ -99,6 +99,7 @@ export function createRealtime(options: {
         state.isStreaming = true;
         composer.updatePrimaryAction();
         messages.resetStreamingAssistant();
+        messages.beginStreamFollow();
         break;
       case "message_update": {
         const deltaEvent = event.assistantMessageEvent;
@@ -115,6 +116,7 @@ export function createRealtime(options: {
         state.isStreaming = false;
         composer.updatePrimaryAction();
         messages.resetStreamingAssistant();
+        messages.endStreamFollow();
         tools.clearActiveToolCards();
         refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
         if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);

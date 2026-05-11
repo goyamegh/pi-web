@@ -18,6 +18,8 @@ export type MessageList = {
   addMessage: (role: Role, text: string, extraClass?: string, images?: AttachedImage[]) => HTMLDivElement;
   appendStreamingDelta: (delta: string) => void;
   clear: () => void;
+  beginStreamFollow: () => void;
+  endStreamFollow: () => void;
   refreshMessages: (options: {
     sessionId: string;
     headers: ApiHeaders;
@@ -53,10 +55,99 @@ function appendAttachedImage(container: HTMLElement, img: AttachedImage) {
 export function createMessageList(options: { messagesEl: HTMLDivElement; markdown: MarkdownRenderer }): MessageList {
   const { messagesEl, markdown } = options;
   let streamingAssistant: HTMLDivElement | null = null;
+  let isStreaming = false;
+  let shouldFollowStream = true;
+  let programmaticScroll = false;
+  let userScrollIntent = false;
+  const bottomThreshold = 48;
+  const resumeBottomThreshold = 4;
+
+  const jumpButton = document.createElement("button");
+  jumpButton.type = "button";
+  jumpButton.className = "jumpToLatestButton";
+  jumpButton.textContent = "Jump to latest";
+  jumpButton.setAttribute("aria-label", "Jump to latest message");
+  jumpButton.hidden = true;
+  document.querySelector(".app")?.append(jumpButton);
+
+  function distanceFromBottom() {
+    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+  }
+
+  function isNearBottom() {
+    return distanceFromBottom() <= bottomThreshold;
+  }
+
+  function isAtBottom() {
+    return distanceFromBottom() <= resumeBottomThreshold;
+  }
+
+  function setJumpButtonVisible(visible: boolean) {
+    jumpButton.hidden = !visible;
+  }
+
+  function forceScrollToBottom() {
+    programmaticScroll = true;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    window.setTimeout(() => {
+      programmaticScroll = false;
+    }, 0);
+  }
 
   function scrollToBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    if (!shouldFollowStream) {
+      setJumpButtonVisible(true);
+      return;
+    }
+    forceScrollToBottom();
+    setJumpButtonVisible(false);
   }
+
+  function beginStreamFollow() {
+    isStreaming = true;
+    shouldFollowStream = true;
+    userScrollIntent = false;
+    forceScrollToBottom();
+    setJumpButtonVisible(false);
+  }
+
+  function endStreamFollow() {
+    isStreaming = false;
+  }
+
+  function pauseStreamFollow() {
+    if (programmaticScroll) return;
+    userScrollIntent = true;
+    if (!isStreaming) return;
+    shouldFollowStream = false;
+    setJumpButtonVisible(true);
+  }
+
+  messagesEl.addEventListener("wheel", pauseStreamFollow, { passive: true });
+  messagesEl.addEventListener("touchstart", pauseStreamFollow, { passive: true });
+  messagesEl.addEventListener("pointerdown", pauseStreamFollow);
+  messagesEl.addEventListener("keydown", (event) => {
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) pauseStreamFollow();
+  });
+  messagesEl.addEventListener("scroll", () => {
+    if (programmaticScroll) return;
+    if (shouldFollowStream && !isNearBottom()) {
+      shouldFollowStream = false;
+      setJumpButtonVisible(isStreaming);
+      return;
+    }
+    if (!shouldFollowStream && isAtBottom()) {
+      shouldFollowStream = true;
+      userScrollIntent = false;
+      setJumpButtonVisible(false);
+    }
+  }, { passive: true });
+  jumpButton.addEventListener("click", () => {
+    shouldFollowStream = true;
+    userScrollIntent = false;
+    forceScrollToBottom();
+    setJumpButtonVisible(false);
+  });
 
   function addMessage(role: Role, text: string, extraClass = "", images: AttachedImage[] = []) {
     const div = document.createElement("div");
@@ -112,6 +203,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   function clear() {
     messagesEl.textContent = "";
     streamingAssistant = null;
+    setJumpButtonVisible(false);
   }
 
   function resetStreamingAssistant() {
@@ -162,6 +254,8 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     const res = await fetch(`/api/messages${query}`, { headers: headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
+    const wasFollowing = shouldFollowStream;
+    const previousScrollTop = messagesEl.scrollTop;
     clear();
     clearActiveToolCards();
     const allMessages = data.messages || [];
@@ -197,13 +291,24 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
         }
       }
     }
+    if (wasFollowing) scrollToBottom();
+    else {
+      programmaticScroll = true;
+      messagesEl.scrollTop = previousScrollTop;
+      window.setTimeout(() => {
+        programmaticScroll = false;
+      }, 0);
+      setJumpButtonVisible(true);
+    }
     updateEmptyCwdChooser?.();
   }
 
   return {
     addMessage,
     appendStreamingDelta,
+    beginStreamFollow,
     clear,
+    endStreamFollow,
     refreshMessages,
     resetStreamingAssistant,
     scrollToBottom,

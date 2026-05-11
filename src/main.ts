@@ -24,8 +24,8 @@ const elements = getAppElements();
 const state = createAppState();
 const api = createApiClient(state);
 const markdown = createMarkdownRenderer(elements.messagesEl);
-const tools = createToolCards(elements.messagesEl);
 const messages = createMessageList({ messagesEl: elements.messagesEl, markdown });
+const tools = createToolCards(elements.messagesEl, messages.scrollToBottom);
 
 let composer: ComposerController;
 let modelSettings: ModelSettings;
@@ -138,6 +138,8 @@ composer = createComposer({
   refreshModels: () => modelSettings.refreshModels(),
   refreshMessages,
   refreshState,
+  beginStreamFollow: messages.beginStreamFollow,
+  endStreamFollow: messages.endStreamFollow,
 });
 
 conversationTree = createConversationTree({

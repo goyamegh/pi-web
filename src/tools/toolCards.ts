@@ -173,7 +173,9 @@ function textFromToolResult(result: unknown): string {
   return textFromRawContent(value.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
 }
 
-export function createToolCards(messagesEl: HTMLDivElement): ToolCards {
+export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () => void = () => {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}): ToolCards {
   const activeToolCards = new Map<string, HTMLDivElement>();
 
   function addToolCard(toolName: string, args: Record<string, unknown>): HTMLDivElement {
@@ -183,7 +185,7 @@ export function createToolCards(messagesEl: HTMLDivElement): ToolCards {
     if (toolName === "edit") renderEditDiff(card, args);
     card.dataset.toolName = toolName;
     messagesEl.append(card);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    scrollToBottom();
     return card;
   }
 
@@ -196,7 +198,7 @@ export function createToolCards(messagesEl: HTMLDivElement): ToolCards {
     const resultStr = textFromToolResult(result);
     if (resultStr && (isError || card.dataset.toolName !== "edit")) addToolResultBody(card, resultStr);
 
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    scrollToBottom();
   }
 
   function addToolHistoryCard(toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) {

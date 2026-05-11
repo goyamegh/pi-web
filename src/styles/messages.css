@@ -118,6 +118,8 @@
 .artifactPreviewTitle { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: auto; }
 .artifactPreviewFrame { display: block; width: 100%; height: min(70vh, 720px); border: 0; background: #fff; border-radius: 0 0 12px 12px; }
+.artifactPreviewVideo { display: block; width: 100%; max-height: min(70vh, 720px); border-radius: 0 0 12px 12px; background: #000; }
+.artifactPreview--video .artifactPreviewContent { padding: 0; overflow: hidden; }
 .artifactPreview--error .artifactPreviewContent { color: #fecdd3; }
 .markdownBody img {
   display: block;
@@ -208,6 +210,26 @@
 .imageOverlay img { max-width: 92vw; max-height: 92vh; border-radius: 8px; object-fit: contain; }
 .message.assistant { --message-bg: var(--bg); align-self: stretch; background: transparent; border: none; max-width: 100%; width: 100%; }
 .message.system { align-self: center; max-width: 100%; background: transparent; color: var(--muted); margin: 8px 0; }
+.jumpToLatestButton {
+  position: fixed;
+  left: 50%;
+  bottom: 116px;
+  z-index: 20;
+  transform: translateX(-50%);
+  width: auto;
+  min-width: 0;
+  min-height: 32px;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .35);
+  color: var(--accent);
+  padding: 5px 12px;
+  font-size: 12px;
+  backdrop-filter: blur(12px);
+}
+.jumpToLatestButton:hover { background: color-mix(in srgb, var(--panel-2) 92%, transparent); }
+.jumpToLatestButton[hidden] { display: none; }
 .message.system.compaction {
   align-self: stretch;
   background: rgba(250, 204, 21, .08);

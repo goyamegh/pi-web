@@ -141,7 +141,17 @@ function artifactKind(pathname: string) {
   const lower = pathname.toLowerCase();
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
   if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
+  if (lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") || lower.endsWith(".ogv")) return "video";
   return "";
+}
+
+function videoMimeType(pathname: string) {
+  const lower = pathname.toLowerCase();
+  if (lower.endsWith(".mp4")) return "video/mp4";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  if (lower.endsWith(".ogv")) return "video/ogg";
+  return "video/*";
 }
 
 function enhanceArtifactLinks(root: ParentNode) {
@@ -181,6 +191,21 @@ function enhanceArtifactLinks(root: ParentNode) {
       iframe.title = `Preview of ${title.textContent}`;
       iframe.setAttribute("sandbox", "");
       content.append(iframe);
+      continue;
+    }
+
+    if (kind === "video") {
+      content.textContent = "";
+      const video = document.createElement("video");
+      video.className = "artifactPreviewVideo";
+      video.controls = true;
+      video.playsInline = true;
+      video.preload = "metadata";
+      const source = document.createElement("source");
+      source.src = url.pathname;
+      source.type = videoMimeType(url.pathname);
+      video.append(source);
+      content.append(video);
       continue;
     }
 
