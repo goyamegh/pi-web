@@ -60,6 +60,7 @@ export type PiWebSettings = {
   version: 1;
   appearance: {
     density: "comfortable" | "compact";
+    navPinned: boolean;
   };
   composer: {
     queueMode: QueueMode;
@@ -187,6 +188,7 @@ export type SessionInfo = {
   messageCount: number;
   cwd?: string;
   isCurrent: boolean;
+  inactive?: boolean;
   runtime?: {
     loaded: boolean;
     isRunning: boolean;
@@ -220,6 +222,7 @@ export type AppState = {
   selectedMarkerColor: SessionMarkerColorId;
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
+  hideInactiveSessions: boolean;
   queueMode: QueueMode;
   attachedImages: ImageAttachment[];
   editorExpanded: boolean;
@@ -234,7 +237,7 @@ export const sessionFolderPreviewLimit = 8;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
-  appearance: { density: "comfortable" },
+  appearance: { density: "comfortable", navPinned: false },
   composer: { queueMode: "steer", expanded: false },
   defaults: {},
 };
@@ -304,6 +307,7 @@ export function createAppState(): AppState {
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
+    hideInactiveSessions: localStorage.getItem("pi-web:hideInactiveSessions") === "true",
     queueMode: "steer",
     attachedImages: [],
     editorExpanded: defaultPiWebSettings.composer.expanded,

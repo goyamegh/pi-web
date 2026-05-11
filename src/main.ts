@@ -147,6 +147,13 @@ settings = createSettings({
   elements,
   api,
   addMessage: messages.addMessage,
+  onNavPinnedChange: (pinned) => {
+    if (pinned && window.innerWidth > 700) {
+      sessions.setSessionDrawerOpen(true);
+    } else if (!pinned) {
+      sessions.setSessionDrawerOpen(false);
+    }
+  },
 });
 
 contextMeter = createContextMeter({ state, elements });

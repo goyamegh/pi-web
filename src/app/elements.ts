@@ -48,6 +48,7 @@ export type AppElements = {
   settingQueueModeSelect: HTMLSelectElement;
   settingComposerExpandedCheckbox: HTMLInputElement;
   settingDefaultBucketColorSelect: HTMLSelectElement;
+  settingNavPinnedCheckbox: HTMLInputElement;
   settingModelDefaultsValue: HTMLSpanElement;
   settingSaveModelDefaultsButton: HTMLButtonElement;
   settingClearModelDefaultsButton: HTMLButtonElement;
@@ -115,6 +116,7 @@ export function getAppElements(): AppElements {
     settingQueueModeSelect: requiredElement<HTMLSelectElement>("#settingQueueModeSelect"),
     settingComposerExpandedCheckbox: requiredElement<HTMLInputElement>("#settingComposerExpandedCheckbox"),
     settingDefaultBucketColorSelect: requiredElement<HTMLSelectElement>("#settingDefaultBucketColorSelect"),
+    settingNavPinnedCheckbox: requiredElement<HTMLInputElement>("#settingNavPinnedCheckbox"),
     settingModelDefaultsValue: requiredElement<HTMLSpanElement>("#settingModelDefaultsValue"),
     settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),
     settingClearModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingClearModelDefaultsButton"),
