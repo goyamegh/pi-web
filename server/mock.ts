@@ -142,6 +142,30 @@ export function createMockHarness(options: MockSessionOptions) {
     syncMessagesToLeaf();
     let mockSession: PiWebSession;
     let compactionAbortRequested = false;
+
+    async function runMockCompaction(customInstructions?: string, slow = false) {
+      mockSession.isCompacting = true;
+      compactionAbortRequested = false;
+      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_start", reason: "manual" } });
+      if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+      const deadline = Date.now() + (slow ? 5_000 : 1_000);
+      while (!compactionAbortRequested && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+      mockSession.isCompacting = false;
+      if (compactionAbortRequested) {
+        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", aborted: true } });
+        if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+        return undefined;
+      }
+      const result = {
+        tokensBefore: 12345,
+        summary: customInstructions ? `Mock compacted context summary. Instructions: ${customInstructions}` : "Mock compacted context summary.",
+      };
+      appendMockMessage({ role: "compactionSummary", content: result.summary, tokensBefore: result.tokensBefore, summary: result.summary, timestamp: new Date().toISOString() } as any);
+      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", result } });
+      if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+      return result;
+    }
+
     const mockSessionManager = {
       newSession() {
         mockSession.sessionId = `mock-${Date.now()}`;
@@ -192,6 +216,25 @@ export function createMockHarness(options: MockSessionOptions) {
         getAvailable: () => [mockModel],
         find: (provider: string, id: string) => provider === mockModel.provider && id === mockModel.id ? mockModel : undefined,
       },
+      extensionRunner: {
+        getRegisteredCommands: () => [{
+          invocationName: "mock-extension",
+          description: "Mock extension command",
+          sourceInfo: { path: "<mock-extension>", source: "mock", scope: "temporary", origin: "top-level" },
+        }],
+      },
+      promptTemplates: [{
+        name: "mock-prompt",
+        description: "Mock prompt template",
+        sourceInfo: { path: "<mock-prompt>", source: "mock", scope: "temporary", origin: "top-level" },
+      }],
+      resourceLoader: {
+        getSkills: () => ({ skills: [{
+          name: "mock-skill",
+          description: "Mock skill",
+          sourceInfo: { path: "<mock-skill>", source: "mock", scope: "temporary", origin: "top-level" },
+        }] }),
+      },
       getAvailableThinkingLevels: () => ["off", "low", "medium", "high"],
       getSessionName: () => mockSessions.find((info) => info.path === mockSession.sessionFile)?.name,
       setSessionName: (name: string) => {
@@ -234,25 +277,12 @@ export function createMockHarness(options: MockSessionOptions) {
         syncMessagesToLeaf();
         return { editorText, cancelled: false };
       },
+      compact: async (customInstructions?: string) => runMockCompaction(customInstructions),
       prompt: async (message: string, promptOptions?: { images?: unknown[] }) => {
         appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
         const withCompaction = /compact|compaction/i.test(message);
         if (withCompaction) {
-          mockSession.isCompacting = true;
-          compactionAbortRequested = false;
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_start", reason: "manual" } });
-          if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
-          const deadline = Date.now() + (/slow/i.test(message) ? 5_000 : 1_000);
-          while (!compactionAbortRequested && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
-          mockSession.isCompacting = false;
-          if (compactionAbortRequested) {
-            broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", aborted: true } });
-          } else {
-            const result = { tokensBefore: 12345, summary: "Mock compacted context summary." };
-            appendMockMessage({ role: "compactionSummary", content: result.summary, tokensBefore: result.tokensBefore, summary: result.summary, timestamp: new Date().toISOString() } as any);
-            broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", result } });
-          }
-          if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+          await runMockCompaction(undefined, /slow/i.test(message));
           return;
         }
         const slow = /slow|running/i.test(message);

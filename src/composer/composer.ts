@@ -1,7 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken } from "../app/types.js";
-import type { AppState, ImageAttachment } from "../app/types.js";
+import type { AppState, ImageAttachment, SlashCommand } from "../app/types.js";
 import { setIcon } from "../app/icons.js";
 
 export type ComposerController = {
@@ -40,6 +40,12 @@ export function createComposer(options: {
 }): ComposerController {
   const { state, elements, api, addMessage, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginStreamFollow, endStreamFollow } = options;
 
+  const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "compact", "abort", "stop", "logout"]);
+  const slashCommandCacheMs = 5_000;
+  let slashCommands: SlashCommand[] = [];
+  let slashCommandsLoadedAt = 0;
+  let slashCommandSelectedIndex = 0;
+
   function updatePrimaryAction() {
     const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0;
     elements.primaryButton.disabled = !hasInput;
@@ -57,7 +63,142 @@ export function createComposer(options: {
   function setPromptText(text: string) {
     elements.promptEl.value = text;
     updatePrimaryAction();
+    renderSlashCommands();
     elements.promptEl.focus();
+  }
+
+  function slashCommandName(text: string) {
+    return text.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase() || "";
+  }
+
+  function slashCommandQuery() {
+    const value = elements.promptEl.value.trimStart();
+    if (!value.startsWith("/") || state.attachedImages.length > 0) return undefined;
+    const withoutSlash = value.slice(1);
+    if (/\s/.test(withoutSlash) || withoutSlash.includes("\n")) return undefined;
+    return withoutSlash.toLowerCase();
+  }
+
+  function hideSlashCommands() {
+    elements.slashCommandsEl.hidden = true;
+    elements.promptEl.setAttribute("aria-expanded", "false");
+  }
+
+  async function refreshSlashCommands(force = false) {
+    const now = Date.now();
+    if (!force && slashCommands.length > 0 && now - slashCommandsLoadedAt < slashCommandCacheMs) return slashCommands;
+    const res = await fetch(`/api/commands?sessionId=${encodeURIComponent(state.currentSessionId)}`, { headers: api.headers() });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    slashCommands = Array.isArray(data.commands) ? data.commands : [];
+    slashCommandsLoadedAt = now;
+    return slashCommands;
+  }
+
+  function filteredSlashCommands() {
+    const query = slashCommandQuery();
+    if (query === undefined) return [];
+    const sourceOrder = new Map<string, number>([["web", 0], ["extension", 1], ["prompt", 2], ["skill", 3]]);
+    return slashCommands
+      .filter((command) => {
+        const name = command.name.toLowerCase();
+        const description = command.description?.toLowerCase() || "";
+        return !query || name.includes(query) || description.includes(query);
+      })
+      .sort((a, b) => {
+        const aName = a.name.toLowerCase();
+        const bName = b.name.toLowerCase();
+        const aStarts = aName.startsWith(query) ? 0 : 1;
+        const bStarts = bName.startsWith(query) ? 0 : 1;
+        return aStarts - bStarts
+          || (sourceOrder.get(a.source) ?? 99) - (sourceOrder.get(b.source) ?? 99)
+          || a.name.localeCompare(b.name);
+      })
+      .slice(0, 12);
+  }
+
+  function applySlashCommand(command: SlashCommand) {
+    const leadingWhitespace = elements.promptEl.value.match(/^\s*/)?.[0] || "";
+    elements.promptEl.value = `${leadingWhitespace}/${command.name} `;
+    elements.promptEl.setSelectionRange(elements.promptEl.value.length, elements.promptEl.value.length);
+    updatePrimaryAction();
+    hideSlashCommands();
+    elements.promptEl.focus();
+  }
+
+  function renderSlashCommands() {
+    const query = slashCommandQuery();
+    if (query === undefined) {
+      hideSlashCommands();
+      return;
+    }
+
+    const commands = filteredSlashCommands();
+    slashCommandSelectedIndex = Math.min(slashCommandSelectedIndex, Math.max(commands.length - 1, 0));
+    elements.slashCommandsEl.textContent = "";
+
+    if (commands.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "slashCommandsEmpty";
+      empty.textContent = slashCommands.length === 0 ? "Loading slash commands…" : "No matching slash commands";
+      elements.slashCommandsEl.append(empty);
+    } else {
+      commands.forEach((command, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `slashCommandItem${index === slashCommandSelectedIndex ? " active" : ""}`;
+        button.setAttribute("role", "option");
+        button.setAttribute("aria-selected", String(index === slashCommandSelectedIndex));
+        button.addEventListener("mousedown", (event) => event.preventDefault());
+        button.addEventListener("mouseenter", () => {
+          if (slashCommandSelectedIndex === index) return;
+          slashCommandSelectedIndex = index;
+          renderSlashCommands();
+        });
+        button.addEventListener("click", () => applySlashCommand(command));
+
+        const name = document.createElement("span");
+        name.className = "slashCommandName";
+        name.textContent = `/${command.name}`;
+
+        button.append(name);
+        if (command.source !== "web") {
+          const source = document.createElement("span");
+          source.className = "slashCommandSource";
+          source.textContent = command.source;
+          button.append(source);
+        }
+        if (command.description) {
+          const description = document.createElement("span");
+          description.className = "slashCommandDescription";
+          description.textContent = command.description;
+          button.append(description);
+        }
+        elements.slashCommandsEl.append(button);
+      });
+    }
+
+    elements.slashCommandsEl.hidden = false;
+    elements.promptEl.setAttribute("aria-expanded", "true");
+  }
+
+  async function maybeRefreshSlashCommands(force = false) {
+    if (slashCommandQuery() === undefined) {
+      hideSlashCommands();
+      return;
+    }
+    try {
+      await refreshSlashCommands(force);
+      renderSlashCommands();
+    } catch {
+      hideSlashCommands();
+    }
+  }
+
+  async function commandInfoForMessage(message: string) {
+    await refreshSlashCommands();
+    const name = slashCommandName(message);
+    return slashCommands.find((command) => command.name.toLowerCase() === name);
   }
 
   function renderAttachments() {
@@ -116,7 +257,8 @@ export function createComposer(options: {
       if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
     }
     await refreshModels();
-    if (name === "new" || name === "new-chat" || name === "clear") await refreshMessages();
+    if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);
+    if (name === "new") await refreshMessages();
     if (data.message) addMessage("system", data.message);
   }
 
@@ -130,20 +272,33 @@ export function createComposer(options: {
       if (!message && images.length === 0) return;
 
       if (message.startsWith("/") && images.length === 0) {
-        elements.promptEl.value = "";
-        updatePrimaryAction();
-        addMessage("system", `› ${message}`);
+        let commandInfo: SlashCommand | undefined;
         try {
-          await runSlashCommand(message);
-        } catch (error) {
-          addMessage("system", error instanceof Error ? error.message : String(error), "error");
-        } finally {
-          elements.promptEl.focus();
+          commandInfo = await commandInfoForMessage(message);
+        } catch {
+          commandInfo = webSlashCommandNames.has(slashCommandName(message))
+            ? { name: slashCommandName(message), source: "web" }
+            : undefined;
         }
-        return;
+
+        if (!commandInfo || commandInfo.source === "web") {
+          elements.promptEl.value = "";
+          hideSlashCommands();
+          updatePrimaryAction();
+          addMessage("system", `› ${message}`);
+          try {
+            await runSlashCommand(message);
+          } catch (error) {
+            addMessage("system", error instanceof Error ? error.message : String(error), "error");
+          } finally {
+            elements.promptEl.focus();
+          }
+          return;
+        }
       }
 
       elements.promptEl.value = "";
+      hideSlashCommands();
       state.attachedImages = [];
       renderAttachments();
       updatePrimaryAction();
@@ -166,12 +321,45 @@ export function createComposer(options: {
     });
 
     elements.promptEl.addEventListener("keydown", (event) => {
+      if (!elements.slashCommandsEl.hidden) {
+        const commands = filteredSlashCommands();
+        if (event.key === "ArrowDown" && commands.length > 0) {
+          event.preventDefault();
+          slashCommandSelectedIndex = (slashCommandSelectedIndex + 1) % commands.length;
+          renderSlashCommands();
+          return;
+        }
+        if (event.key === "ArrowUp" && commands.length > 0) {
+          event.preventDefault();
+          slashCommandSelectedIndex = (slashCommandSelectedIndex - 1 + commands.length) % commands.length;
+          renderSlashCommands();
+          return;
+        }
+        if (((event.key === "Enter" && !event.metaKey && !event.ctrlKey) || event.key === "Tab") && commands[slashCommandSelectedIndex]) {
+          event.preventDefault();
+          applySlashCommand(commands[slashCommandSelectedIndex]);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          hideSlashCommands();
+          return;
+        }
+      }
+
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         elements.formEl.requestSubmit();
       }
     });
 
-    elements.promptEl.addEventListener("input", updatePrimaryAction);
+    elements.promptEl.addEventListener("focus", () => { void maybeRefreshSlashCommands(); });
+    elements.promptEl.addEventListener("blur", () => window.setTimeout(hideSlashCommands, 100));
+    elements.promptEl.addEventListener("input", () => {
+      updatePrimaryAction();
+      slashCommandSelectedIndex = 0;
+      renderSlashCommands();
+      void maybeRefreshSlashCommands();
+    });
 
     elements.attachButton.addEventListener("click", () => elements.imageInput.click());
 

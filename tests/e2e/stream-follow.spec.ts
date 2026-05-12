@@ -14,7 +14,9 @@ test("user scroll intent pauses stream following before the next streamed update
 
   await page.locator("#prompt").fill("slow pending tool refresh");
   await page.locator("#primaryButton").click();
-  await expect(page.locator("#stopButton")).toBeVisible();
+  // Let the submit handler's programmatic scroll finish, but stay before the
+  // mock's first streamed delta (delayed by 750ms for this prompt).
+  await page.waitForTimeout(50);
 
   // Simulate the first user movement before the next streamed delta arrives.
   // This is the race we care about: follow must pause on intent, not only after

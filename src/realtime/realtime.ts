@@ -72,6 +72,64 @@ export function createRealtime(options: {
     }
   }
 
+  async function respondExtensionUi(id: string, response: Record<string, unknown>) {
+    const res = await fetch("/api/extension-ui/respond", {
+      method: "POST",
+      headers: api.headers(),
+      body: JSON.stringify({ id, ...response }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+  }
+
+  function promptForSelect(title: string, options: string[]) {
+    const answer = window.prompt(
+      `${title}\n\n${options.map((option, index) => `${index + 1}. ${option}`).join("\n")}\n\nEnter a number or exact value:`,
+      options[0] || "",
+    );
+    if (answer === null) return undefined;
+    const numeric = Number(answer.trim());
+    if (Number.isInteger(numeric) && numeric >= 1 && numeric <= options.length) return options[numeric - 1];
+    return options.find((option) => option === answer) || answer;
+  }
+
+  function handleExtensionUiRequest(data: any) {
+    if (data.sessionId && data.sessionId !== state.currentSessionId) return;
+    const id = String(data.id || "");
+
+    switch (data.method) {
+      case "notify":
+        addMessage("system", String(data.message || ""), data.notifyType === "error" ? "error" : undefined);
+        return;
+      case "set_editor_text":
+        composer.setPromptText(String(data.text || ""));
+        return;
+      case "setTitle":
+        document.title = String(data.title || "pi web");
+        return;
+      case "select": {
+        const options = Array.isArray(data.options) ? data.options.map(String) : [];
+        const value = promptForSelect(String(data.title || "Select"), options);
+        respondExtensionUi(id, value === undefined ? { cancelled: true } : { value }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        return;
+      }
+      case "confirm": {
+        const confirmed = window.confirm(`${String(data.title || "Confirm")}\n\n${String(data.message || "")}`);
+        respondExtensionUi(id, { confirmed }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        return;
+      }
+      case "input": {
+        const value = window.prompt(String(data.title || "Input"), String(data.placeholder || ""));
+        respondExtensionUi(id, value === null ? { cancelled: true } : { value }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        return;
+      }
+      case "editor": {
+        const value = window.prompt(String(data.title || "Edit"), String(data.prefill || ""));
+        respondExtensionUi(id, value === null ? { cancelled: true } : { value }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        return;
+      }
+    }
+  }
+
   function setCompactionMessage(text: string, extraClass = "compaction", cancellable = false) {
     const target = compactionMessage?.isConnected ? compactionMessage : addMessage("system", "", extraClass);
     compactionMessage = target;
@@ -185,6 +243,10 @@ export function createRealtime(options: {
       }
       if (data.type === "settings_updated") {
         settings.applySettings(data.settings);
+        return;
+      }
+      if (data.type === "extension_ui_request") {
+        handleExtensionUiRequest(data);
         return;
       }
       if (data.type === "pi_event") {

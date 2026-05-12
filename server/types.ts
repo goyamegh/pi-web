@@ -35,6 +35,15 @@ export interface PiWebSession {
     getAvailable(): PiWebModel[];
     find(provider: string, id: string): PiWebModel | undefined;
   };
+  extensionRunner?: {
+    getRegisteredCommands?(): unknown[];
+  };
+  promptTemplates?: unknown[];
+  resourceLoader?: {
+    getPrompts?(): { prompts: unknown[] };
+    getSkills?(): { skills: unknown[] };
+  };
+  bindExtensions?(bindings: unknown): Promise<void>;
   getAvailableThinkingLevels(): string[];
   getSessionName?(): string | undefined;
   setSessionName?(name: string): void;
@@ -43,6 +52,7 @@ export interface PiWebSession {
   reload?(): Promise<void>;
   navigateTree?(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: unknown }>;
   abortBranchSummary?(): void;
+  compact?(customInstructions?: string): Promise<unknown>;
   abortCompaction?(): void;
   prompt(message: string, options?: { images?: unknown[]; streamingBehavior?: string }): Promise<void>;
   abort(): Promise<void>;

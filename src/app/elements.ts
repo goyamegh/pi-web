@@ -5,6 +5,7 @@ export type AppElements = {
   connectionStatusEl: HTMLSpanElement;
   formEl: HTMLFormElement;
   promptEl: HTMLTextAreaElement;
+  slashCommandsEl: HTMLDivElement;
   primaryButton: HTMLButtonElement;
   stopButton: HTMLButtonElement;
   tokenOverlay: HTMLDivElement;
@@ -62,6 +63,7 @@ export function getAppElements(): AppElements {
     connectionStatusEl: requiredElement<HTMLSpanElement>("#connectionStatus"),
     formEl: requiredElement<HTMLFormElement>("#promptForm"),
     promptEl: requiredElement<HTMLTextAreaElement>("#prompt"),
+    slashCommandsEl: requiredElement<HTMLDivElement>("#slashCommands"),
     primaryButton: requiredElement<HTMLButtonElement>("#primaryButton"),
     stopButton: requiredElement<HTMLButtonElement>("#stopButton"),
     tokenOverlay: requiredElement<HTMLDivElement>("#tokenOverlay"),

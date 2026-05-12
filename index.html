@@ -118,7 +118,8 @@
       </aside>
 
       <form id="promptForm" class="composer">
-        <textarea id="prompt" rows="2" placeholder="Ask pi…"></textarea>
+        <textarea id="prompt" rows="2" placeholder="Ask pi…" aria-controls="slashCommands" aria-expanded="false"></textarea>
+        <div id="slashCommands" class="slashCommandsPopover" role="listbox" aria-label="Slash commands" hidden></div>
         <button id="expandButton" class="iconButton expandButton" type="button" aria-label="Expand editor" title="Expand editor">
           <span data-icon="maximize-2"></span>
         </button>

@@ -578,6 +578,20 @@ describe("additional API coverage", () => {
     expect(res.status).toBe(404);
   });
 
+  it("lists slash commands from web and pi resources", async () => {
+    const res = await fetch(`${baseUrl}/api/commands`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    const names = data.commands.map((command: any) => command.name);
+    expect(names).toContain("reload");
+    expect(names).toContain("compact");
+    expect(names).not.toContain("clear");
+    expect(names).not.toContain("new-chat");
+    expect(names).toContain("mock-extension");
+    expect(names).toContain("mock-prompt");
+    expect(names).toContain("skill:mock-skill");
+  });
+
   it("executes /help slash command", async () => {
     const res = await fetch(`${baseUrl}/api/command`, {
       method: "POST",

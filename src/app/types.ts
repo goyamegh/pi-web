@@ -7,6 +7,21 @@ export type PiEvent = {
 
 export type QueueMode = "steer" | "followUp";
 
+export type SlashCommandSource = "web" | "extension" | "prompt" | "skill";
+
+export type SlashCommand = {
+  name: string;
+  description?: string;
+  source: SlashCommandSource;
+  sourceInfo?: {
+    path?: string;
+    source?: string;
+    scope?: string;
+    origin?: string;
+    baseDir?: string;
+  };
+};
+
 export type ImageAttachment = {
   type: "image";
   data: string;

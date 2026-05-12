@@ -15,6 +15,10 @@ import {
   getAgentDir,
   ModelRegistry,
   SessionManager,
+  type ExtensionUIDialogOptions,
+  type ExtensionUIContext,
+  type SessionStartEvent,
+  type SlashCommandInfo,
 } from "@mariozechner/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths } from "./server/extensions.js";
@@ -39,6 +43,22 @@ const bundledExtensionsDir = join(appDir, ".pi", "extensions");
 const noSession = process.env.PI_WEB_NO_SESSION === "1";
 const mockMode = process.env.PI_WEB_MOCK === "1";
 const execFileAsync = promisify(execFile);
+
+type WebSlashCommandInfo = Omit<SlashCommandInfo, "source"> & { source: SlashCommandInfo["source"] | "web" };
+
+const webSlashCommands: WebSlashCommandInfo[] = [
+  { name: "help", description: "Show slash command help", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "commands", description: "List available web, extension, prompt, and skill commands", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "reload", description: "Reload pi resources, extensions, skills, prompts, and models", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "model", description: "List models or switch with /model <provider/model-id>", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "models", description: "List available models", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "thinking", description: "Show or set reasoning level", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "new", description: "Start a new session", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "compact", description: "Compact conversation context; optional instructions after the command", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "abort", description: "Stop the current response", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "stop", description: "Stop the current response", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "logout", description: "Clear the web UI token in this browser", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+];
 
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -708,17 +728,64 @@ function currentStateWithThinkingLevels() {
   };
 }
 
+function getSessionSlashCommands(value: any): WebSlashCommandInfo[] {
+  const commands: WebSlashCommandInfo[] = [];
+
+  for (const command of value.extensionRunner?.getRegisteredCommands?.() || []) {
+    commands.push({
+      name: command.invocationName || command.name,
+      description: command.description,
+      source: "extension",
+      sourceInfo: command.sourceInfo,
+    });
+  }
+
+  for (const template of value.promptTemplates || value.resourceLoader?.getPrompts?.().prompts || []) {
+    commands.push({
+      name: template.name,
+      description: template.description,
+      source: "prompt",
+      sourceInfo: template.sourceInfo,
+    });
+  }
+
+  for (const skill of value.resourceLoader?.getSkills?.().skills || []) {
+    commands.push({
+      name: `skill:${skill.name}`,
+      description: skill.description,
+      source: "skill",
+      sourceInfo: skill.sourceInfo,
+    });
+  }
+
+  return commands.filter((command) => typeof command.name === "string" && command.name.length > 0);
+}
+
+function getSlashCommands(value: any = session): WebSlashCommandInfo[] {
+  return [...webSlashCommands, ...getSessionSlashCommands(value)];
+}
+
+function formatSlashCommandList(commands: WebSlashCommandInfo[]) {
+  const groups: Array<[string, string]> = [["web", "Web"], ["extension", "Extensions"], ["prompt", "Prompts"], ["skill", "Skills"]];
+  const lines: string[] = ["Available slash commands:"];
+  for (const [source, label] of groups) {
+    const matching = commands.filter((command) => command.source === source);
+    if (!matching.length) continue;
+    lines.push("", `${label}:`);
+    for (const command of matching) {
+      lines.push(`/${command.name}${command.description ? ` - ${command.description}` : ""}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function slashHelp() {
   return [
-    "Supported web slash commands:",
-    "/help - show this help",
-    "/reload - reload pi resources/extensions/models",
-    "/model - list available models",
-    "/model <provider/model-id> - switch model",
-    "/models - list available models",
-    "/thinking <level> - set thinking level",
-    "/new - start a new session",
-    "/abort - stop the current response",
+    "Type / in the composer to browse available commands.",
+    "",
+    "Web commands run in pi-web; extension, prompt, and skill commands are discovered from pi's extension/resource system.",
+    "",
+    formatSlashCommandList(getSlashCommands()),
   ].join("\n");
 }
 
@@ -738,6 +805,9 @@ async function executeSlashCommand(input: string) {
     case "help":
     case "?":
       return { message: slashHelp(), state: currentStateWithThinkingLevels() };
+
+    case "commands":
+      return { message: formatSlashCommandList(getSlashCommands()), state: currentStateWithThinkingLevels() };
 
     case "reload": {
       if (session.isStreaming) throw new Error("Wait for the current response to finish before reloading.");
@@ -774,11 +844,22 @@ async function executeSlashCommand(input: string) {
       return { message: `Thinking level set to ${session.thinkingLevel}.`, state: currentStateWithThinkingLevels() };
     }
 
-    case "new":
-    case "new-chat":
-    case "clear": {
+    case "new": {
       session = await createNewLiveSession();
       return { message: "New session.", state: currentStateWithThinkingLevels() };
+    }
+
+    case "compact": {
+      if (session.isStreaming) throw new Error("Wait for the current response to finish before compacting.");
+      if (session.isCompacting) throw new Error("Compaction is already running.");
+      if (typeof session.compact !== "function") throw new Error("Compaction is not available in this session.");
+      void session.compact(args || undefined).catch((error: unknown) => broadcast({
+        type: "server_error",
+        sessionId: session.sessionId,
+        sessionFile: session.sessionFile,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      return { message: "Compaction started.", state: currentStateWithThinkingLevels() };
     }
 
     case "abort":
@@ -840,6 +921,197 @@ function broadcast(value: unknown) {
   }
 }
 
+const plainExtensionTheme = {
+  fg: (_color: string, text: string) => text,
+  bg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+  italic: (text: string) => text,
+  underline: (text: string) => text,
+  inverse: (text: string) => text,
+  strikethrough: (text: string) => text,
+  getFgAnsi: () => "",
+  getBgAnsi: () => "",
+  getColorMode: () => "truecolor",
+  getThinkingBorderColor: () => (text: string) => text,
+  getBashModeBorderColor: () => (text: string) => text,
+};
+
+type PendingExtensionUiRequest = {
+  resolve: (response: Record<string, unknown>) => void;
+  cleanup: () => void;
+};
+const pendingExtensionUiRequests = new Map<string, PendingExtensionUiRequest>();
+
+function broadcastExtensionUiRequest(value: any, method: string, payload: Record<string, unknown>) {
+  const id = randomUUID();
+  broadcast({
+    type: "extension_ui_request",
+    id,
+    method,
+    sessionId: value.sessionId,
+    sessionFile: value.sessionFile,
+    ...payload,
+  });
+  return id;
+}
+
+function requestExtensionUi<T>(
+  value: any,
+  method: string,
+  payload: Record<string, unknown>,
+  opts: ExtensionUIDialogOptions | undefined,
+  defaultValue: T,
+  parse: (response: Record<string, unknown>) => T,
+): Promise<T> {
+  if (opts?.signal?.aborted || clients.size === 0) return Promise.resolve(defaultValue);
+
+  return new Promise<T>((resolvePromise) => {
+    const id = randomUUID();
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      opts?.signal?.removeEventListener("abort", onAbort);
+      pendingExtensionUiRequests.delete(id);
+    };
+    const finish = (result: T) => {
+      cleanup();
+      resolvePromise(result);
+    };
+    const onAbort = () => finish(defaultValue);
+
+    opts?.signal?.addEventListener("abort", onAbort, { once: true });
+    if (opts?.timeout) timeoutId = setTimeout(() => finish(defaultValue), opts.timeout);
+
+    pendingExtensionUiRequests.set(id, {
+      cleanup,
+      resolve: (response) => finish(parse(response)),
+    });
+
+    broadcast({
+      type: "extension_ui_request",
+      id,
+      method,
+      sessionId: value.sessionId,
+      sessionFile: value.sessionFile,
+      timeout: opts?.timeout,
+      ...payload,
+    });
+  });
+}
+
+function createWebExtensionUiContext(value: any): ExtensionUIContext {
+  return {
+    select: (title, options, opts) => requestExtensionUi(
+      value,
+      "select",
+      { title, options },
+      opts,
+      undefined,
+      (response) => response.cancelled ? undefined : typeof response.value === "string" ? response.value : undefined,
+    ),
+    confirm: (title, message, opts) => requestExtensionUi(
+      value,
+      "confirm",
+      { title, message },
+      opts,
+      false,
+      (response) => response.cancelled ? false : Boolean(response.confirmed),
+    ),
+    input: (title, placeholder, opts) => requestExtensionUi(
+      value,
+      "input",
+      { title, placeholder },
+      opts,
+      undefined,
+      (response) => response.cancelled ? undefined : typeof response.value === "string" ? response.value : undefined,
+    ),
+    notify(message, type = "info") {
+      broadcastExtensionUiRequest(value, "notify", { message, notifyType: type });
+    },
+    onTerminalInput: () => () => undefined,
+    setStatus(key, text) {
+      broadcastExtensionUiRequest(value, "setStatus", { statusKey: key, statusText: text });
+    },
+    setWorkingMessage: () => undefined,
+    setWorkingVisible: () => undefined,
+    setWorkingIndicator: () => undefined,
+    setHiddenThinkingLabel: () => undefined,
+    setWidget(key, content, options) {
+      if (content === undefined || Array.isArray(content)) {
+        broadcastExtensionUiRequest(value, "setWidget", { widgetKey: key, widgetLines: content, widgetPlacement: options?.placement });
+      }
+    },
+    setFooter: () => undefined,
+    setHeader: () => undefined,
+    setTitle(title) {
+      broadcastExtensionUiRequest(value, "setTitle", { title });
+    },
+    async custom() {
+      return undefined as never;
+    },
+    pasteToEditor(text) {
+      this.setEditorText(text);
+    },
+    setEditorText(text) {
+      broadcastExtensionUiRequest(value, "set_editor_text", { text });
+    },
+    getEditorText: () => "",
+    editor: (title, prefill) => requestExtensionUi(
+      value,
+      "editor",
+      { title, prefill },
+      undefined,
+      undefined,
+      (response) => response.cancelled ? undefined : typeof response.value === "string" ? response.value : undefined,
+    ),
+    addAutocompleteProvider: () => undefined,
+    setEditorComponent: () => undefined,
+    getEditorComponent: () => undefined,
+    theme: plainExtensionTheme as any,
+    getAllThemes: () => [],
+    getTheme: () => undefined,
+    setTheme: () => ({ success: false, error: "Theme switching is not supported in pi-web yet" }),
+    getToolsExpanded: () => false,
+    setToolsExpanded: () => undefined,
+  };
+}
+
+async function bindWebExtensions(value: any) {
+  if (typeof value.bindExtensions !== "function") return;
+  await value.bindExtensions({
+    uiContext: createWebExtensionUiContext(value),
+    commandContextActions: {
+      waitForIdle: () => value.agent.waitForIdle(),
+      newSession: async () => {
+        session = await createNewLiveSession();
+        const state = currentStateWithThinkingLevels();
+        broadcast({ type: "state_changed", ...state });
+        return { cancelled: false };
+      },
+      fork: async () => {
+        throw new Error("Extension-initiated fork is not supported in pi-web yet.");
+      },
+      navigateTree: async (targetId: string, options: any) => {
+        const result = await value.navigateTree(targetId, options);
+        return { cancelled: Boolean(result?.cancelled) };
+      },
+      switchSession: async () => {
+        throw new Error("Extension-initiated session switching is not supported in pi-web yet.");
+      },
+      reload: async () => {
+        await value.reload?.();
+      },
+    },
+    shutdownHandler: () => {
+      broadcast({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: "An extension requested shutdown; pi-web ignored the request." });
+    },
+    onError: (error: any) => {
+      broadcast({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: `Extension error (${error.extensionPath}): ${error.error}` });
+    },
+  });
+}
+
 const mockHarness = createMockHarness({
   piCwd,
   broadcast,
@@ -895,11 +1167,12 @@ function bundledExtensionPaths() {
   return resolveBundledExtensionPaths({ piCwd, appDir, bundledExtensionsDir });
 }
 
-async function makeAgentSession(path?: string) {
+async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent) {
   if (mockMode) return { session: createMockSession(path), modelFallbackMessage: undefined };
 
   const sessionManager = noSession ? SessionManager.inMemory() : SessionManager.create(piCwd);
   if (path && !noSession) sessionManager.setSessionFile(path);
+  if (!path && !noSession && sessionStartEvent?.reason === "new") sessionManager.newSession();
 
   const webUiContext = existsSync(webUiContextFile) ? readFileSync(webUiContextFile, "utf-8") : "";
 
@@ -914,13 +1187,16 @@ async function makeAgentSession(path?: string) {
   });
   await loader.reload();
 
-  return createAgentSession({
+  const result = await createAgentSession({
     cwd: piCwd,
     sessionManager,
     authStorage,
     modelRegistry,
     resourceLoader: loader,
+    sessionStartEvent,
   });
+  await bindWebExtensions(result.session);
+  return result;
 }
 
 async function getOrCreateLiveSession(path: string) {
@@ -946,11 +1222,14 @@ async function applyDefaultSessionSettings(value: any) {
 
 async function createNewLiveSession(cwd?: string) {
   if (cwd) await setPiCwd(cwd);
-  const created = await makeAgentSession();
+  const previousSessionFile = session?.sessionFile;
+  const created = await makeAgentSession(undefined, { type: "session_start", reason: "new", previousSessionFile });
   if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
   const value = created.session;
-  value.sessionManager.newSession();
-  value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
+  if (mockMode) {
+    value.sessionManager.newSession();
+    value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
+  }
   await applyDefaultSessionSettings(value);
   return registerLiveSession(value);
 }
@@ -1178,6 +1457,13 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, settings });
       }
 
+      if (method === "GET" && url.pathname === "/api/commands") {
+        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        return sendJson(res, 200, { ok: true, commands: getSlashCommands(targetSession) });
+      }
+
       if (method === "GET" && url.pathname === "/api/models") {
         return sendJson(res, 200, {
           ok: true,
@@ -1220,6 +1506,16 @@ const server = createServer(async (req, res) => {
 
         const result = await executeSlashCommand(command);
         return sendJson(res, 200, { ok: true, ...result });
+      }
+
+      if (method === "POST" && url.pathname === "/api/extension-ui/respond") {
+        const body = await readBody(req) as { id?: unknown } & Record<string, unknown>;
+        const id = String(body.id || "").trim();
+        if (!id) return sendJson(res, 400, { ok: false, error: "id is required" });
+        const pending = pendingExtensionUiRequests.get(id);
+        if (!pending) return sendJson(res, 404, { ok: false, error: "Extension UI request not found" });
+        pending.resolve(body);
+        return sendJson(res, 200, { ok: true });
       }
 
       if (method === "POST" && url.pathname === "/api/prompt") {

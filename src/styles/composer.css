@@ -33,6 +33,74 @@ textarea:focus { border-bottom-color: var(--accent); }
 .composer:hover .expandButton,
 .composer.expanded .expandButton { display: inline-grid; }
 .composer { position: relative; }
+.slashCommandsPopover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  display: grid;
+  max-height: min(360px, 50vh);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, .35);
+  padding: 6px;
+}
+.slashCommandsPopover[hidden] { display: none; }
+.slashCommandItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  width: 100%;
+  min-height: 0;
+  height: auto;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  padding: 8px 10px;
+  text-align: left;
+  color: var(--text);
+}
+.slashCommandItem:hover,
+.slashCommandItem.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.slashCommandName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 750;
+}
+.slashCommandDescription {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slashCommandSource {
+  align-self: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.slashCommandsEmpty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.composer.expanded .slashCommandsPopover {
+  top: 52px;
+  bottom: auto;
+}
 .composer.expanded {
   position: fixed;
   inset: 16px;
