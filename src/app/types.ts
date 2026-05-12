@@ -105,6 +105,7 @@ export type SessionInfo = {
   cwd?: string;
   isCurrent: boolean;
   inactive?: boolean;
+  saved?: boolean;
   runtime?: {
     loaded: boolean;
     isRunning: boolean;
@@ -134,6 +135,7 @@ export type AppState = {
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   hideInactiveSessions: boolean;
+  showSavedOnly: boolean;
   queueMode: QueueMode;
   attachedImages: ImageAttachment[];
   editorExpanded: boolean;
@@ -202,6 +204,7 @@ export function createAppState(): AppState {
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
     hideInactiveSessions: localStorage.getItem("pi-web:hideInactiveSessions") === "true",
+    showSavedOnly: localStorage.getItem("pi-web:showSavedOnly") === "true",
     queueMode: "steer",
     attachedImages: [],
     editorExpanded: defaultPiWebSettings.composer.expanded,

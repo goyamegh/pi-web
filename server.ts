@@ -687,6 +687,7 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     cwd,
     isCurrent: cwd === piCwd && info.id === session.sessionId,
     inactive: inactiveSessionIds.has(info.id),
+    saved: savedSessionIds.has(info.id),
     runtime: runtimeForPath(info.path),
   };
 }
@@ -985,6 +986,22 @@ async function persistInactiveSessions() {
   const tmp = `${inactiveSessionsFile}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, JSON.stringify([...inactiveSessionIds]), "utf-8");
   await rename(tmp, inactiveSessionsFile);
+}
+
+// Saved sessions store
+const savedSessionsFile = join(getAgentDir(), "pi-web-saved-sessions.json");
+let savedSessionIds: Set<string> = new Set();
+(async () => {
+  try {
+    const data = JSON.parse(await readFile(savedSessionsFile, "utf-8"));
+    if (Array.isArray(data)) savedSessionIds = new Set(data);
+  } catch {}
+})();
+async function persistSavedSessions() {
+  await mkdir(dirname(savedSessionsFile), { recursive: true });
+  const tmp = `${savedSessionsFile}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, JSON.stringify([...savedSessionIds]), "utf-8");
+  await rename(tmp, savedSessionsFile);
 }
 
 const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
@@ -1701,6 +1718,17 @@ const server = createServer(async (req, res) => {
         else inactiveSessionIds.delete(targetId);
         await persistInactiveSessions();
         return sendJson(res, 200, { ok: true, sessionId: targetId, inactive });
+      }
+
+      if (method === "POST" && url.pathname === "/api/session/saved") {
+        const body = await readBody(req) as { sessionId?: unknown; saved?: unknown };
+        const targetId = typeof body.sessionId === "string" ? body.sessionId : "";
+        if (!targetId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
+        const saved = Boolean(body.saved);
+        if (saved) savedSessionIds.add(targetId);
+        else savedSessionIds.delete(targetId);
+        await persistSavedSessions();
+        return sendJson(res, 200, { ok: true, sessionId: targetId, saved });
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
