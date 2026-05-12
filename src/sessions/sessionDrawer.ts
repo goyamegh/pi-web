@@ -5,6 +5,21 @@ import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 
+const pinnedFoldersStorageKey = "pi-web-pinned-session-folders";
+
+function readPinnedFolders(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(pinnedFoldersStorageKey) || "[]");
+    return new Set(Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistPinnedFolders(folders: Set<string>) {
+  localStorage.setItem(pinnedFoldersStorageKey, JSON.stringify([...folders]));
+}
+
 export type SessionsController = {
   init: () => void;
   refreshSessions: () => Promise<void>;
@@ -1157,9 +1172,16 @@ export function createSessions(options: {
       groups.set(cwd, [...(groups.get(cwd) || []), item]);
     }
 
-    for (const [cwd, items] of groups) {
+    const pinnedFolders = readPinnedFolders();
+    const sortedGroups = [...groups.entries()].sort((a, b) => {
+      const aPinned = pinnedFolders.has(a[0]) ? 0 : 1;
+      const bPinned = pinnedFolders.has(b[0]) ? 0 : 1;
+      return aPinned - bPinned;
+    });
+
+    for (const [cwd, items] of sortedGroups) {
       const group = document.createElement("section");
-      group.className = "sessionFolderGroup";
+      group.className = `sessionFolderGroup${pinnedFolders.has(cwd) ? " pinned" : ""}`;
 
       const header = document.createElement("div");
       header.className = "sessionFolderHeader";
@@ -1188,6 +1210,20 @@ export function createSessions(options: {
         renderSessionList(cachedSessions);
       });
 
+      const pinButton = document.createElement("button");
+      pinButton.type = "button";
+      pinButton.className = `iconButton sessionFolderPinButton${pinnedFolders.has(cwd) ? " pinned" : ""}`;
+      pinButton.title = pinnedFolders.has(cwd) ? "Unpin folder" : "Pin folder to top";
+      pinButton.setAttribute("aria-label", pinButton.title);
+      setIcon(pinButton, "bookmark");
+      pinButton.addEventListener("click", () => {
+        const current = readPinnedFolders();
+        if (current.has(cwd)) current.delete(cwd);
+        else current.add(cwd);
+        persistPinnedFolders(current);
+        refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+      });
+
       const newButton = document.createElement("button");
       newButton.type = "button";
       newButton.className = "iconButton sessionFolderNewButton";
@@ -1201,7 +1237,7 @@ export function createSessions(options: {
           addMessage("system", error instanceof Error ? error.message : String(error), "error");
         }
       });
-      header.append(toggle, newButton);
+      header.append(toggle, pinButton, newButton);
       group.append(header);
 
       if (state.collapsedSessionFolders.has(cwd)) {
