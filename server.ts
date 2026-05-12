@@ -709,6 +709,59 @@ async function listSessionInfos(extraCwds: string[] = []) {
   return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
 }
 
+function finiteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function sessionStats(targetSession: PiWebSession) {
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let cost = 0;
+  let userMessages = 0;
+  let assistantMessages = 0;
+  let toolResults = 0;
+
+  const branch = targetSession.sessionManager.getBranch?.();
+  const entries = Array.isArray(branch) && branch.length > 0
+    ? branch.map((entry: any) => entry?.message ?? entry)
+    : targetSession.messages;
+
+  for (const message of entries as any[]) {
+    if (!message || typeof message !== "object") continue;
+    if (message.role === "user") userMessages++;
+    if (message.role === "toolResult") toolResults++;
+    if (message.role !== "assistant") continue;
+    assistantMessages++;
+    const usage = message.usage || {};
+    input += finiteNumber(usage.input);
+    output += finiteNumber(usage.output);
+    cacheRead += finiteNumber(usage.cacheRead);
+    cacheWrite += finiteNumber(usage.cacheWrite);
+    const usageCost = usage.cost || {};
+    const totalCost = finiteNumber(usageCost.total);
+    cost += totalCost || finiteNumber(usageCost.input) + finiteNumber(usageCost.output) + finiteNumber(usageCost.cacheRead) + finiteNumber(usageCost.cacheWrite);
+  }
+
+  const contextUsage = targetSession.getContextUsage?.() || undefined;
+  return {
+    userMessages,
+    assistantMessages,
+    toolResults,
+    totalMessages: entries.length,
+    tokens: {
+      input,
+      output,
+      cacheRead,
+      cacheWrite,
+      total: input + output + cacheRead + cacheWrite,
+    },
+    cost,
+    contextUsage,
+  };
+}
+
 function currentState() {
   return {
     cwd: piCwd,
@@ -718,6 +771,7 @@ function currentState() {
     isStreaming: session.isStreaming,
     model: simplifyModel(session.model),
     thinkingLevel: session.thinkingLevel,
+    stats: sessionStats(session),
   };
 }
 
@@ -1147,6 +1201,10 @@ function registerLiveSession(value: any) {
       broadcast({ type: "state_changed", ...currentState() });
     }
 
+    if (e?.type === "message_end" || e?.type === "agent_end" || e?.type === "compaction_end") {
+      broadcast({ type: "session_stats_changed", sessionId: eventSessionId, sessionFile: eventSessionFile, stats: sessionStats(value) });
+    }
+
     if (e?.type === "message_end" || e?.type === "turn_end") {
       const msg = e?.message ?? e?.toolResults?.[0];
       const err: string = msg?.errorMessage || msg?.message?.errorMessage || "";
@@ -1368,6 +1426,13 @@ const server = createServer(async (req, res) => {
           ...currentStateWithThinkingLevels(),
           tokenRequired: Boolean(token),
         });
+      }
+
+      if (method === "GET" && url.pathname === "/api/session/stats") {
+        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        return sendJson(res, 200, { ok: true, sessionId: targetSession.sessionId, stats: sessionStats(targetSession) });
       }
 
       if (method === "GET" && url.pathname === "/api/session/tree") {

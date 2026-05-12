@@ -247,6 +247,65 @@ test.describe("composer layout", () => {
     expect(styles.boxShadow).toContain("inset");
   });
 
+  test("context meter shows known usage details without low-usage label", async ({ page }) => {
+    await page.goto("/");
+
+    const meter = page.locator("#contextMeter");
+    await expect(meter).toBeVisible();
+    await expect(meter).toHaveClass(/normal/);
+    await expect(page.locator("#contextMeterLabel")).toHaveText("");
+
+    const percent = await meter.evaluate((el) => getComputedStyle(el).getPropertyValue("--context-percent").trim());
+    expect(percent).toBe("14.5%");
+
+    await meter.click();
+    const popover = page.locator("#contextMeterPopover");
+    await expect(popover).toBeVisible();
+    await expect(popover).toContainText("Context usage");
+    await expect(popover).toContainText("19k / 128k tokens · 15%");
+    await expect(popover).toContainText("Input");
+    await expect(popover).toContainText("Cache read");
+  });
+
+  test("context meter unknown state is subtle and unlabeled", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await page.locator("#sessionNewButton").click();
+
+    const meter = page.locator("#contextMeter");
+    await expect(meter).toHaveClass(/unknown/);
+    await expect(page.locator("#contextMeterLabel")).toHaveText("");
+    await expect(meter).toHaveCSS("height", "2px");
+
+    await meter.click();
+    await expect(page.locator("#contextMeterPopover")).toContainText("Usage will appear after the next model response.");
+  });
+
+  test("context meter sits above rounded composer without covering focus ring on mobile", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+
+    const meterBox = await page.locator("#contextMeter").boundingBox();
+    const composerBox = await page.locator("#promptForm").boundingBox();
+    const textareaBox = await page.locator("#prompt").boundingBox();
+    expect(meterBox).toBeTruthy();
+    expect(composerBox).toBeTruthy();
+    expect(textareaBox).toBeTruthy();
+
+    expect(meterBox!.y + meterBox!.height).toBeLessThanOrEqual(composerBox!.y + 1);
+    expect(textareaBox!.y).toBeCloseTo(composerBox!.y + 1, 2);
+
+    const textareaRadius = await page.locator("#prompt").evaluate((el) => getComputedStyle(el).borderTopLeftRadius);
+    const trackRadius = await page.locator(".contextMeterTrack").evaluate((el) => getComputedStyle(el).borderTopLeftRadius);
+    expect(textareaRadius).toBe("15px");
+    expect(trackRadius).toBe("999px");
+
+    await page.locator("#prompt").focus();
+    const meterAfterFocus = await page.locator("#contextMeter").boundingBox();
+    expect(meterAfterFocus).toBeTruthy();
+    expect(meterAfterFocus!.y + meterAfterFocus!.height).toBeLessThanOrEqual(composerBox!.y + 1);
+  });
+
   test("model settings popover changes reasoning level explicitly", async ({ page }) => {
     await page.goto("/");
 

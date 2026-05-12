@@ -1,4 +1,114 @@
 
+.contextMeter {
+  --context-percent: 0%;
+  position: absolute;
+  top: -6px;
+  left: 14px;
+  right: 14px;
+  z-index: 2;
+  display: block;
+  width: auto;
+  height: 5px;
+  min-height: 5px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  padding: 0;
+  overflow: visible;
+  cursor: help;
+}
+.contextMeter.warning,
+.contextMeter.danger {
+  height: 5px;
+  min-height: 5px;
+}
+.contextMeter.unknown {
+  top: -3px;
+  height: 2px;
+  min-height: 2px;
+}
+.contextMeterTrack {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 6%, transparent);
+}
+.contextMeterFill {
+  display: block;
+  width: var(--context-percent);
+  max-width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 64%, var(--muted));
+  transition: width 180ms ease, background-color 180ms ease;
+}
+.contextMeter.normal .contextMeterFill { background: color-mix(in srgb, var(--muted) 24%, transparent); }
+.contextMeter.active .contextMeterTrack { background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.contextMeter.active .contextMeterFill { background: color-mix(in srgb, var(--accent) 72%, var(--muted)); }
+.contextMeter.warning .contextMeterFill { background: #f59e0b; }
+.contextMeter.danger .contextMeterFill { background: var(--danger); }
+.contextMeter.unknown .contextMeterTrack { background: color-mix(in srgb, var(--muted) 8%, transparent); }
+.contextMeterLabel {
+  position: absolute;
+  right: 0;
+  top: -13px;
+  display: none;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 11px;
+  letter-spacing: .02em;
+  pointer-events: none;
+}
+.contextMeter.warning .contextMeterLabel,
+.contextMeter.danger .contextMeterLabel { display: block; }
+.contextMeter.warning .contextMeterLabel { color: #fbbf24; }
+.contextMeter.danger .contextMeterLabel { color: var(--danger); }
+.contextMeterPopover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 24;
+  width: min(340px, calc(100vw - 32px));
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, .35);
+  color: var(--text);
+  font-size: 12px;
+}
+.contextMeterPopover[hidden] { display: none; }
+.contextMeterPopoverTitle {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 800;
+}
+.contextMeterSummary {
+  margin-bottom: 10px;
+  color: var(--accent);
+  font-weight: 800;
+}
+.contextMeterRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 3px 0;
+  color: var(--muted);
+}
+.contextMeterRow strong {
+  color: var(--text);
+  font-weight: 750;
+}
+.contextMeterEmpty {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
 textarea {
   display: block;
   width: 100%;
@@ -26,7 +136,7 @@ textarea:focus { border-bottom-color: var(--accent); }
   border-color: transparent;
   background: transparent;
   color: var(--muted);
-  z-index: 1;
+  z-index: 3;
 }
 .expandButton:hover { border-color: transparent; color: var(--accent); }
 .expandButton svg { width: 14px; height: 14px; }

@@ -4,6 +4,10 @@ export type AppElements = {
   statusPathEl: HTMLSpanElement;
   connectionStatusEl: HTMLSpanElement;
   formEl: HTMLFormElement;
+  contextMeterEl: HTMLButtonElement;
+  contextMeterFillEl: HTMLSpanElement;
+  contextMeterLabelEl: HTMLSpanElement;
+  contextMeterPopoverEl: HTMLDivElement;
   promptEl: HTMLTextAreaElement;
   slashCommandsEl: HTMLDivElement;
   primaryButton: HTMLButtonElement;
@@ -62,6 +66,10 @@ export function getAppElements(): AppElements {
     statusPathEl: requiredElement<HTMLSpanElement>("#statusPath"),
     connectionStatusEl: requiredElement<HTMLSpanElement>("#connectionStatus"),
     formEl: requiredElement<HTMLFormElement>("#promptForm"),
+    contextMeterEl: requiredElement<HTMLButtonElement>("#contextMeter"),
+    contextMeterFillEl: requiredElement<HTMLSpanElement>("#contextMeterFill"),
+    contextMeterLabelEl: requiredElement<HTMLSpanElement>("#contextMeterLabel"),
+    contextMeterPopoverEl: requiredElement<HTMLDivElement>("#contextMeterPopover"),
     promptEl: requiredElement<HTMLTextAreaElement>("#prompt"),
     slashCommandsEl: requiredElement<HTMLDivElement>("#slashCommands"),
     primaryButton: requiredElement<HTMLButtonElement>("#primaryButton"),

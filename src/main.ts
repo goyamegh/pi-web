@@ -7,6 +7,7 @@ import { getAppElements, initAppHeightSync } from "./app/elements.js";
 import { setIcon } from "./app/icons.js";
 import { createAppState } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
+import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { initGitPanel } from "./git/panel.js";
 import { createMarkdownRenderer } from "./markdown/render.js";
 import { createMessageList } from "./messages/messageList.js";
@@ -28,6 +29,7 @@ const messages = createMessageList({ messagesEl: elements.messagesEl, markdown }
 const tools = createToolCards(elements.messagesEl, messages.scrollToBottom);
 
 let composer: ComposerController;
+let contextMeter: ContextMeterController;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
 let settings: SettingsController;
@@ -44,9 +46,14 @@ function updateMeta(data: any) {
   state.currentThinkingLevel = data.thinkingLevel || "off";
   state.currentSessionId = data.sessionId || state.currentSessionId;
   state.currentCwd = data.cwd || state.currentCwd;
+  if ("stats" in data) contextMeter.update(data.stats);
   if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
   modelSettings.updateSummary();
+}
+
+function updateSessionStats(stats: any) {
+  contextMeter.update(stats);
 }
 
 async function refreshMessages() {
@@ -114,6 +121,8 @@ settings = createSettings({
   addMessage: messages.addMessage,
 });
 
+contextMeter = createContextMeter({ state, elements });
+
 sessions = createSessions({
   state,
   elements,
@@ -165,6 +174,7 @@ const realtime = createRealtime({
   settings,
   conversationTree,
   updateMeta,
+  updateSessionStats,
   refreshMessages,
   refreshState,
   addMessage: messages.addMessage,
@@ -173,6 +183,7 @@ const realtime = createRealtime({
 initStaticIcons();
 statusBar.init();
 sessions.init();
+contextMeter.init();
 composer.init();
 conversationTree.init();
 modelSettings.init();

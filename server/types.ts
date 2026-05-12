@@ -46,6 +46,7 @@ export interface PiWebSession {
   bindExtensions?(bindings: unknown): Promise<void>;
   getAvailableThinkingLevels(): string[];
   getSessionName?(): string | undefined;
+  getContextUsage?(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   setSessionName?(name: string): void;
   setModel(model: unknown): Promise<void>;
   setThinkingLevel(level: string): void;

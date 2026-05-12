@@ -29,11 +29,12 @@ export function createRealtime(options: {
   tools: ToolCards;
   conversationTree?: ConversationTreeController;
   updateMeta: (data: any) => void;
+  updateSessionStats: (stats: any) => void;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, refreshMessages, refreshState, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
 
   function formatTokenCount(tokens: unknown) {
@@ -239,6 +240,10 @@ export function createRealtime(options: {
       }
       if (data.type === "models_updated") {
         models.populateModelSelect(data.models || [], state.currentModelKey);
+        return;
+      }
+      if (data.type === "session_stats_changed") {
+        if (!data.sessionId || data.sessionId === state.currentSessionId) updateSessionStats(data.stats);
         return;
       }
       if (data.type === "settings_updated") {

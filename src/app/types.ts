@@ -34,6 +34,28 @@ export type PiWebModelSetting = {
   id: string;
 };
 
+export type ContextUsage = {
+  tokens?: number | null;
+  contextWindow?: number | null;
+  percent?: number | null;
+};
+
+export type SessionStats = {
+  userMessages?: number;
+  assistantMessages?: number;
+  toolResults?: number;
+  totalMessages?: number;
+  tokens?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
+  cost?: number;
+  contextUsage?: ContextUsage | null;
+};
+
 export type PiWebSettings = {
   version: 1;
   appearance: {
@@ -95,6 +117,7 @@ export type AppState = {
   attachedImages: ImageAttachment[];
   editorExpanded: boolean;
   settings: PiWebSettings;
+  stats?: SessionStats;
 };
 
 export const reconnectDelayMs = 1500;
@@ -160,6 +183,7 @@ export function createAppState(): AppState {
     attachedImages: [],
     editorExpanded: defaultPiWebSettings.composer.expanded,
     settings: defaultPiWebSettings,
+    stats: undefined,
   };
 }
 

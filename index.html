@@ -118,6 +118,11 @@
       </aside>
 
       <form id="promptForm" class="composer">
+        <button id="contextMeter" class="contextMeter unknown" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="contextMeterPopover" title="Context usage unavailable">
+          <span class="contextMeterTrack" aria-hidden="true"><span id="contextMeterFill" class="contextMeterFill"></span></span>
+          <span id="contextMeterLabel" class="contextMeterLabel">ctx —</span>
+        </button>
+        <div id="contextMeterPopover" class="contextMeterPopover" role="dialog" aria-label="Context usage" hidden></div>
         <textarea id="prompt" rows="2" placeholder="Ask pi…" aria-controls="slashCommands" aria-expanded="false"></textarea>
         <div id="slashCommands" class="slashCommandsPopover" role="listbox" aria-label="Slash commands" hidden></div>
         <button id="expandButton" class="iconButton expandButton" type="button" aria-label="Expand editor" title="Expand editor">

@@ -49,11 +49,11 @@ export function createMockHarness(options: MockSessionOptions) {
     return path === mockSessions[1].path
       ? [
         { role: "user", content: "Review the mobile composer layout", timestamp: "2026-05-06T09:00:00Z" },
-        { role: "assistant", content: "Resumed older session.", timestamp: "2026-05-06T09:01:00Z" },
+        { role: "assistant", content: "Resumed older session.", usage: { input: 4200, output: 320, cacheRead: 1200, cacheWrite: 0, cost: { total: 0.018 } }, timestamp: "2026-05-06T09:01:00Z" },
       ]
       : [
         { role: "user", content: "Can you add image attachments?", timestamp: "2026-05-07T10:00:00Z" },
-        { role: "assistant", content: ("## Image attachment support\n\nImage attachment support is **enabled**.\n\n- Upload images\n- Preview images\n\n```ts\nconst enabled = true;\n```\n\n").repeat(18), timestamp: "2026-05-07T10:01:00Z" },
+        { role: "assistant", content: ("## Image attachment support\n\nImage attachment support is **enabled**.\n\n- Upload images\n- Preview images\n\n```ts\nconst enabled = true;\n```\n\n").repeat(18), usage: { input: 18600, output: 3400, cacheRead: 9200, cacheWrite: 800, cost: { total: 0.092 } }, timestamp: "2026-05-07T10:01:00Z" },
       ];
   }
 
@@ -237,6 +237,12 @@ export function createMockHarness(options: MockSessionOptions) {
       },
       getAvailableThinkingLevels: () => ["off", "low", "medium", "high"],
       getSessionName: () => mockSessions.find((info) => info.path === mockSession.sessionFile)?.name,
+      getContextUsage: () => {
+        const lastAssistant = [...mockMessages].reverse().find((message: any) => message?.role === "assistant" && message?.usage) as any;
+        const tokens = Number(lastAssistant?.usage?.input || 0) || null;
+        const contextWindow = mockModel.contextWindow;
+        return { tokens, contextWindow, percent: tokens === null ? null : Math.round((tokens / contextWindow) * 1000) / 10 };
+      },
       setSessionName: (name: string) => {
         const info = mockSessions.find((item) => item.path === mockSession.sessionFile);
         if (info) info.name = name.trim();
