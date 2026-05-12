@@ -93,6 +93,10 @@
   padding-top: 4px;
   border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
+.sessionFolderGroup.pinned {
+  border-left: 2px solid #f59e0b;
+  padding-left: 6px;
+}
 .sessionFolderHeader {
   display: flex;
   align-items: center;
@@ -167,6 +171,48 @@
 .sessionFolderNewButton svg {
   width: 13px;
   height: 13px;
+}
+
+/* Pin folder button */
+.sessionFolderPinButton {
+  flex: 0 0 auto;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity .15s, color .15s;
+}
+.sessionFolderHeader:hover .sessionFolderPinButton {
+  opacity: 1;
+}
+.sessionFolderPinButton.pinned {
+  opacity: 1;
+  color: #f59e0b;
+}
+.sessionFolderPinButton.pinned svg {
+  fill: #f59e0b;
+}
+.sessionFolderPinButton:hover {
+  border: none;
+  background: var(--panel-2);
+  color: #f59e0b;
+}
+.sessionFolderPinButton svg {
+  width: 13px;
+  height: 13px;
+}
+@media (hover: none) {
+  .sessionFolderPinButton {
+    opacity: 0.7;
+  }
+  .sessionFolderPinButton.pinned {
+    opacity: 1;
+  }
 }
 .sessionFolderMoreButton {
   height: 28px;
