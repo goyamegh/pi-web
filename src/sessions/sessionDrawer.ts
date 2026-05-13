@@ -9,13 +9,26 @@ export type SessionsController = {
   refreshSessions: () => Promise<void>;
   setSessionDrawerOpen: (open: boolean) => void;
   startNewSession: (cwd?: string) => Promise<void>;
+  updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
   updateEmptyCwdChooser: () => void;
 };
 
-function formatSessionDate(value: string) {
+function formatRelativeTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `${weeks}w ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(days / 365)}y ago`;
 }
 
 function sessionTitle(session: SessionInfo) {
@@ -72,6 +85,8 @@ export function createSessions(options: {
     clearMessages,
     addMessage,
   } = options;
+
+  let cachedSessions: SessionInfo[] = [];
 
   function updateEmptyCwdChooser() {
     elements.emptyCwdPathEl.textContent = state.currentCwd;
@@ -196,7 +211,30 @@ export function createSessions(options: {
     const res = await fetch(url, { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    const sessions: SessionInfo[] = data.sessions || [];
+    cachedSessions = data.sessions || [];
+    renderSessionList(cachedSessions);
+  }
+
+  function markCachedCurrentSession(sessionId: string, cwd: string) {
+    cachedSessions = cachedSessions.map((session) => ({
+      ...session,
+      isCurrent: session.id === sessionId && (session.cwd || cwd) === cwd,
+    }));
+    renderSessionList(cachedSessions);
+  }
+
+  function updateSessionRuntime(sessionId: string, runtime: SessionInfo["runtime"]) {
+    if (!sessionId || elements.sessionDrawer.hidden || cachedSessions.length === 0) return;
+    let changed = false;
+    cachedSessions = cachedSessions.map((session) => {
+      if (session.id !== sessionId) return session;
+      changed = true;
+      return { ...session, runtime };
+    });
+    if (changed) renderSessionList(cachedSessions);
+  }
+
+  function renderSessionList(sessions: SessionInfo[]) {
     elements.sessionListEl.textContent = "";
 
     if (sessions.length === 0) {
@@ -241,7 +279,7 @@ export function createSessions(options: {
         if (state.collapsedSessionFolders.has(cwd)) state.collapsedSessionFolders.delete(cwd);
         else state.collapsedSessionFolders.add(cwd);
         persistCollapsedSessionFolders(state.collapsedSessionFolders);
-        refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        renderSessionList(cachedSessions);
       });
 
       const newButton = document.createElement("button");
@@ -272,7 +310,7 @@ export function createSessions(options: {
         const button = document.createElement("button");
         button.type = "button";
         button.className = `sessionItem${item.isCurrent ? " current" : ""}`;
-        button.disabled = item.isCurrent;
+        if (item.isCurrent) button.setAttribute("aria-current", "page");
 
         const titleRow = document.createElement("span");
         titleRow.className = "sessionItemTitleRow";
@@ -293,7 +331,7 @@ export function createSessions(options: {
 
         const meta = document.createElement("span");
         meta.className = "sessionItemMeta";
-        meta.textContent = `${formatSessionDate(item.modified)} · ${item.messageCount} message${item.messageCount === 1 ? "" : "s"}`;
+        meta.textContent = `${formatRelativeTime(item.modified)} · ${item.messageCount}`;
 
         button.append(titleRow, meta);
         button.addEventListener("click", async () => {
@@ -304,11 +342,13 @@ export function createSessions(options: {
               body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd }),
             });
             if (!openRes.ok) throw new Error(await openRes.text());
-            rememberSessionCwd(item.cwd || cwd);
-            setSessionDrawerOpen(false);
+            const nextCwd = item.cwd || cwd;
+            rememberSessionCwd(nextCwd);
+            markCachedCurrentSession(item.id, nextCwd);
             await refreshState();
           } catch (error) {
             addMessage("system", error instanceof Error ? error.message : String(error), "error");
+            if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
           }
         });
         group.append(button);
@@ -324,7 +364,7 @@ export function createSessions(options: {
         moreButton.addEventListener("click", () => {
           if (folderExpanded) state.expandedSessionFolders.delete(cwd);
           else state.expandedSessionFolders.add(cwd);
-          refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+          renderSessionList(cachedSessions);
         });
         group.append(moreButton);
       }
@@ -361,5 +401,6 @@ export function createSessions(options: {
     setSessionDrawerOpen,
     startNewSession,
     updateEmptyCwdChooser,
+    updateSessionRuntime,
   };
 }

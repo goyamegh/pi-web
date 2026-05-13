@@ -3,10 +3,6 @@ import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
 import { connectionLostDelayMs, reconnectDelayMs, reconnectNoticeDelayMs } from "../app/types.js";
 
-type SessionTitleInfo = {
-  name?: string;
-  firstMessage?: string;
-};
 
 export type StatusBar = {
   init: () => void;
@@ -16,10 +12,6 @@ export type StatusBar = {
   markWebSocketClosed: () => void;
   markSyncRequired: () => void;
 };
-
-function sessionTitle(session: SessionTitleInfo) {
-  return session.name || session.firstMessage?.trim() || "New session";
-}
 
 export function createStatusBar(options: {
   state: AppState;
@@ -53,7 +45,6 @@ export function createStatusBar(options: {
       const data = text ? JSON.parse(text) : {};
       if (!res.ok || data.ok === false) throw new Error(data.error || text);
       updateMeta(data);
-      await refreshSessionTitle();
       if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
     } catch (error) {
       setStatusTitle(previous);
@@ -184,12 +175,11 @@ export function createStatusBar(options: {
 
   async function refreshSessionTitle(sessionId = state.currentSessionId) {
     try {
-      const res = await fetch("/api/sessions", { headers: api.headers() });
+      const res = await fetch("/api/state", { headers: api.headers() });
       if (!res.ok || sessionId !== state.currentSessionId) return;
       const data = await res.json();
-      if (sessionId !== state.currentSessionId) return;
-      const current = (data.sessions || []).find((s: any) => s.id === sessionId) || (data.sessions || []).find((s: any) => s.isCurrent);
-      setStatusTitle(current ? sessionTitle(current) : "New session");
+      if (sessionId !== state.currentSessionId || data.sessionId !== sessionId) return;
+      updateMeta(data);
     } catch (_e) { /* best-effort */ }
   }
 

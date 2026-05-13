@@ -134,18 +134,14 @@ test.describe("composer layout", () => {
     await expect(page.locator("#statusTitle")).toHaveText("New session");
   });
 
-  test("switching sessions ignores stale title refreshes", async ({ page }) => {
+  test("switching sessions ignores stale drawer list refreshes", async ({ page }) => {
     let releaseStaleSessionsResponse!: () => void;
     const staleSessionsResponseReleased = new Promise<void>((resolve) => {
       releaseStaleSessionsResponse = resolve;
     });
-    let sawFirstSessionsRequest!: () => void;
-    const firstSessionsRequestSeen = new Promise<void>((resolve) => {
-      sawFirstSessionsRequest = resolve;
-    });
     let sessionsRequestCount = 0;
 
-    await page.route("**/api/sessions", async (route) => {
+    await page.route("**/api/sessions**", async (route) => {
       if (route.request().method() !== "GET") {
         await route.continue();
         return;
@@ -153,43 +149,40 @@ test.describe("composer layout", () => {
 
       sessionsRequestCount += 1;
       if (sessionsRequestCount === 1) {
-        sawFirstSessionsRequest();
-        await staleSessionsResponseReleased;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            sessions: [
-              {
-                id: "mock-current",
-                name: "Current mock session",
-                firstMessage: "Can you add image attachments?",
-                created: "2026-05-01T10:00:00.000Z",
-                modified: "2026-05-07T10:00:00.000Z",
-                messageCount: 2,
-                isCurrent: true,
-              },
-              {
-                id: "mock-older",
-                name: "Older mock session",
-                firstMessage: "Review the mobile composer layout",
-                created: "2026-05-01T09:00:00.000Z",
-                modified: "2026-05-06T09:00:00.000Z",
-                messageCount: 4,
-                isCurrent: false,
-              },
-            ],
-          }),
-        });
+        await route.continue();
         return;
       }
 
-      await route.continue();
+      await staleSessionsResponseReleased;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessions: [
+            {
+              id: "mock-current",
+              name: "Current mock session",
+              firstMessage: "Can you add image attachments?",
+              created: "2026-05-01T10:00:00.000Z",
+              modified: "2026-05-07T10:00:00.000Z",
+              messageCount: 2,
+              isCurrent: true,
+            },
+            {
+              id: "mock-older",
+              name: "Older mock session",
+              firstMessage: "Review the mobile composer layout",
+              created: "2026-05-01T09:00:00.000Z",
+              modified: "2026-05-06T09:00:00.000Z",
+              messageCount: 4,
+              isCurrent: false,
+            },
+          ],
+        }),
+      });
     });
 
     await page.goto("/");
-    await firstSessionsRequestSeen;
-
     await page.locator("#sessionButton").click();
     await page.getByText("Older mock session").click();
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
@@ -364,7 +357,7 @@ test.describe("composer layout", () => {
 });
 
 test.describe("sessions drawer", () => {
-  test("mobile session rows expand to contain title and metadata", async ({ page }) => {
+  test("session rows keep title and metadata on one line", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
     await page.locator("#sessionButton").click();
@@ -388,9 +381,9 @@ test.describe("sessions drawer", () => {
       expect(titleBox).toBeTruthy();
       expect(metaBox).toBeTruthy();
 
-      expect(itemBox!.height).toBeGreaterThan(40);
-      expect(titleBox!.y + titleBox!.height).toBeLessThanOrEqual(metaBox!.y + 1);
-      expect(metaBox!.y + metaBox!.height).toBeLessThanOrEqual(itemBox!.y + itemBox!.height + 1);
+      expect(itemBox!.height).toBeCloseTo(32, 1);
+      expect(titleBox!.x + titleBox!.width).toBeLessThanOrEqual(metaBox!.x + 1);
+      expect(Math.abs((titleBox!.y + titleBox!.height / 2) - (metaBox!.y + metaBox!.height / 2))).toBeLessThanOrEqual(2);
     }
 
     const firstBox = await items.nth(0).boundingBox();
@@ -408,7 +401,7 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
 
     await page.getByText("Older mock session").click();
-    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
     await expect(page.locator(".sessionItem", { hasText: "Older mock session" }).locator(".sessionSpinner")).toHaveCount(0);
   });
@@ -441,10 +434,9 @@ test.describe("sessions drawer", () => {
     await expect(drawer.getByText("Older mock session")).toBeVisible();
 
     await drawer.getByText("Older mock session").click();
-    await expect(page.locator("#sessionDrawer")).toBeHidden();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.getByText("Resumed older session.")).toBeVisible();
 
-    await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
     await expect(page.locator("#sessionDrawer")).toBeHidden();
     await expect(page.locator(".emptyCwdChooser", { hasText: "Working directory" })).toBeVisible();

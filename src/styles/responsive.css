@@ -7,9 +7,14 @@
 
   body.sessionDrawerOpen .app {
     width: auto;          /* let margins and max-width drive sizing */
-    margin-left: 360px;   /* match .sessionDrawer width */
+    margin-left: var(--session-drawer-width);
     margin-right: auto;
     max-width: 1100px;    /* keep original cap */
+  }
+
+  /* Re-centre the jump button over the chat area (not the full viewport) */
+  body.sessionDrawerOpen .jumpToLatestButton {
+    left: calc(50% + var(--session-drawer-width) / 2);
   }
 }
 
@@ -81,11 +86,6 @@
   .sessionDrawer {
     width: 100vw;
     border-right: 0;
-    padding: 16px max(12px, env(safe-area-inset-right)) 16px max(12px, env(safe-area-inset-left));
-  }
-
-  .sessionList {
-    gap: 6px;
   }
 }
 

@@ -713,6 +713,17 @@ function finiteNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function liveSessionTitle(targetSession: PiWebSession) {
+  const name = targetSession.getSessionName?.()?.trim();
+  if (name) return name;
+
+  for (const message of targetSession.messages as any[]) {
+    const text = textFromContent(message?.content).trim();
+    if (message?.role === "user" && text) return truncatePreview(text, 80);
+  }
+  return "New session";
+}
+
 function sessionStats(targetSession: PiWebSession) {
   let input = 0;
   let output = 0;
@@ -768,6 +779,7 @@ function currentState() {
     sessionFile: session.sessionFile,
     sessionId: session.sessionId,
     sessionName: session.getSessionName?.(),
+    sessionTitle: liveSessionTitle(session),
     isStreaming: session.isStreaming,
     model: simplifyModel(session.model),
     thinkingLevel: session.thinkingLevel,

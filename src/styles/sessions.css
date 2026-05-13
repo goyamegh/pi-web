@@ -1,3 +1,7 @@
+:root {
+  --session-drawer-width: 360px;
+}
+
 .sessionBackdrop {
   position: fixed;
   inset: 0;
@@ -9,35 +13,52 @@
   inset: 0 auto 0 0;
   z-index: 21;
   display: flex;
-  width: min(360px, calc(100vw - 32px));
+  width: min(var(--session-drawer-width), calc(100vw - 32px));
   max-width: 100vw;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
   border-right: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel) 96%, black);
   box-shadow: 18px 0 60px rgba(0,0,0,.35);
-  padding: 16px;
+  padding: 0;
 }
 .sessionDrawer[hidden], .sessionBackdrop[hidden] { display: none; }
 .sessionDrawerHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
+  height: 40px;
+  flex-shrink: 0;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--border);
 }
 .sessionDrawerHeader h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sessionDrawerHeader .iconButton {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
+}
+.sessionDrawerHeader .iconButton svg {
+  width: 15px;
+  height: 15px;
 }
 .sessionDrawerHeader .iconButton:hover {
   border: 0;
@@ -45,57 +66,63 @@
   color: var(--text);
 }
 .sessionNewButton {
-  width: 100%;
+  display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 6px;
+  margin: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
 }
 .sessionList {
   display: flex;
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
   overflow: auto;
+  padding: 6px 0;
 }
 .sessionFolderGroup {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
 }
 .sessionFolderGroup + .sessionFolderGroup {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
 .sessionFolderHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 2px;
+  gap: 6px;
+  padding: 2px 6px 2px 0;
 }
 .sessionFolderToggle {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   height: auto;
-  min-height: 32px;
+  min-height: 28px;
   border: none;
-  border-radius: 6px;
+  border-radius: 0;
   background: transparent;
-  padding: 4px 6px;
+  padding: 3px 8px;
   text-align: left;
 }
 .sessionFolderToggle:hover {
   border: none;
-  background: color-mix(in srgb, var(--text) 8%, transparent);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 .sessionFolderChevron {
   flex: 0 0 auto;
-  width: 14px;
+  width: 12px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 10px;
 }
 .sessionFolderLabels {
   display: flex;
@@ -104,29 +131,33 @@
 }
 .sessionFolderName {
   overflow: hidden;
-  font-size: 13px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .sessionFolderPath {
   overflow: hidden;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 60%, transparent);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .sessionFolderNewButton {
   flex: 0 0 auto;
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
   border: none;
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
+  margin-right: 4px;
 }
 .sessionFolderNewButton:hover {
   border: none;
@@ -134,21 +165,24 @@
   color: var(--accent);
 }
 .sessionFolderNewButton svg {
-  width: 15px;
-  height: 15px;
+  width: 13px;
+  height: 13px;
 }
 .sessionFolderMoreButton {
-  height: 32px;
-  min-height: 32px;
+  height: 28px;
+  min-height: 28px;
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   background: transparent;
-  color: var(--muted);
-  font-size: 12px;
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
+  font-size: 11px;
+  padding: 0 16px 0 28px;
+  text-align: left;
+  width: 100%;
 }
 .sessionFolderMoreButton:hover {
   border: none;
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--accent);
 }
 .sessionItem {
@@ -157,38 +191,46 @@
   width: 100%;
   height: auto;
   min-height: 0;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 3px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 0;
   background: transparent;
-  padding: 7px 8px 7px 16px;
-  line-height: 1.3;
+  padding: 0 12px 0 20px;
+  height: 32px;
+  line-height: 1;
   text-align: left;
 }
 .sessionItem:hover {
   border: 0;
-  background: var(--panel-2);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 .sessionItem.current {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   box-shadow: inset 2px 0 0 var(--accent);
   color: var(--accent);
 }
 .sessionItemTitleRow {
   display: flex;
+  flex: 1 1 auto;
   min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .sessionItemTitle {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.sessionItemMeta {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
 }
 .sessionSpinner {
   flex: 0 0 auto;
@@ -201,4 +243,9 @@
 }
 @keyframes sessionSpin {
   to { transform: rotate(360deg); }
+}
+.sessionEmpty {
+  padding: 12px 20px;
+  font-size: 13px;
+  color: var(--muted);
 }

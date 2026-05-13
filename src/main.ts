@@ -47,7 +47,8 @@ function updateMeta(data: any) {
   state.currentSessionId = data.sessionId || state.currentSessionId;
   state.currentCwd = data.cwd || state.currentCwd;
   if ("stats" in data) contextMeter.update(data.stats);
-  if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
+  if ("sessionTitle" in data) statusBar.setStatusTitle(data.sessionTitle?.trim() || "New session");
+  else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
   modelSettings.updateSummary();
 }
@@ -81,7 +82,7 @@ async function refreshState() {
   updateMeta(data);
   state.isStreaming = Boolean(data.isStreaming);
   composer.updatePrimaryAction();
-  await Promise.all([settings.refreshSettings(), modelSettings.refreshModels(), refreshMessages(), statusBar.refreshSessionTitle()]);
+  await Promise.all([settings.refreshSettings(), modelSettings.refreshModels(), refreshMessages()]);
 }
 
 function initStaticIcons() {

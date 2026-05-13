@@ -36,6 +36,59 @@ export function createRealtime(options: {
 }): RealtimeController {
   const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
+  let sessionRefreshTimer: number | undefined;
+  let sessionRefreshInFlight = false;
+  let sessionRefreshQueued = false;
+  const sessionRuntimeKeys = new Map<string, string>();
+
+  function runtimeKey(runtime: any) {
+    return [
+      Boolean(runtime?.isRunning),
+      Boolean(runtime?.isStreaming),
+      Boolean(runtime?.isCompacting),
+    ].join(":");
+  }
+
+  function shouldRefreshSessionsForPiEvent(event: PiEvent | undefined) {
+    switch (event?.type) {
+      case "session_info_changed":
+      case "message_end":
+      case "agent_end":
+      case "compaction_end":
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  function scheduleSessionRefresh(delay = 250) {
+    if (elements.sessionDrawer.hidden) return;
+    if (sessionRefreshTimer !== undefined) return;
+    sessionRefreshTimer = window.setTimeout(() => {
+      sessionRefreshTimer = undefined;
+      void runSessionRefresh();
+    }, delay);
+  }
+
+  async function runSessionRefresh() {
+    if (elements.sessionDrawer.hidden) return;
+    if (sessionRefreshInFlight) {
+      sessionRefreshQueued = true;
+      return;
+    }
+    sessionRefreshInFlight = true;
+    try {
+      await sessions.refreshSessions();
+    } catch (_error) {
+      // Drawer metadata is best-effort; current session state/messages are synced separately.
+    } finally {
+      sessionRefreshInFlight = false;
+      if (sessionRefreshQueued) {
+        sessionRefreshQueued = false;
+        scheduleSessionRefresh(500);
+      }
+    }
+  }
 
   function formatTokenCount(tokens: unknown) {
     return typeof tokens === "number" && Number.isFinite(tokens) ? tokens.toLocaleString() : "unknown";
@@ -229,13 +282,17 @@ export function createRealtime(options: {
         if (data.type === "state_changed" && !isReplay) {
           refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
           if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
-          status.refreshSessionTitle();
-          if (!elements.sessionDrawer.hidden) sessions.refreshSessions().catch(() => undefined);
+          scheduleSessionRefresh();
         }
         return;
       }
       if (data.type === "session_runtime_changed") {
-        if (!elements.sessionDrawer.hidden) sessions.refreshSessions().catch(() => undefined);
+        const key = String(data.sessionId || data.sessionFile || "");
+        const nextRuntimeKey = runtimeKey(data.runtime);
+        if (key && sessionRuntimeKeys.get(key) !== nextRuntimeKey) {
+          sessionRuntimeKeys.set(key, nextRuntimeKey);
+          sessions.updateSessionRuntime(String(data.sessionId || ""), data.runtime);
+        }
         return;
       }
       if (data.type === "models_updated") {
@@ -255,7 +312,7 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "pi_event") {
-        if (!elements.sessionDrawer.hidden) sessions.refreshSessions().catch(() => undefined);
+        if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
         if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event, isReplay);
         return;
       }
