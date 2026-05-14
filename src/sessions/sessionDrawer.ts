@@ -40,6 +40,10 @@ function folderName(path: string) {
   return parts.at(-1) || path || "Folder";
 }
 
+function shouldCloseDrawerAfterSessionSwitch() {
+  return window.matchMedia("(max-width: 700px)").matches;
+}
+
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
 
 function readKnownSessionCwds() {
@@ -345,6 +349,7 @@ export function createSessions(options: {
             const nextCwd = item.cwd || cwd;
             rememberSessionCwd(nextCwd);
             markCachedCurrentSession(item.id, nextCwd);
+            if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
             await refreshState();
           } catch (error) {
             addMessage("system", error instanceof Error ? error.message : String(error), "error");

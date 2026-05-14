@@ -6,10 +6,10 @@
   }
 
   body.sessionDrawerOpen .app {
-    width: auto;          /* let margins and max-width drive sizing */
+    width: calc(100vw - var(--session-drawer-width));
+    max-width: none;
     margin-left: var(--session-drawer-width);
-    margin-right: auto;
-    max-width: 1100px;    /* keep original cap */
+    margin-right: 0;
   }
 
   /* Re-centre the jump button over the chat area (not the full viewport) */

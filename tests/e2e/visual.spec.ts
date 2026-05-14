@@ -146,6 +146,7 @@ test.describe("visual regression", () => {
 
   test("sessions drawer", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
+    if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1600, height: 1000 });
 
     await page.goto("/");
     await sendPrompt(page, "slow background task");

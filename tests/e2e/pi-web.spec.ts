@@ -401,9 +401,28 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
 
     await page.getByText("Older mock session").click();
-    await expect(page.locator("#sessionDrawer")).toBeVisible();
+    const isMobile = (page.viewportSize()?.width || 0) <= 700;
+    if (isMobile) {
+      await expect(page.locator("#sessionDrawer")).toBeHidden();
+      await page.locator("#sessionButton").click();
+    } else {
+      await expect(page.locator("#sessionDrawer")).toBeVisible();
+    }
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
     await expect(page.locator(".sessionItem", { hasText: "Older mock session" }).locator(".sessionSpinner")).toHaveCount(0);
+  });
+
+  test("desktop push mode uses the full space beside the drawer", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const drawerBox = await page.locator("#sessionDrawer").boundingBox();
+    const appBox = await page.locator(".app").boundingBox();
+    expect(drawerBox).toBeTruthy();
+    expect(appBox).toBeTruthy();
+    expect(drawerBox!.x + drawerBox!.width).toBeCloseTo(appBox!.x, 1);
+    expect(appBox!.x + appBox!.width).toBeCloseTo(1600, 1);
   });
 
   test("includes browser-remembered cwds when listing sessions", async ({ page }) => {
@@ -434,9 +453,12 @@ test.describe("sessions drawer", () => {
     await expect(drawer.getByText("Older mock session")).toBeVisible();
 
     await drawer.getByText("Older mock session").click();
-    await expect(page.locator("#sessionDrawer")).toBeVisible();
+    const isMobile = (page.viewportSize()?.width || 0) <= 700;
+    if (isMobile) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    else await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.getByText("Resumed older session.")).toBeVisible();
 
+    if (isMobile) await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
     await expect(page.locator("#sessionDrawer")).toBeHidden();
     await expect(page.locator(".emptyCwdChooser", { hasText: "Working directory" })).toBeVisible();
