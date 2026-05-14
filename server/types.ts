@@ -17,10 +17,12 @@ export interface PiWebSession {
   thinkingLevel: string;
   messages: unknown[];
   agent: { state: { messages: unknown[] } };
+  sessionName?: string;
   sessionManager: {
     newSession(): void;
     setSessionFile?(path: string): void;
     buildSessionContext(): { messages: unknown[] };
+    getSessionName?(): string | undefined;
     getSessionDir?(): string;
     getLeafId?(): string | null;
     getEntry?(id: string): unknown;

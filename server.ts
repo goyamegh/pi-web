@@ -713,8 +713,15 @@ function finiteNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function sessionDisplayName(targetSession: PiWebSession) {
+  return targetSession.getSessionName?.()?.trim()
+    || targetSession.sessionName?.trim()
+    || targetSession.sessionManager.getSessionName?.()?.trim()
+    || undefined;
+}
+
 function liveSessionTitle(targetSession: PiWebSession) {
-  const name = targetSession.getSessionName?.()?.trim();
+  const name = sessionDisplayName(targetSession);
   if (name) return name;
 
   for (const message of targetSession.messages as any[]) {
@@ -778,7 +785,7 @@ function currentState() {
     cwd: piCwd,
     sessionFile: session.sessionFile,
     sessionId: session.sessionId,
-    sessionName: session.getSessionName?.(),
+    sessionName: sessionDisplayName(session),
     sessionTitle: liveSessionTitle(session),
     isStreaming: session.isStreaming,
     model: simplifyModel(session.model),
@@ -1663,7 +1670,7 @@ const server = createServer(async (req, res) => {
 
         const name = String(body.name || "").trim();
         targetSession.setSessionName(name);
-        const state = targetSession === session ? currentStateWithThinkingLevels() : { sessionId: targetSession.sessionId, sessionName: targetSession.getSessionName?.() };
+        const state = targetSession === session ? currentStateWithThinkingLevels() : { sessionId: targetSession.sessionId, sessionName: sessionDisplayName(targetSession) };
         return sendJson(res, 200, { ok: true, ...state });
       }
 

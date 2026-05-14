@@ -103,8 +103,10 @@ test.describe("composer layout", () => {
     await page.clock.runFor(12_500);
     await expect(page.locator("#connectionStatus")).toHaveText("Live updates unavailable");
 
-    await page.evaluate(() => { (window as any).__piWebSocketAutoOpen = true; });
-    await page.clock.runFor(1_501);
+    await page.evaluate(() => {
+      (window as any).__piWebSocketAutoOpen = true;
+      (window as any).__piWebSockets.at(-1).emitOpen();
+    });
     await expect(page.locator("#connectionStatus")).toHaveText("Reconnected");
     expect(messagesRequestCount).toBe(1);
     await page.clock.runFor(1_500);
