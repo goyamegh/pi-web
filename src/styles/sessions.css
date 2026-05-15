@@ -367,7 +367,10 @@
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
-.sessionBarTabLabel {
+.sessionBarTab + .sessionBarTab {
+  border-left: 1px solid var(--border);
+}
+
   max-width: 100%;
   overflow: hidden;
   font-size: 12px;
