@@ -335,7 +335,7 @@
   border-top: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel) 97%, black);
   overflow: hidden;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-bottom: 0;
 }
 .sessionBar[hidden] { display: none; }
 
