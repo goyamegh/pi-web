@@ -115,6 +115,65 @@ test.describe("session quick bar", () => {
     await expect(olderItem).not.toHaveClass(/\bpinned\b/);
   });
 
+  test("clicking a tab switches sessions without needing to open the drawer first", async ({ page }) => {
+    // Regression test: pinned session tabs must work even if the drawer was never opened.
+    // Previously cachedSessions was empty until the drawer was opened, so click handlers
+    // were never attached.
+    await page.addInitScript(
+      ([key, value]) => localStorage.setItem(key, value),
+      [pinnedKey, seedPinned(
+        { id: "mock-current", label: "Current mock session" },
+        { id: "mock-older", label: "Older mock session" },
+      )],
+    );
+
+    await page.goto("/");
+    // Do NOT open the drawer — the background refresh should wire up handlers automatically.
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
+
+    await page.locator(".sessionBarTab").filter({ hasText: "Older mock session" }).click();
+
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).toHaveClass(/\bactive\b/);
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
+  });
+
+  test("clicked tab highlights immediately before the server responds", async ({ page }) => {
+    // Regression test: the active-tab highlight must switch optimistically on click,
+    // not wait for the POST /api/sessions/open round-trip to complete.
+    await page.addInitScript(
+      ([key, value]) => localStorage.setItem(key, value),
+      [pinnedKey, seedPinned(
+        { id: "mock-current", label: "Current mock session" },
+        { id: "mock-older", label: "Older mock session" },
+      )],
+    );
+
+    // Delay the sessions/open response so we can observe the pre-response state.
+    let resolveOpen!: () => void;
+    const openGate = new Promise<void>((resolve) => { resolveOpen = resolve; });
+    await page.route("**/api/sessions/open", async (route) => {
+      await openGate;
+      await route.continue();
+    });
+
+    await page.goto("/");
+    // Open the drawer to populate cachedSessions (the gate intercept only affects /open).
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+    await page.locator("#sessionCloseButton").click();
+
+    await page.locator(".sessionBarTab").filter({ hasText: "Older mock session" }).click();
+
+    // The highlight should switch immediately — the gate is still blocking /api/sessions/open.
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).toHaveClass(/\bactive\b/);
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
+
+    // Release the gate and let the rest of the switch complete.
+    resolveOpen();
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+  });
+
   test("running session tab gets the running class and loses it after the session ends", async ({ page }) => {
     await page.addInitScript(
       ([key, value]) => localStorage.setItem(key, value),

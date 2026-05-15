@@ -304,6 +304,13 @@ export function createSessions(options: {
 
       if (live) {
         tab.addEventListener("click", async () => {
+          // Optimistic update: switch the active tab highlight immediately before any
+          // network round-trips so the UI feels instant even during streaming.
+          const previousSessionId = state.currentSessionId;
+          if (state.currentSessionId !== live.id) {
+            state.currentSessionId = live.id;
+            renderSessionBar();
+          }
           try {
             const cwd = live.cwd || state.currentCwd;
             const openRes = await fetch("/api/sessions/open", {
@@ -316,6 +323,9 @@ export function createSessions(options: {
             markCachedCurrentSession(live.id, cwd);
             await refreshState();
           } catch (error) {
+            // Revert the optimistic highlight if the switch failed.
+            state.currentSessionId = previousSessionId;
+            renderSessionBar();
             addMessage("system", error instanceof Error ? error.message : String(error), "error");
           }
         });
@@ -517,6 +527,11 @@ export function createSessions(options: {
 
     // Render bar immediately from stored pins (labels from localStorage)
     renderSessionBar();
+    // Background-fetch session list so tab click handlers are always wired up,
+    // even if the drawer has never been opened.
+    if (state.pinnedSessions.length > 0) {
+      refreshSessions().catch(() => undefined);
+    }
   }
 
   return {
