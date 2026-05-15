@@ -146,12 +146,14 @@ export function createMockHarness(options: MockSessionOptions) {
     async function runMockCompaction(customInstructions?: string, slow = false) {
       mockSession.isCompacting = true;
       compactionAbortRequested = false;
+      broadcastRuntimeChanged();
       broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_start", reason: "manual" } });
       if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       const deadline = Date.now() + (slow ? 5_000 : 1_000);
       while (!compactionAbortRequested && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
       mockSession.isCompacting = false;
       if (compactionAbortRequested) {
+        broadcastRuntimeChanged();
         broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", aborted: true } });
         if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
         return undefined;
@@ -161,6 +163,7 @@ export function createMockHarness(options: MockSessionOptions) {
         summary: customInstructions ? `Mock compacted context summary. Instructions: ${customInstructions}` : "Mock compacted context summary.",
       };
       appendMockMessage({ role: "compactionSummary", content: result.summary, tokensBefore: result.tokensBefore, summary: result.summary, timestamp: new Date().toISOString() } as any);
+      broadcastRuntimeChanged();
       broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", result } });
       if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       return result;
@@ -202,6 +205,21 @@ export function createMockHarness(options: MockSessionOptions) {
         return `mock-label-${Date.now()}`;
       },
     };
+
+    function broadcastRuntimeChanged() {
+      broadcast({
+        type: "session_runtime_changed",
+        sessionId: mockSession.sessionId,
+        sessionFile: mockSession.sessionFile,
+        runtime: {
+          loaded: true,
+          isRunning: Boolean(mockSession.isStreaming) || Boolean(mockSession.isCompacting),
+          isStreaming: Boolean(mockSession.isStreaming),
+          isCompacting: Boolean(mockSession.isCompacting),
+          pendingMessageCount: 0,
+        },
+      });
+    }
 
     mockSession = {
       sessionId: mockSessions.find((info) => info.path === path)?.id || "mock-current",
@@ -299,6 +317,7 @@ export function createMockHarness(options: MockSessionOptions) {
         const withPendingToolRefresh = /pending tool refresh/i.test(message);
         const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && /tool|interleav/i.test(message);
         mockSession.isStreaming = true;
+        broadcastRuntimeChanged();
         broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_start" } });
         if (slow) await new Promise((resolve) => setTimeout(resolve, 750));
         if (withProviderError) {
@@ -367,10 +386,11 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: `Mock response${promptOptions?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
         }
         mockSession.isStreaming = false;
+        broadcastRuntimeChanged();
         broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
         if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       },
-      abort: async () => { mockSession.isStreaming = false; },
+      abort: async () => { mockSession.isStreaming = false; broadcastRuntimeChanged(); },
       abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,
       subscribe: () => undefined,

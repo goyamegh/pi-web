@@ -92,6 +92,10 @@ export function createSessions(options: {
   } = options;
 
   let cachedSessions: SessionInfo[] = [];
+  // Tracks runtime state for pinned sessions independently of cachedSessions so
+  // session_runtime_changed events can update the bar even before the first
+  // refreshSessions() completes.
+  const pinnedRuntimes = new Map<string, SessionInfo["runtime"]>();
 
   function updateEmptyCwdChooser() {
     elements.emptyCwdPathEl.textContent = state.currentCwd;
@@ -239,14 +243,26 @@ export function createSessions(options: {
   }
 
   function updateSessionRuntime(sessionId: string, runtime: SessionInfo["runtime"]) {
-    if (!sessionId || cachedSessions.length === 0) return;
+    if (!sessionId) return;
+    // Always cache runtime for pinned sessions — this lets renderSessionBar show
+    // the running state even before cachedSessions is populated.
+    const isPinned = state.pinnedSessions.some((p) => p.id === sessionId);
+    if (isPinned) pinnedRuntimes.set(sessionId, runtime);
+    if (cachedSessions.length === 0) {
+      if (isPinned) renderSessionBar();
+      return;
+    }
     let changed = false;
     cachedSessions = cachedSessions.map((session) => {
       if (session.id !== sessionId) return session;
       changed = true;
       return { ...session, runtime };
     });
-    if (!changed) return;
+    if (!changed) {
+      // Session not in cachedSessions yet but is pinned — still re-render bar.
+      if (isPinned) renderSessionBar();
+      return;
+    }
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
     renderSessionBar();
   }
@@ -260,6 +276,7 @@ export function createSessions(options: {
   function togglePin(item: SessionInfo) {
     if (isPinned(item.id)) {
       state.pinnedSessions = state.pinnedSessions.filter((p) => p.id !== item.id);
+      pinnedRuntimes.delete(item.id);
     } else {
       if (state.pinnedSessions.length >= maxPinnedSessions) return;
       state.pinnedSessions = [...state.pinnedSessions, { id: item.id, label: sessionTitle(item) }];
@@ -289,7 +306,7 @@ export function createSessions(options: {
     for (const pinnedEntry of pinned) {
       const live = cachedSessions.find((s) => s.id === pinnedEntry.id);
       const isActive = state.currentSessionId === pinnedEntry.id;
-      const isRunning = live?.runtime?.isRunning ?? false;
+      const isRunning = (live?.runtime ?? pinnedRuntimes.get(pinnedEntry.id))?.isRunning ?? false;
 
       const tab = document.createElement("button");
       tab.type = "button";

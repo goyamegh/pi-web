@@ -183,19 +183,56 @@ test.describe("session quick bar", () => {
     await page.goto("/");
     await expect(page.locator("#sessionBar")).toBeVisible();
 
-    // Start a slow task so the session is running while we can check
+    // Start a slow task so the session is running while we can check.
     await page.locator("#prompt").fill("slow background task");
     await page.locator("#primaryButton").click();
 
-    // Open the drawer to populate cachedSessions with the live runtime data
-    await page.locator("#sessionButton").click();
-    await expect(page.locator("#sessionDrawer")).toBeVisible();
-
-    // The running tab should get the .running class (triggering the pulsing border animation)
+    // The running tab should get the .running class without needing to open the
+    // drawer — session_runtime_changed events now drive the bar directly.
     const tab = page.locator(".sessionBarTab").filter({ hasText: "Current mock session" });
     await expect(tab).toHaveClass(/\brunning\b/, { timeout: 3000 });
 
-    // After the task completes, the running class should be cleared
+    // After the task completes, the running class should be cleared.
     await expect(tab).not.toHaveClass(/\brunning\b/, { timeout: 5000 });
+  });
+
+  test("running class appears on a background session without opening the drawer", async ({ page }) => {
+    // Regression: running state for any pinned session must appear via
+    // session_runtime_changed WebSocket events, not just when refreshSessions() fires.
+    await page.addInitScript(
+      ([key, value]) => localStorage.setItem(key, value),
+      [pinnedKey, seedPinned(
+        { id: "mock-current", label: "Current mock session" },
+        { id: "mock-older", label: "Older mock session" },
+      )],
+    );
+
+    await page.goto("/");
+    // Switch to the older session so mock-current is a background tab.
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+    await page.locator(".sessionItem").filter({ hasText: "Older mock session" }).locator(".sessionItemNavBtn").click();
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    // Drawer auto-closes on narrow viewports after a session switch; only close manually if still open.
+    if (await page.locator("#sessionDrawer").isVisible()) {
+      await page.locator("#sessionCloseButton").click();
+      await expect(page.locator("#sessionDrawer")).toBeHidden();
+    }
+
+    // Send a message to the background session (mock-current is still live).
+    // Use the sessions/open API directly to prompt without switching the UI.
+    await page.evaluate(async () => {
+      const token = document.querySelector<HTMLInputElement>("#tokenInput")?.value || "";
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (token) headers["authorization"] = `Bearer ${token}`;
+      // Open mock-current session in background then fire a prompt at it.
+      const openRes = await fetch("/api/sessions/open", { method: "POST", headers, body: JSON.stringify({ sessionId: "mock-current", cwd: "." }) });
+      await openRes.json();
+      await fetch("/api/prompt", { method: "POST", headers, body: JSON.stringify({ sessionId: "mock-current", message: "slow background task" }) });
+    });
+
+    const currentTab = page.locator(".sessionBarTab").filter({ hasText: "Current mock session" });
+    await expect(currentTab).toHaveClass(/\brunning\b/, { timeout: 4000 });
+    await expect(currentTab).not.toHaveClass(/\brunning\b/, { timeout: 6000 });
   });
 });
