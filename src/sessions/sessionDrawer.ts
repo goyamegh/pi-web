@@ -2,7 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
 import type { AppState, SessionInfo } from "../app/types.js";
-import { persistCollapsedSessionFolders, sessionFolderPreviewLimit } from "../app/types.js";
+import { maxPinnedSessions, persistCollapsedSessionFolders, persistPinnedSessions, sessionFolderPreviewLimit } from "../app/types.js";
 
 export type SessionsController = {
   init: () => void;
@@ -11,6 +11,7 @@ export type SessionsController = {
   startNewSession: (cwd?: string) => Promise<void>;
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
   updateEmptyCwdChooser: () => void;
+  renderSessionBar: () => void;
 };
 
 function formatRelativeTime(value: string) {
@@ -216,7 +217,16 @@ export function createSessions(options: {
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     cachedSessions = data.sessions || [];
+    // Freshen labels for any pinned sessions we now have data for
+    let labelsChanged = false;
+    state.pinnedSessions = state.pinnedSessions.map((pinned) => {
+      const live = cachedSessions.find((s) => s.id === pinned.id);
+      if (live && sessionTitle(live) !== pinned.label) { labelsChanged = true; return { ...pinned, label: sessionTitle(live) }; }
+      return pinned;
+    });
+    if (labelsChanged) persistPinnedSessions(state.pinnedSessions);
     renderSessionList(cachedSessions);
+    renderSessionBar();
   }
 
   function markCachedCurrentSession(sessionId: string, cwd: string) {
@@ -225,18 +235,97 @@ export function createSessions(options: {
       isCurrent: session.id === sessionId && (session.cwd || cwd) === cwd,
     }));
     renderSessionList(cachedSessions);
+    renderSessionBar();
   }
 
   function updateSessionRuntime(sessionId: string, runtime: SessionInfo["runtime"]) {
-    if (!sessionId || elements.sessionDrawer.hidden || cachedSessions.length === 0) return;
+    if (!sessionId || cachedSessions.length === 0) return;
     let changed = false;
     cachedSessions = cachedSessions.map((session) => {
       if (session.id !== sessionId) return session;
       changed = true;
       return { ...session, runtime };
     });
-    if (changed) renderSessionList(cachedSessions);
+    if (!changed) return;
+    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
+    renderSessionBar();
   }
+
+  // ── Pinning ────────────────────────────────────────────────────────────────
+
+  function isPinned(id: string) {
+    return state.pinnedSessions.some((p) => p.id === id);
+  }
+
+  function togglePin(item: SessionInfo) {
+    if (isPinned(item.id)) {
+      state.pinnedSessions = state.pinnedSessions.filter((p) => p.id !== item.id);
+    } else {
+      if (state.pinnedSessions.length >= maxPinnedSessions) return;
+      state.pinnedSessions = [...state.pinnedSessions, { id: item.id, label: sessionTitle(item) }];
+    }
+    persistPinnedSessions(state.pinnedSessions);
+    document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0);
+    renderSessionList(cachedSessions);
+    renderSessionBar();
+  }
+
+  // ── Session bar ────────────────────────────────────────────────────────────
+
+  function renderSessionBar() {
+    const bar = elements.sessionBarEl;
+    const pinned = state.pinnedSessions;
+
+    if (pinned.length === 0) {
+      bar.hidden = true;
+      document.body.classList.remove("hasPinnedSessions");
+      return;
+    }
+
+    bar.hidden = false;
+    document.body.classList.add("hasPinnedSessions");
+    bar.textContent = "";
+
+    for (const pinnedEntry of pinned) {
+      const live = cachedSessions.find((s) => s.id === pinnedEntry.id);
+      const isActive = state.currentSessionId === pinnedEntry.id;
+      const isRunning = live?.runtime?.isRunning ?? false;
+
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = `sessionBarTab${isActive ? " active" : ""}${isRunning ? " running" : ""}`;
+      if (isActive) tab.setAttribute("aria-current", "page");
+      tab.title = live ? sessionTitle(live) : pinnedEntry.label;
+
+      const labelEl = document.createElement("span");
+      labelEl.className = "sessionBarTabLabel";
+      labelEl.textContent = live ? sessionTitle(live) : pinnedEntry.label;
+      tab.append(labelEl);
+
+      if (live) {
+        tab.addEventListener("click", async () => {
+          try {
+            const cwd = live.cwd || state.currentCwd;
+            const openRes = await fetch("/api/sessions/open", {
+              method: "POST",
+              headers: api.headers(),
+              body: JSON.stringify({ sessionId: live.id, cwd }),
+            });
+            if (!openRes.ok) throw new Error(await openRes.text());
+            rememberSessionCwd(cwd);
+            markCachedCurrentSession(live.id, cwd);
+            await refreshState();
+          } catch (error) {
+            addMessage("system", error instanceof Error ? error.message : String(error), "error");
+          }
+        });
+      }
+
+      bar.append(tab);
+    }
+  }
+
+  // ── Session list ───────────────────────────────────────────────────────────
 
   function renderSessionList(sessions: SessionInfo[]) {
     elements.sessionListEl.textContent = "";
@@ -311,52 +400,7 @@ export function createSessions(options: {
       const visibleItems = folderExpanded ? items : items.slice(0, sessionFolderPreviewLimit);
 
       for (const item of visibleItems) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = `sessionItem${item.isCurrent ? " current" : ""}`;
-        if (item.isCurrent) button.setAttribute("aria-current", "page");
-
-        const titleRow = document.createElement("span");
-        titleRow.className = "sessionItemTitleRow";
-
-        const title = document.createElement("span");
-        title.className = "sessionItemTitle";
-        title.textContent = sessionTitle(item);
-        titleRow.append(title);
-
-        if (item.runtime?.isRunning) {
-          const spinner = document.createElement("span");
-          spinner.className = "sessionSpinner";
-          spinner.title = item.runtime.isCompacting ? "Compacting" : "Running";
-          spinner.setAttribute("aria-label", spinner.title);
-          spinner.style.animationDelay = `-${Date.now() % 800}ms`;
-          titleRow.append(spinner);
-        }
-
-        const meta = document.createElement("span");
-        meta.className = "sessionItemMeta";
-        meta.textContent = `${formatRelativeTime(item.modified)} · ${item.messageCount}`;
-
-        button.append(titleRow, meta);
-        button.addEventListener("click", async () => {
-          try {
-            const openRes = await fetch("/api/sessions/open", {
-              method: "POST",
-              headers: api.headers(),
-              body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd }),
-            });
-            if (!openRes.ok) throw new Error(await openRes.text());
-            const nextCwd = item.cwd || cwd;
-            rememberSessionCwd(nextCwd);
-            markCachedCurrentSession(item.id, nextCwd);
-            if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
-            await refreshState();
-          } catch (error) {
-            addMessage("system", error instanceof Error ? error.message : String(error), "error");
-            if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
-          }
-        });
-        group.append(button);
+        group.append(buildSessionItem(item, cwd));
       }
 
       if (items.length > sessionFolderPreviewLimit) {
@@ -376,6 +420,78 @@ export function createSessions(options: {
 
       elements.sessionListEl.append(group);
     }
+  }
+
+  function buildSessionItem(item: SessionInfo, cwd: string): HTMLElement {
+    // Use a div so we can have two sibling buttons (pin + navigate) without nesting buttons
+    const row = document.createElement("div");
+    row.className = `sessionItem${item.isCurrent ? " current" : ""}${isPinned(item.id) ? " pinned" : ""}`;
+    if (item.isCurrent) row.setAttribute("aria-current", "page");
+
+    // ── Pin button (always visible, works on touch) ────────────────────────
+    const pinned = isPinned(item.id);
+    const barFull = state.pinnedSessions.length >= maxPinnedSessions;
+    const pinBtn = document.createElement("button");
+    pinBtn.type = "button";
+    pinBtn.className = `sessionItemPinBtn${pinned ? " pinned" : ""}`;
+    pinBtn.disabled = !pinned && barFull;
+    pinBtn.title = pinned
+      ? "Remove from quick bar"
+      : barFull
+        ? "Quick bar is full (max 4)"
+        : "Add to quick bar";
+    pinBtn.setAttribute("aria-label", pinBtn.title);
+    pinBtn.setAttribute("aria-pressed", String(pinned));
+    setIcon(pinBtn, "star");
+    pinBtn.addEventListener("click", () => togglePin(item));
+
+    // ── Navigate button ────────────────────────────────────────────────────
+    const navBtn = document.createElement("button");
+    navBtn.type = "button";
+    navBtn.className = "sessionItemNavBtn";
+
+    const titleRow = document.createElement("span");
+    titleRow.className = "sessionItemTitleRow";
+    const title = document.createElement("span");
+    title.className = "sessionItemTitle";
+    title.textContent = sessionTitle(item);
+    titleRow.append(title);
+
+    if (item.runtime?.isRunning) {
+      const spinner = document.createElement("span");
+      spinner.className = "sessionSpinner";
+      spinner.title = item.runtime.isCompacting ? "Compacting" : "Running";
+      spinner.setAttribute("aria-label", spinner.title);
+      spinner.style.animationDelay = `-${Date.now() % 800}ms`;
+      titleRow.append(spinner);
+    }
+
+    const meta = document.createElement("span");
+    meta.className = "sessionItemMeta";
+    meta.textContent = `${formatRelativeTime(item.modified)} · ${item.messageCount}`;
+
+    navBtn.append(titleRow, meta);
+    navBtn.addEventListener("click", async () => {
+      try {
+        const openRes = await fetch("/api/sessions/open", {
+          method: "POST",
+          headers: api.headers(),
+          body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd }),
+        });
+        if (!openRes.ok) throw new Error(await openRes.text());
+        const nextCwd = item.cwd || cwd;
+        rememberSessionCwd(nextCwd);
+        markCachedCurrentSession(item.id, nextCwd);
+        if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
+        await refreshState();
+      } catch (error) {
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+        if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
+      }
+    });
+
+    row.append(pinBtn, navBtn);
+    return row;
   }
 
   function init() {
@@ -398,6 +514,9 @@ export function createSessions(options: {
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       }
     });
+
+    // Render bar immediately from stored pins (labels from localStorage)
+    renderSessionBar();
   }
 
   return {
@@ -407,5 +526,6 @@ export function createSessions(options: {
     startNewSession,
     updateEmptyCwdChooser,
     updateSessionRuntime,
+    renderSessionBar,
   };
 }

@@ -314,6 +314,12 @@ export function createRealtime(options: {
       if (data.type === "pi_event") {
         if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
         if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event, isReplay);
+        // Force-clear the running state immediately on agent_end — the deduplication in
+        // session_runtime_changed can swallow the final isRunning:false update if the
+        // runtime key hasn't changed between the last event and agent_end.
+        if (!isReplay && data.event?.type === "agent_end" && data.sessionId) {
+          sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: false, isStreaming: false, isCompacting: false, pendingMessageCount: 0 });
+        }
         return;
       }
       if (data.type === "server_error" && (!data.sessionId || data.sessionId === state.currentSessionId)) addMessage("system", data.error, "error");

@@ -77,6 +77,23 @@ export type AttachedImage = {
   path?: string;
 };
 
+export type PinnedSession = { id: string; label: string };
+export const maxPinnedSessions = 4;
+
+const pinnedSessionsKey = "pi-web-pinned-sessions";
+
+export function readPinnedSessions(): PinnedSession[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(pinnedSessionsKey) || "[]");
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((v): v is PinnedSession => typeof v?.id === "string" && typeof v?.label === "string");
+  } catch { return []; }
+}
+
+export function persistPinnedSessions(sessions: PinnedSession[]) {
+  localStorage.setItem(pinnedSessionsKey, JSON.stringify(sessions));
+}
+
 export type SessionInfo = {
   id: string;
   name?: string;
@@ -111,6 +128,7 @@ export type AppState = {
   reconnectNoticeTimer: number | undefined;
   connectionLostTimer: number | undefined;
   reconnectedClearTimer: number | undefined;
+  pinnedSessions: PinnedSession[];
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   queueMode: QueueMode;
@@ -177,6 +195,7 @@ export function createAppState(): AppState {
     reconnectNoticeTimer: undefined,
     connectionLostTimer: undefined,
     reconnectedClearTimer: undefined,
+    pinnedSessions: readPinnedSessions(),
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
     queueMode: "steer",

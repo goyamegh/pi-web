@@ -185,32 +185,6 @@
   background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--accent);
 }
-.sessionItem {
-  display: flex;
-  flex-shrink: 0;
-  width: 100%;
-  height: auto;
-  min-height: 0;
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  padding: 0 12px 0 20px;
-  height: 32px;
-  line-height: 1;
-  text-align: left;
-}
-.sessionItem:hover {
-  border: 0;
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-}
-.sessionItem.current {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent);
-  color: var(--accent);
-}
 .sessionItemTitleRow {
   display: flex;
   flex: 1 1 auto;
@@ -248,4 +222,178 @@
   padding: 12px 20px;
   font-size: 13px;
   color: var(--muted);
+}
+
+/* ── Session item: pin + nav layout ── */
+.sessionItem {
+  display: flex;
+  flex-shrink: 0;
+  width: 100%;
+  align-items: stretch;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  min-height: 32px;
+  line-height: 1;
+}
+.sessionItem:has(.sessionItemNavBtn:hover),
+.sessionItem:has(.sessionItemNavBtn:focus-visible) {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.sessionItem.current {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Pin button — always visible, works on touch */
+.sessionItemPinBtn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.3;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.sessionItemPinBtn svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+.sessionItemPinBtn:hover {
+  border: 0;
+  background: transparent;
+  opacity: 0.8;
+  color: var(--accent);
+}
+.sessionItemPinBtn.pinned {
+  opacity: 1;
+  color: var(--accent);
+}
+.sessionItemPinBtn.pinned svg {
+  fill: currentColor;
+  stroke: currentColor;
+}
+.sessionItemPinBtn:disabled {
+  opacity: 0.15;
+  cursor: default;
+}
+.sessionItemPinBtn:disabled:hover {
+  border: 0;
+  color: var(--muted);
+}
+
+/* Nav button — takes remaining width */
+.sessionItemNavBtn {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 12px 0 4px;
+  text-align: left;
+  cursor: pointer;
+}
+.sessionItemNavBtn:hover {
+  border: 0;
+  background: transparent;
+}
+.sessionItem.current .sessionItemNavBtn,
+.sessionItem.current .sessionItemTitle {
+  color: var(--accent);
+}
+
+/* Dim sessions that aren't starred or active */
+.sessionItem:not(.pinned):not(.current) .sessionItemNavBtn {
+  opacity: 0.45;
+}
+.sessionItem:not(.pinned):not(.current):hover .sessionItemNavBtn {
+  opacity: 1;
+}
+
+/* ── Session quick bar ── */
+.sessionBar {
+  grid-row: 4;
+  display: flex;
+  align-items: stretch;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 97%, black);
+  overflow: hidden;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.sessionBar[hidden] { display: none; }
+
+.sessionBarTab {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 28px;
+  border: 0;
+  border-top: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 6px;
+  cursor: pointer;
+  transition: color 0.12s ease, background-color 0.12s ease, border-color 0.12s ease;
+}
+.sessionBarTab:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--muted);
+}
+.sessionBarTab.active {
+  border-top-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.sessionBarTabLabel {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Pulsing top border when session is running */
+@keyframes sessionBarRunPulse {
+  0%, 100% { border-top-color: color-mix(in srgb, var(--accent) 25%, transparent); }
+  50%       { border-top-color: var(--accent); }
+}
+.sessionBarTab.running {
+  animation: sessionBarRunPulse 1s ease-in-out infinite;
+}
+
+/* When the quick bar is visible, remove the composer's mobile safe-area margin
+   so there's no gap between the composer and the bar */
+body.hasPinnedSessions .app {
+  padding-bottom: 0;
+}
+@media (max-width: 700px) {
+  body.hasPinnedSessions .app {
+    padding-bottom: 0;
+  }
+  body.hasPinnedSessions .composer {
+    margin-bottom: 0;
+  }
 }
