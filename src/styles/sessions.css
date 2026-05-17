@@ -501,9 +501,49 @@ body.hasPinnedSessions .app {
 }
 
 /* Inactive session styling */
-.sessionItemWrapper.inactive .sessionItem {
+.sessionItem.inactive {
   opacity: 0.5;
 }
-.sessionItemWrapper.inactive .sessionItemTitle {
+.sessionItem.inactive .sessionItemTitle {
   text-decoration: line-through;
+}
+
+/* Bookmark button */
+.sessionBookmarkBtn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.3;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.sessionBookmarkBtn svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+.sessionBookmarkBtn:hover {
+  border: 0;
+  background: transparent;
+  opacity: 0.8;
+  color: #f59e0b;
+}
+.sessionBookmarkBtn.saved {
+  opacity: 1;
+  color: #f59e0b;
+}
+@media (hover: none) {
+  .sessionBookmarkBtn {
+    opacity: 0.7;
+  }
 }
