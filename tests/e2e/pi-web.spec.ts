@@ -682,6 +682,7 @@ test.describe("code block copy button", () => {
     await expect(copyBtn).toBeHidden();
 
     await pre.hover();
+    await copyBtn.evaluate((el) => (el as HTMLElement).focus());
     await expect(copyBtn).toBeVisible();
 
     // before click: copy state

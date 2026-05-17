@@ -301,6 +301,7 @@ export function createComposer(options: {
       hideSlashCommands();
       state.attachedImages = [];
       renderAttachments();
+      state.isStreaming = true;
       updatePrimaryAction();
       beginStreamFollow?.();
       addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
@@ -313,6 +314,8 @@ export function createComposer(options: {
         });
         if (!res.ok) throw new Error(await res.text());
       } catch (error) {
+        state.isStreaming = false;
+        updatePrimaryAction();
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       } finally {
