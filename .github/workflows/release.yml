@@ -18,9 +18,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
       - run: npm ci
       - run: npx playwright install chromium
@@ -46,9 +47,7 @@ jobs:
           sha256sum *.tgz > SHA256SUMS.txt
 
       - name: Publish to npm
-        run: |
-          unset NODE_AUTH_TOKEN
-          npm publish --access public --provenance
+        run: npm publish --access public
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
