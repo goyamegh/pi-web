@@ -701,8 +701,10 @@ test.describe("code block copy button", () => {
 
     const pre = page.locator(".message.assistant .markdownBody pre").last();
     await pre.hover();
-    await pre.locator(".copyCode").click();
-    await expect(pre.locator(".copyCode")).toHaveAttribute("data-icon", "check");
+    const copyBtn = pre.locator(".copyCode");
+    await copyBtn.evaluate((el) => (el as HTMLElement).focus());
+    await copyBtn.click();
+    await expect(copyBtn).toHaveAttribute("data-icon", "check");
 
     await page.waitForTimeout(2000);
     await expect(pre.locator(".copyCode")).toHaveAttribute("data-icon", "copy");
