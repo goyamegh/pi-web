@@ -23,7 +23,7 @@ function persistPinnedFolders(folders: Set<string>) {
 export type SessionsController = {
   init: () => void;
   refreshSessions: () => Promise<void>;
-  setSessionDrawerOpen: (open: boolean) => void;
+  setSessionDrawerOpen: (open: boolean, skipRefresh?: boolean) => void;
   startNewSession: (cwd?: string) => Promise<void>;
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
   updateEmptyCwdChooser: () => void;
@@ -294,7 +294,7 @@ export function createSessions(options: {
     }
   }
 
-  function setSessionDrawerOpen(open: boolean) {
+  function setSessionDrawerOpen(open: boolean, skipRefresh?: boolean) {
     if (open) blurActiveEditableOnMobile();
     persistSessionDrawerOpen(open);
     if (!open) {
@@ -304,7 +304,7 @@ export function createSessions(options: {
     elements.sessionDrawer.hidden = !open;
     elements.sessionBackdrop.hidden = !open;
     document.body.classList.toggle("sessionDrawerOpen", open);
-    if (open) return refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+    if (open && !skipRefresh) return refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   }
 
   function scrollCurrentSessionIntoView() {
@@ -1142,11 +1142,59 @@ export function createSessions(options: {
     installSessionMenuCloseHandlers(menu, anchor);
   }
 
+  // ── Filtering ───────────────────────────────────────────────────────────────
+
+  function filterSessionItems(items: SessionInfo[]): SessionInfo[] {
+    let result = items;
+    if (state.hideInactiveSessions) result = result.filter(i => !i.inactive);
+    if (state.showSavedOnly) result = result.filter(i => i.saved);
+    return result;
+  }
+
+  function renderFilterBar() {
+    const bar = document.createElement("div");
+    bar.className = "sessionFilterBar";
+
+    const hideInactiveLabel = document.createElement("label");
+    hideInactiveLabel.className = "sessionFilterToggle";
+    const hideInactiveCheckbox = document.createElement("input");
+    hideInactiveCheckbox.type = "checkbox";
+    hideInactiveCheckbox.checked = state.hideInactiveSessions;
+    hideInactiveCheckbox.addEventListener("change", () => {
+      state.hideInactiveSessions = hideInactiveCheckbox.checked;
+      localStorage.setItem("pi-web:hideInactiveSessions", String(state.hideInactiveSessions));
+      renderSessionList(cachedSessions);
+    });
+    const hideInactiveText = document.createElement("span");
+    hideInactiveText.textContent = "Hide inactive";
+    hideInactiveLabel.append(hideInactiveCheckbox, hideInactiveText);
+
+    const savedOnlyLabel = document.createElement("label");
+    savedOnlyLabel.className = "sessionFilterToggle";
+    const savedOnlyCheckbox = document.createElement("input");
+    savedOnlyCheckbox.type = "checkbox";
+    savedOnlyCheckbox.checked = state.showSavedOnly;
+    savedOnlyCheckbox.addEventListener("change", () => {
+      state.showSavedOnly = savedOnlyCheckbox.checked;
+      localStorage.setItem("pi-web:showSavedOnly", String(state.showSavedOnly));
+      renderSessionList(cachedSessions);
+    });
+    const savedOnlyText = document.createElement("span");
+    savedOnlyText.textContent = "Saved only";
+    savedOnlyLabel.append(savedOnlyCheckbox, savedOnlyText);
+
+    bar.append(hideInactiveLabel, savedOnlyLabel);
+    return bar;
+  }
+
   // ── Session list ───────────────────────────────────────────────────────────
 
   function renderSessionList(sessions: SessionInfo[]) {
     closeOpenSessionActionsMenu();
     elements.sessionListEl.textContent = "";
+
+    // Add filter bar
+    elements.sessionListEl.append(renderFilterBar());
 
     if (sessions.length === 0) {
       const empty = document.createElement("p");
@@ -1245,7 +1293,7 @@ export function createSessions(options: {
         continue;
       }
 
-      const filteredItems = items.filter(matchesFilter);
+      const filteredItems = filterSessionItems(items.filter(matchesFilter));
       const folderExpanded = state.expandedSessionFolders.has(cwd);
       const visibleItems = folderExpanded ? filteredItems : filteredItems.slice(0, sessionFolderPreviewLimit);
 
@@ -1286,7 +1334,7 @@ export function createSessions(options: {
     const pinned = isPinned(item.id);
     const pinToolSelected = selectedSessionRowTool === "pin";
     const row = document.createElement("div");
-    row.className = `sessionItem${item.isCurrent ? " current" : ""}${pinned ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
+    row.className = `sessionItem${item.isCurrent ? " current" : ""}${pinned ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}${item.inactive ? " inactive" : ""}`;
     if (item.isCurrent) row.setAttribute("aria-current", "page");
 
     const markerButton = document.createElement("button");
@@ -1389,7 +1437,51 @@ export function createSessions(options: {
       openSessionActionsMenu(actionsBtn, item, cwd);
     });
 
-    row.append(markerButton, navBtn, actionsBtn);
+    // ── Active/Inactive toggle ──────────────────────────────────────────────
+    const activeToggle = document.createElement("button");
+    activeToggle.type = "button";
+    activeToggle.className = `sessionActiveToggle${item.inactive ? " inactive" : ""}`;
+    activeToggle.title = item.inactive ? "Mark as active" : "Mark as inactive";
+    activeToggle.setAttribute("aria-label", activeToggle.title);
+    activeToggle.textContent = "\u25CF";
+    activeToggle.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/session/active", {
+          method: "POST",
+          headers: api.headers(),
+          body: JSON.stringify({ sessionId: item.id, inactive: !item.inactive }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        item.inactive = !item.inactive;
+        renderSessionList(cachedSessions);
+      } catch (error) {
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      }
+    });
+
+    // ── Bookmark/Saved toggle ──────────────────────────────────────────────
+    const bookmarkBtn = document.createElement("button");
+    bookmarkBtn.type = "button";
+    bookmarkBtn.className = `sessionBookmarkBtn${item.saved ? " saved" : ""}`;
+    bookmarkBtn.title = item.saved ? "Remove bookmark" : "Bookmark session";
+    bookmarkBtn.setAttribute("aria-label", bookmarkBtn.title);
+    setIcon(bookmarkBtn, "bookmark");
+    bookmarkBtn.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/session/saved", {
+          method: "POST",
+          headers: api.headers(),
+          body: JSON.stringify({ sessionId: item.id, saved: !item.saved }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        item.saved = !item.saved;
+        renderSessionList(cachedSessions);
+      } catch (error) {
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      }
+    });
+
+    row.append(markerButton, navBtn, activeToggle, bookmarkBtn, actionsBtn);
     return row;
   }
 
