@@ -1,7 +1,8 @@
 {
   "name": "pi-web",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local/Tailscale web UI for pi coding agent.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "pi-web": "./bin/pi-web.js"
