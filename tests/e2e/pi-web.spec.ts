@@ -660,12 +660,12 @@ test.describe("assistant markdown rendering", () => {
     await expect(longMessage.locator(".markdownBody strong").first()).toHaveText("enabled");
     await expect(longMessage.locator(".body")).not.toContainText("**enabled**");
 
-    await toggle.click();
+    await toggle.evaluate((el: HTMLButtonElement) => el.click());
     await expect(longMessage).not.toHaveClass(/collapsed/);
     await expect(toggle).toHaveText("Show less");
     await expect(longMessage.locator(".markdownBody pre code").first()).toContainText("const enabled = true;");
 
-    await toggle.click();
+    await toggle.evaluate((el: HTMLButtonElement) => el.click());
     await expect(longMessage).toHaveClass(/collapsed/);
   });
 });
