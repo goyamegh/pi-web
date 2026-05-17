@@ -2,16 +2,16 @@ import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
+  await page.goto("/");
+  await expect(page.locator("#connectionStatus")).toBeHidden();
 });
 
 test.describe("stop button", () => {
   test("is hidden when not streaming", async ({ page }) => {
-    await page.goto("/");
     await expect(page.locator("#stopButton")).toBeHidden();
   });
 
   test("appears while streaming and hides after", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("slow running task");
     await page.locator("#primaryButton").click();
 
@@ -22,7 +22,6 @@ test.describe("stop button", () => {
   });
 
   test("has red background while streaming", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("slow running task");
     await page.locator("#primaryButton").click();
 
@@ -35,7 +34,6 @@ test.describe("stop button", () => {
   });
 
   test("clicking stop aborts streaming", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("slow running task");
     await page.locator("#primaryButton").click();
 
@@ -47,18 +45,15 @@ test.describe("stop button", () => {
 
 test.describe("send button", () => {
   test("is disabled with empty input", async ({ page }) => {
-    await page.goto("/");
     await expect(page.locator("#primaryButton")).toBeDisabled();
   });
 
   test("is enabled when input has text", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("hello");
     await expect(page.locator("#primaryButton")).toBeEnabled();
   });
 
   test("is disabled again after clearing input", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("hello");
     await page.locator("#prompt").fill("");
     await expect(page.locator("#primaryButton")).toBeDisabled();
@@ -67,7 +62,6 @@ test.describe("send button", () => {
 
 test.describe("send while streaming", () => {
   test("both stop and send buttons visible when streaming with text typed", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("slow running task");
     await page.locator("#primaryButton").click();
 
@@ -82,7 +76,6 @@ test.describe("send while streaming", () => {
   });
 
   test("send button disabled during streaming with no input", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("slow running task");
     await page.locator("#primaryButton").click();
 
@@ -92,7 +85,6 @@ test.describe("send while streaming", () => {
   });
 
   test("sending a steer message while streaming queues it", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("slow running task");
     await page.locator("#primaryButton").click();
 
