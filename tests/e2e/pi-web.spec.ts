@@ -796,9 +796,13 @@ test.describe("image rendering", () => {
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
   });
 
-  test("renders markdown artifact links inline", async ({ page }) => {
+  test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+  });
+
+  test("renders markdown artifact links inline", async ({ page }) => {
     await page.locator("#prompt").fill("show markdown artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
@@ -810,8 +814,6 @@ test.describe("image rendering", () => {
   });
 
   test("renders html artifact links in a sandboxed iframe", async ({ page }) => {
-    await page.goto("/");
-    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await page.locator("#prompt").fill("show html artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
@@ -823,8 +825,6 @@ test.describe("image rendering", () => {
   });
 
   test("renders video artifact links inline", async ({ page }) => {
-    await page.goto("/");
-    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await page.locator("#prompt").fill("show video artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
@@ -837,7 +837,6 @@ test.describe("image rendering", () => {
   });
 
   test("image actions appear on hover with fullscreen, download and open buttons", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
@@ -858,7 +857,6 @@ test.describe("image rendering", () => {
   });
 
   test("fullscreen button opens overlay with image", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
@@ -873,7 +871,6 @@ test.describe("image rendering", () => {
   });
 
   test("overlay closes when clicked", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
@@ -889,7 +886,6 @@ test.describe("image rendering", () => {
   });
 
   test("image is constrained and does not overflow the message", async ({ page }) => {
-    await page.goto("/");
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
