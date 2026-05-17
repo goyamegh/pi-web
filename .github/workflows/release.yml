@@ -19,6 +19,7 @@ jobs:
         with:
           node-version: 20
           cache: npm
+          registry-url: 'https://registry.npmjs.org'
 
       - run: npm ci
       - run: npx playwright install chromium
@@ -42,6 +43,11 @@ jobs:
           npm pack --pack-destination release
           cd release
           sha256sum *.tgz > SHA256SUMS.txt
+
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
