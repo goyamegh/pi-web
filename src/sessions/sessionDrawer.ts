@@ -535,6 +535,71 @@ export function createSessions(options: {
     }
   }
 
+  function beginInlineRename(row: HTMLElement, navBtn: HTMLElement, item: SessionInfo) {
+    // Hide the nav button and show an inline input for renaming
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "sessionRenameInput";
+    input.value = item.name || "";
+    input.placeholder = item.firstMessage?.trim() || "New session";
+    input.maxLength = 200;
+    input.setAttribute("aria-label", "Session name");
+
+    const originalDisplay = navBtn.style.display;
+    navBtn.style.display = "none";
+    // Hide action buttons during rename
+    const actionBtns = row.querySelectorAll<HTMLElement>(".sessionRenameBtn, .sessionActiveToggle, .sessionBookmarkBtn");
+    actionBtns.forEach(btn => btn.style.display = "none");
+
+    row.insertBefore(input, navBtn.nextSibling);
+    input.focus();
+    input.select();
+
+    let finished = false;
+    const finish = async (save: boolean) => {
+      if (finished) return;
+      finished = true;
+      const newName = input.value.trim();
+      input.remove();
+      navBtn.style.display = originalDisplay;
+      actionBtns.forEach(btn => btn.style.display = "");
+
+      if (save && newName !== (item.name || "")) {
+        try {
+          const res = await fetch("/api/session/name", {
+            method: "POST",
+            headers: api.headers(),
+            body: JSON.stringify({ sessionId: item.id, name: newName }),
+          });
+          const text = await res.text();
+          const data = text ? JSON.parse(text) : {};
+          if (!res.ok || data.ok === false) throw new Error(data.error || text);
+          item.name = newName;
+          // Update pinned session label if pinned
+          const pinnedIdx = state.pinnedSessions.findIndex(p => p.id === item.id);
+          if (pinnedIdx >= 0) {
+            state.pinnedSessions[pinnedIdx] = { ...state.pinnedSessions[pinnedIdx], label: sessionTitle(item) };
+            persistPinnedSessions(state.pinnedSessions);
+          }
+          // If this is the current session, update the status bar title
+          if (item.isCurrent) {
+            updateMeta(data);
+          }
+          renderSessionList(cachedSessions);
+          renderSessionBar();
+        } catch (error) {
+          addMessage("system", error instanceof Error ? error.message : String(error), "error");
+        }
+      }
+    };
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); finish(true); }
+      else if (event.key === "Escape") { event.preventDefault(); finish(false); }
+    });
+    input.addEventListener("blur", () => finish(true));
+  }
+
   function buildSessionItem(item: SessionInfo, cwd: string): HTMLElement {
     // Use a div so we can have two sibling buttons (pin + navigate) without nesting buttons
     const row = document.createElement("div");
@@ -603,6 +668,17 @@ export function createSessions(options: {
       }
     });
 
+    // ── Rename button ─────────────────────────────────────────────────────────
+    const renameBtn = document.createElement("button");
+    renameBtn.type = "button";
+    renameBtn.className = "sessionRenameBtn";
+    renameBtn.title = "Rename session";
+    renameBtn.setAttribute("aria-label", "Rename session");
+    setIcon(renameBtn, "pencil");
+    renameBtn.addEventListener("click", () => {
+      beginInlineRename(row, navBtn, item);
+    });
+
     // ── Active/Inactive toggle ──────────────────────────────────────────────
     const activeToggle = document.createElement("button");
     activeToggle.type = "button";
@@ -647,7 +723,7 @@ export function createSessions(options: {
       }
     });
 
-    row.append(pinBtn, navBtn, activeToggle, bookmarkBtn);
+    row.append(pinBtn, navBtn, renameBtn, activeToggle, bookmarkBtn);
     return row;
   }
 

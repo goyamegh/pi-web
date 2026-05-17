@@ -527,6 +527,63 @@ body.hasPinnedSessions .app {
   opacity: 0.3;
   transition: opacity 0.15s ease, color 0.15s ease;
 }
+
+/* Rename button */
+.sessionRenameBtn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.sessionRenameBtn svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+.sessionItem:hover .sessionRenameBtn,
+.sessionItem:focus-within .sessionRenameBtn {
+  opacity: 0.5;
+}
+.sessionRenameBtn:hover {
+  border: 0;
+  background: transparent;
+  opacity: 1 !important;
+  color: var(--accent);
+}
+@media (hover: none) {
+  .sessionRenameBtn {
+    opacity: 0.5;
+  }
+}
+
+/* Inline rename input */
+.sessionRenameInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  margin: 3px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 8px;
+  outline: none;
+}
 .sessionBookmarkBtn svg {
   width: 13px;
   height: 13px;

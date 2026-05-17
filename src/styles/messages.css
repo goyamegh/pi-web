@@ -96,8 +96,12 @@
 .markdownBody th, .markdownBody td {
   border: 1px solid var(--border);
   padding: 6px 8px;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
-.markdownBody a { color: var(--accent); }
+.markdownBody a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.markdownBody a:hover { opacity: 0.8; }
+.markdownBody td a, .markdownBody th a { word-break: break-all; }
 .artifactPreview {
   margin: 10px 0 14px;
   border: 1px solid var(--border);
