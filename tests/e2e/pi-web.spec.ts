@@ -482,15 +482,20 @@ test.describe("slash commands", () => {
 });
 
 test.describe("attachments and prompt", () => {
-  test("empty attachment container collapses and populated attachment row has padding", async ({ page }) => {
+  test.beforeEach(async ({ page }) => {
     await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+  });
+
+  test("empty attachment container collapses and populated attachment row has padding", async ({ page }) => {
     const attachments = page.locator("#attachments");
     await expect(attachments).toHaveCSS("display", "none");
 
     const file = {
       name: "tiny.png",
       mimeType: "image/png",
-      buffer: Buffer.from("iVBORw0KGgo=", "base64"),
+      buffer: VALID_PNG,
     };
     await page.locator("#imageInput").setInputFiles(file);
     await expect(page.locator(".attachmentChip")).toBeVisible();
@@ -505,11 +510,10 @@ test.describe("attachments and prompt", () => {
   });
 
   test("supports image-only prompt and attachment removal", async ({ page }) => {
-    await page.goto("/");
     const file = {
       name: "tiny.png",
       mimeType: "image/png",
-      buffer: Buffer.from("iVBORw0KGgo=", "base64"),
+      buffer: VALID_PNG,
     };
     await page.locator("#imageInput").setInputFiles(file);
     await expect(page.locator(".attachmentChip")).toBeVisible();
