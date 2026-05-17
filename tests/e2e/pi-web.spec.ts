@@ -520,6 +520,7 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator("#primaryButton")).toBeDisabled();
 
     await page.locator("#imageInput").setInputFiles(file);
+    await expect(page.locator(".attachmentChip")).toBeVisible();
     await page.locator("#primaryButton").click();
     await expect(page.locator(".message.user .messageImageThumb")).toBeVisible();
     await expect(page.getByText("Mock response with image.").first()).toBeVisible();
