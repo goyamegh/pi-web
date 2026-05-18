@@ -3,9 +3,13 @@
   "version": "0.1.13",
   "description": "Local/Tailscale web UI for pi coding agent.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ashwin-pc/pi-web"
+  },
   "type": "module",
   "bin": {
-    "pi-web": "./bin/pi-web.js"
+    "pi-web": "bin/pi-web.js"
   },
   "files": [
     ".pi/extensions/",
