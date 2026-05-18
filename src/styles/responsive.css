@@ -8,8 +8,8 @@
   body.sessionDrawerOpen .app {
     width: calc(100vw - var(--session-drawer-width));
     max-width: none;
-    margin-left: var(--session-drawer-width);
-    margin-right: 0;
+    left: var(--session-drawer-width);
+    right: 0;
   }
 
   /* Re-centre the jump button over the chat area (not the full viewport) */
@@ -26,9 +26,9 @@
 
 @media (max-width: 700px) {
   .app {
-    height: var(--app-height);
     min-height: 0;
     padding: 10px 0;
+    padding-top: max(10px, env(safe-area-inset-top));
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
   .composer {
@@ -86,6 +86,22 @@
   .sessionDrawer {
     width: 100vw;
     border-right: 0;
+  }
+}
+
+/* Hide non-essential chrome when virtual keyboard is open on mobile */
+@media (max-width: 700px) {
+  .keyboard-open .sessionBar {
+    display: none !important;
+  }
+  .keyboard-open .app {
+    padding-bottom: 0;
+  }
+  .keyboard-open .composer {
+    margin-bottom: 0;
+  }
+  .keyboard-open .contextMeter {
+    display: none;
   }
 }
 

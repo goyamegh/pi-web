@@ -121,13 +121,39 @@ export function getAppElements(): AppElements {
 }
 
 export function syncAppHeight() {
-  const height = window.visualViewport?.height || window.innerHeight;
+  const vv = window.visualViewport;
+  const height = vv?.height || window.innerHeight;
+  const offsetTop = vv?.offsetTop || 0;
+
   document.documentElement.style.setProperty("--app-height", `${height}px`);
+  document.documentElement.style.setProperty("--app-top", `${offsetTop}px`);
+
+  // On mobile, when the keyboard is open the viewport is significantly shorter.
+  // Add a class so CSS can hide non-essential chrome (e.g. session bar).
+  const keyboardOpen = vv ? height < window.innerHeight * 0.75 : false;
+  document.documentElement.classList.toggle("keyboard-open", keyboardOpen);
 }
 
 export function initAppHeightSync() {
   syncAppHeight();
   window.addEventListener("resize", syncAppHeight);
+  window.addEventListener("orientationchange", () => {
+    // iOS needs a short delay after orientation change for viewport to settle
+    setTimeout(syncAppHeight, 100);
+    setTimeout(syncAppHeight, 300);
+  });
   window.visualViewport?.addEventListener("resize", syncAppHeight);
   window.visualViewport?.addEventListener("scroll", syncAppHeight);
+
+  // iOS: prevent any residual zoom from causing horizontal scroll.
+  // When the viewport scale drifts above 1, reset it on the next focus event.
+  document.addEventListener("focusin", (e) => {
+    const target = e.target as HTMLElement;
+    if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") {
+      // Scroll the page back to origin to cancel any inadvertent zoom offset
+      window.scrollTo(0, 0);
+      document.documentElement.scrollLeft = 0;
+      document.body.scrollLeft = 0;
+    }
+  });
 }
