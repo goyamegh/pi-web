@@ -53,7 +53,10 @@ export const defaultPiWebSettings: PiWebSettings = {
     queueMode: "steer",
     expanded: false,
   },
-  defaults: {},
+  defaults: {
+    model: { provider: "amazon-bedrock", id: "us.anthropic.claude-opus-4-7" },
+    thinkingLevel: "high",
+  },
 };
 
 function cloneSettings(value: PiWebSettings): PiWebSettings {
