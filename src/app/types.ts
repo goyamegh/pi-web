@@ -152,7 +152,10 @@ export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
   appearance: { density: "comfortable", navPinned: false },
   composer: { queueMode: "steer", expanded: false },
-  defaults: {},
+  defaults: {
+    model: { provider: "amazon-bedrock", id: "us.anthropic.claude-opus-4-7" },
+    thinkingLevel: "high",
+  },
 };
 
 const tokenStorageKey = "pi-web-token";
