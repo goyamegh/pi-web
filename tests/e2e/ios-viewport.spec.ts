@@ -124,18 +124,40 @@ test.describe("iOS viewport and orientation fixes", () => {
     expect(scrollLeft).toBe(0);
   });
 
-  test("initAppHeightSync is idempotent", async ({ page }) => {
+  test("syncAppHeight toggles keyboard-open when visualViewport is mocked", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
-    // Call initAppHeightSync multiple times — should not add duplicate listeners
-    const listenerCount = await page.evaluate(() => {
-      // Access the module's exported function via window dispatch
-      // We can verify idempotency by checking that calling syncAppHeight
-      // doesn't produce errors and --app-height stays consistent
-      const before = getComputedStyle(document.documentElement).getPropertyValue("--app-height");
-      window.dispatchEvent(new Event("resize"));
-      const after = getComputedStyle(document.documentElement).getPropertyValue("--app-height");
-      return before === after;
+
+    // Mock visualViewport to simulate keyboard opening (height shrinks to 400px)
+    const result = await page.evaluate(() => {
+      // Focus textarea first
+      const textarea = document.querySelector<HTMLTextAreaElement>("#prompt");
+      textarea?.focus();
+
+      // Override visualViewport.height to simulate keyboard
+      Object.defineProperty(window.visualViewport, "height", { value: 400, configurable: true });
+      // window.innerHeight stays at the original value (844)
+
+      // Manually call syncAppHeight by dispatching a resize on visualViewport
+      window.visualViewport!.dispatchEvent(new Event("resize"));
+
+      const hasClass = document.documentElement.classList.contains("keyboard-open");
+      const appHeight = getComputedStyle(document.documentElement).getPropertyValue("--app-height").trim();
+
+      // Restore
+      Object.defineProperty(window.visualViewport, "height", { value: 844, configurable: true });
+      window.visualViewport!.dispatchEvent(new Event("resize"));
+
+      return { hasClass, appHeight };
     });
-    expect(listenerCount).toBe(true);
+
+    expect(result.hasClass).toBe(true);
+    expect(result.appHeight).toBe("400px");
+
+    // After restoring, keyboard-open should be removed (textarea still focused but viewport is full)
+    const afterRestore = await page.evaluate(() =>
+      document.documentElement.classList.contains("keyboard-open"),
+    );
+    expect(afterRestore).toBe(false);
   });
 });
