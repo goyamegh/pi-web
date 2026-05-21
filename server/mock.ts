@@ -12,7 +12,7 @@ export function createMockHarness(options: MockSessionOptions) {
   const { piCwd, broadcast, isCurrentSession, currentState } = options;
   const mockModel = { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 };
 
-  function initialMockSessions(): PiWebSessionInfo[] {
+  function initialMockSessions(): Array<PiWebSessionInfo & { agent?: "pi" | "claude-code" }> {
     return [
       {
         id: "mock-current",
@@ -24,6 +24,7 @@ export function createMockHarness(options: MockSessionOptions) {
         messageCount: 2,
         allMessagesText: "Can you add image attachments?",
         cwd: piCwd,
+        agent: "pi",
       },
       {
         id: "mock-older",
@@ -35,11 +36,28 @@ export function createMockHarness(options: MockSessionOptions) {
         messageCount: 4,
         allMessagesText: "Review the mobile composer layout",
         cwd: piCwd,
+        agent: "pi",
+      },
+      // Synthetic CC session so e2e tests can assert that the unified session
+      // list renders mixed pi+claude-code badges correctly (the on-disk slug
+      // points to a fictional path; the listSessionInfos mock branch returns
+      // these directly without filesystem touches).
+      {
+        id: "mock-cc",
+        path: join(piCwd, ".mock-sessions/12345678-1234-1234-1234-123456789abc.jsonl"),
+        name: "Claude Code mock session",
+        firstMessage: "Investigate why the badge is flickering",
+        created: new Date("2026-05-01T08:00:00Z"),
+        modified: new Date("2026-05-05T08:00:00Z"),
+        messageCount: 6,
+        allMessagesText: "Investigate why the badge is flickering",
+        cwd: piCwd,
+        agent: "claude-code",
       },
     ];
   }
 
-  const mockSessions: PiWebSessionInfo[] = initialMockSessions();
+  const mockSessions: Array<PiWebSessionInfo & { agent?: "pi" | "claude-code" }> = initialMockSessions();
 
   function resetMockSessions() {
     mockSessions.splice(0, mockSessions.length, ...initialMockSessions());

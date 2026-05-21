@@ -90,8 +90,15 @@ describe("pi-web mock API", () => {
     expect(messages.messages[0].text).toContain("image attachments");
 
     const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
-    expect(sessions.sessions).toHaveLength(2);
+    expect(sessions.sessions).toHaveLength(3);
     expect(sessions.sessions.every((item: any) => item.isCurrent === false)).toBe(true);
+    // Every session must carry an `agent` field (two pi + one claude-code in the
+    // mock harness) so the unified session list never renders a row without a
+    // badge (the original "toggling" regression).
+    const agents = new Set(sessions.sessions.map((s: { agent: string }) => s.agent));
+    expect(agents.has("pi")).toBe(true);
+    expect(agents.has("claude-code")).toBe(true);
+    for (const session of sessions.sessions) expect(["pi", "claude-code"]).toContain(session.agent);
   });
 
   it("deletes a requested session", async () => {
@@ -106,7 +113,7 @@ describe("pi-web mock API", () => {
       expect(deleted).toMatchObject({ ok: true, id: "mock-older", disposition: "deleted" });
 
       const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
-      expect(sessions.sessions.map((item: any) => item.id)).toEqual(["mock-current"]);
+      expect(sessions.sessions.map((item: any) => item.id)).toEqual(["mock-current", "mock-cc"]);
     } finally {
       await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     }
@@ -130,6 +137,7 @@ describe("pi-web mock API", () => {
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
+
   });
 
   it("returns and navigates the conversation tree", async () => {

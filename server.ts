@@ -862,7 +862,16 @@ function runtimeForPath(path: string) {
   };
 }
 
-function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd, agent: "pi" | "claude-code" = "pi") {
+function simplifySessionInfo(
+  info: Awaited<ReturnType<typeof SessionManager.list>>[number] & { agent?: "pi" | "claude-code" },
+  cwd = piCwd,
+  agent: "pi" | "claude-code" = "pi",
+) {
+  // Mock harness sessions can carry an explicit `agent` field so a single
+  // mockSessions list can model a mixed pi+claude-code unified session list
+  // for tests; outside mockMode the parameter wins because the caller already
+  // knows which list it scanned.
+  const resolvedAgent = info.agent === "pi" || info.agent === "claude-code" ? info.agent : agent;
   return {
     id: info.id,
     name: info.name,
@@ -871,7 +880,7 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     modified: info.modified.toISOString(),
     messageCount: info.messageCount,
     cwd: info.cwd || cwd,
-    agent,
+    agent: resolvedAgent,
     isCurrent: false,
     inactive: inactiveSessionIds.has(info.id),
     saved: savedSessionIds.has(info.id),
