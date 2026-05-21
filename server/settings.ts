@@ -6,6 +6,8 @@ export type PiWebModelSetting = {
   id: string;
 };
 
+export type PiWebAgentKind = "pi" | "claude-code";
+
 export type PiWebSettings = {
   version: 1;
   appearance: {
@@ -17,6 +19,8 @@ export type PiWebSettings = {
     expanded: boolean;
   };
   defaults: {
+    /** Last-used agent for new sessions; persisted across restarts. */
+    agent?: PiWebAgentKind;
     model?: PiWebModelSetting;
     thinkingLevel?: string;
   };
@@ -32,6 +36,7 @@ export type PiWebSettingsPatch = Partial<{
     expanded: unknown;
   }>;
   defaults: Partial<{
+    agent: unknown;
     model: unknown;
     thinkingLevel: unknown;
   }>;
@@ -85,6 +90,9 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   if (typeof composer?.expanded === "boolean") settings.composer.expanded = composer.expanded;
 
   const defaults = isRecord(value.defaults) ? value.defaults : undefined;
+  if (defaults?.agent === "pi" || defaults?.agent === "claude-code") {
+    settings.defaults.agent = defaults.agent;
+  }
   const model = normalizeModel(defaults?.model);
   if (model) settings.defaults.model = model;
   if (typeof defaults?.thinkingLevel === "string" && defaults.thinkingLevel.trim()) {
@@ -113,6 +121,13 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
   }
 
   if (isRecord(patch.defaults)) {
+    if ("agent" in patch.defaults) {
+      if (patch.defaults.agent === "pi" || patch.defaults.agent === "claude-code") {
+        next.defaults.agent = patch.defaults.agent;
+      } else {
+        delete next.defaults.agent;
+      }
+    }
     if ("model" in patch.defaults) {
       const model = normalizeModel(patch.defaults.model);
       if (model) next.defaults.model = model;

@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promi
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -24,6 +24,16 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths } from "./server/extensions.js";
 import { createSettingsStore } from "./server/settings.js";
 import type { PiWebSession } from "./server/types.js";
+import {
+  type AgentAdapter,
+  type AgentKind,
+  ccProjectDir,
+  ccSessionFile,
+  createClaudeCodeAdapter,
+  listCCSessions,
+  loadCCMessages,
+  wrapPiSession,
+} from "./server/agent/index.js";
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const distDir = join(appDir, "dist");
@@ -374,6 +384,88 @@ async function listGitRepos() {
   return { ok: true, cwd: piCwd, depth: 1, repos };
 }
 
+type RepoPrInfo = { number: number; url: string; title?: string };
+type RepoInfo = {
+  ok: true;
+  cwd: string;
+  isRepo: boolean;
+  root?: string;
+  rootName?: string;
+  cwdRel?: string;
+  branch?: string;
+  upstream?: string;
+  shortHash?: string;
+  hash?: string;
+  pr?: RepoPrInfo | null;
+};
+
+const repoInfoCache = new Map<string, { value: RepoInfo; expiresAt: number }>();
+const repoInfoCacheTtlMs = 4_000;
+
+async function detectGithubPr(cwd: string, branch: string): Promise<RepoPrInfo | null> {
+  if (!branch) return null;
+  try {
+    const { stdout } = await execFileAsync(
+      "gh",
+      ["pr", "view", branch, "--json", "number,url,title"],
+      { cwd, timeout: 5_000, maxBuffer: 1024 * 1024 },
+    );
+    const data = JSON.parse(stdout) as { number?: number; url?: string; title?: string };
+    if (typeof data.number === "number" && typeof data.url === "string") {
+      return { number: data.number, url: data.url, title: data.title };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function getRepoInfo(cwd: string): Promise<RepoInfo> {
+  const now = Date.now();
+  const cached = repoInfoCache.get(cwd);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const base: RepoInfo = { ok: true, cwd, isRepo: false };
+  if (!(await isGitRepo(cwd))) {
+    repoInfoCache.set(cwd, { value: base, expiresAt: now + repoInfoCacheTtlMs });
+    return base;
+  }
+
+  const [rootRes, branchRes, upstreamRes, hashRes, shortHashRes] = await Promise.all([
+    git(["rev-parse", "--show-toplevel"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["branch", "--show-current"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["rev-parse", "HEAD"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["rev-parse", "--short", "HEAD"], 15_000, cwd).catch(() => ({ stdout: "" })),
+  ]);
+
+  const root = rootRes.stdout.trim();
+  const branch = branchRes.stdout.trim();
+  const rel = root ? relative(root, cwd) : "";
+
+  // Resolve PR info synchronously so the first response already contains the
+  // hyperlink. `gh pr view` has a 5s timeout and is cached for `repoInfoCacheTtlMs`,
+  // so the cost is bounded and only paid on cache miss.
+  const pr = branch ? await detectGithubPr(cwd, branch) : null;
+
+  const info: RepoInfo = {
+    ok: true,
+    cwd,
+    isRepo: true,
+    root: root || undefined,
+    rootName: root ? basename(root) : undefined,
+    cwdRel: rel.startsWith("..") ? "" : rel,
+    branch: branch || undefined,
+    upstream: upstreamRes.stdout.trim() || undefined,
+    hash: hashRes.stdout.trim() || undefined,
+    shortHash: shortHashRes.stdout.trim() || undefined,
+    pr,
+  };
+
+  repoInfoCache.set(cwd, { value: info, expiresAt: Date.now() + repoInfoCacheTtlMs });
+  return info;
+}
+
 function parseCommit(entry: string) {
   const [hash = "", shortHash = "", parents = "", author = "", date = "", refs = "", subject = ""] = entry.split("\x1f");
   return { hash, shortHash, parents: parents ? parents.split(" ").filter(Boolean) : [], author, date, refs: refs ? refs.split(", ").filter(Boolean) : [], subject };
@@ -676,7 +768,7 @@ function runtimeForPath(path: string) {
   };
 }
 
-function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd) {
+function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd, agent: "pi" | "claude-code" = "pi") {
   return {
     id: info.id,
     name: info.name,
@@ -685,6 +777,7 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     modified: info.modified.toISOString(),
     messageCount: info.messageCount,
     cwd,
+    agent,
     isCurrent: cwd === piCwd && info.id === session.sessionId,
     inactive: inactiveSessionIds.has(info.id),
     saved: savedSessionIds.has(info.id),
@@ -701,12 +794,31 @@ async function listSessionInfos(extraCwds: string[] = []) {
     cwds.add(resolve(cwd));
   }
   const groups = await Promise.all(Array.from(cwds).map(async (cwd) => {
-    try {
-      const sessions = await SessionManager.list(cwd);
-      return sessions.map((info) => simplifySessionInfo(info, cwd));
-    } catch {
-      return [];
-    }
+    // Pi sessions for this cwd — read from pi's session manager.
+    const piRows = await SessionManager.list(cwd).then(
+      (sessions) => sessions.map((info) => simplifySessionInfo(info, cwd, "pi")),
+      () => [],
+    );
+    // Claude Code sessions for this cwd — scan ~/.claude/projects/<slug>/.
+    const ccRows = await listCCSessions(cwd).then(
+      (sessions) => sessions.map((info) => simplifySessionInfo(
+        {
+          id: info.id,
+          path: info.path,
+          name: info.name,
+          firstMessage: info.firstMessage,
+          created: info.created,
+          modified: info.modified,
+          messageCount: info.messageCount,
+          allMessagesText: info.firstMessage,
+          cwd: info.cwd,
+        },
+        cwd,
+        "claude-code",
+      )),
+      () => [],
+    );
+    return [...piRows, ...ccRows];
   }));
   return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
 }
@@ -793,6 +905,11 @@ function currentState() {
     model: simplifyModel(session.model),
     thinkingLevel: session.thinkingLevel,
     stats: sessionStats(session),
+    // agent + capabilities let the frontend gate per-session UI affordances
+    // (compaction, conversation tree, multi-provider model picker, prompt
+    // templates, etc.) without inspecting transcript shapes or method presence.
+    agent: session.kind,
+    capabilities: session.getCapabilities(),
   };
 }
 
@@ -803,45 +920,23 @@ function currentStateWithThinkingLevels() {
   };
 }
 
-function getSessionSlashCommands(value: any): WebSlashCommandInfo[] {
-  const commands: WebSlashCommandInfo[] = [];
-
-  for (const command of value.extensionRunner?.getRegisteredCommands?.() || []) {
-    commands.push({
-      name: command.invocationName || command.name,
-      description: command.description,
-      source: "extension",
-      sourceInfo: command.sourceInfo,
-    });
-  }
-
-  for (const template of value.promptTemplates || value.resourceLoader?.getPrompts?.().prompts || []) {
-    commands.push({
-      name: template.name,
-      description: template.description,
-      source: "prompt",
-      sourceInfo: template.sourceInfo,
-    });
-  }
-
-  for (const skill of value.resourceLoader?.getSkills?.().skills || []) {
-    commands.push({
-      name: `skill:${skill.name}`,
-      description: skill.description,
-      source: "skill",
-      sourceInfo: skill.sourceInfo,
-    });
-  }
-
-  return commands.filter((command) => typeof command.name === "string" && command.name.length > 0);
-}
-
-function getSlashCommands(value: any = session): WebSlashCommandInfo[] {
-  return [...webSlashCommands, ...getSessionSlashCommands(value)];
+function getSlashCommands(value: AgentAdapter = session): WebSlashCommandInfo[] {
+  // webSlashCommands are the pi-web overlay (always available regardless of
+  // agent). Agent-sourced commands come from the adapter — pi extensions/
+  // prompts/skills for pi, or claude-code's native + project commands.
+  return [...webSlashCommands, ...value.getAgentSlashCommands() as WebSlashCommandInfo[]];
 }
 
 function formatSlashCommandList(commands: WebSlashCommandInfo[]) {
-  const groups: Array<[string, string]> = [["web", "Web"], ["extension", "Extensions"], ["prompt", "Prompts"], ["skill", "Skills"]];
+  // Note: "claude-code" group label is added preemptively so CC adapter slash
+  // commands appear under their own heading once that adapter ships.
+  const groups: Array<[string, string]> = [
+    ["web", "Web"],
+    ["extension", "Extensions"],
+    ["prompt", "Prompts"],
+    ["skill", "Skills"],
+    ["claude-code", "Claude Code"],
+  ];
   const lines: string[] = ["Available slash commands:"];
   for (const [source, label] of groups) {
     const matching = commands.filter((command) => command.source === source);
@@ -949,8 +1044,22 @@ async function executeSlashCommand(input: string) {
 
 async function findSessionInfoById(id: string, cwd = piCwd) {
   if (!id) return undefined;
-  const sessions = noSession ? [] : mockMode ? mockSessions : await SessionManager.list(cwd);
-  return sessions.find((info) => info.id === id);
+  if (noSession) return undefined;
+  if (mockMode) return mockSessions.find((info) => info.id === id);
+
+  // Look in pi's session list first (the historical path), then fall back to
+  // Claude Code's transcript directory for the same cwd. We return a uniform
+  // shape with `.path` so getOrCreateLiveSession() can route through
+  // detectAgentForPath() and dispatch to the right adapter.
+  const piSessions = await SessionManager.list(cwd).catch(() => []);
+  const piHit = piSessions.find((info) => info.id === id);
+  if (piHit) return piHit;
+
+  const ccSessions = await listCCSessions(cwd).catch(() => []);
+  const ccHit = ccSessions.find((info) => info.id === id);
+  if (ccHit) return { id: ccHit.id, path: ccHit.path } as { id: string; path: string };
+
+  return undefined;
 }
 
 async function getOrCreateLiveSessionById(id: string) {
@@ -1004,8 +1113,11 @@ async function persistSavedSessions() {
   await rename(tmp, savedSessionsFile);
 }
 
-const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
-let session: PiWebSession;
+// liveSessions stores AgentAdapter values — every session, pi or mock, is
+// wrapped exactly once inside registerLiveSession() so callers never have to
+// distinguish raw pi sessions from agent-tagged ones at use sites.
+const liveSessions = new Map<string, { session: AgentAdapter; unsubscribe?: () => void }>();
+let session: AgentAdapter;
 let modelFallbackMessage: string | undefined;
 
 const clients = new Set<WebSocket>();
@@ -1228,11 +1340,20 @@ const mockHarness = createMockHarness({
 });
 const { mockSessions, createMockSession, resetMockSessions } = mockHarness;
 
-function sessionPathKey(value: any) {
+function sessionPathKey(value: { sessionFile?: string; sessionId?: string }) {
   return String(value.sessionFile || value.sessionId || "");
 }
 
-function registerLiveSession(value: any) {
+// Wrap an incoming pi/mock session into an AgentAdapter and register it on
+// liveSessions. The input type is `any` because pi's createAgentSession()
+// returns AgentSession (with optional sessionFile) which does not satisfy our
+// stricter PiWebSession contract. Sessions that are *already* AgentAdapters
+// (e.g. the Claude Code adapter, which sets `kind` itself in its constructor)
+// are passed through verbatim so we don't clobber their kind/capabilities.
+function registerLiveSession(rawSession: any): AgentAdapter {
+  const value: AgentAdapter = rawSession?.kind && typeof rawSession.getCapabilities === "function"
+    ? rawSession as AgentAdapter
+    : wrapPiSession(rawSession as PiWebSession, mockMode ? "mock" : "pi");
   const key = sessionPathKey(value);
   if (!key || liveSessions.get(key)?.session === value) return value;
 
@@ -1279,6 +1400,32 @@ function bundledExtensionPaths() {
   return resolveBundledExtensionPaths({ piCwd, appDir, bundledExtensionsDir });
 }
 
+/**
+ * Detect which agent owns a given session-file path. CC writes UUID-named
+ * .jsonl files under ~/.claude/projects/<slug>/; everything else is treated as
+ * pi (its session files live under getAgentDir() with .session.json suffixes).
+ * Used to dispatch open-session requests to the right adapter.
+ */
+function detectAgentForPath(path: string): AgentKind {
+  const claudeProjects = join(process.env.HOME || "", ".claude", "projects");
+  if (path.startsWith(claudeProjects) && path.endsWith(".jsonl")) return "claude-code";
+  return mockMode ? "mock" : "pi";
+}
+
+async function makeClaudeCodeAdapter(sessionId?: string): Promise<AgentAdapter> {
+  const webUiContext = existsSync(webUiContextFile) ? readFileSync(webUiContextFile, "utf-8") : "";
+  const settings = await settingsStore.read();
+  return createClaudeCodeAdapter({
+    cwd: piCwd,
+    sessionId,
+    appendSystemPrompt: webUiContext || undefined,
+    initialModel: settings.defaults.model && settings.defaults.agent === "claude-code"
+      ? { provider: settings.defaults.model.provider, id: settings.defaults.model.id }
+      : undefined,
+    initialThinkingLevel: settings.defaults.thinkingLevel,
+  });
+}
+
 async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent) {
   if (mockMode) return { session: createMockSession(path), modelFallbackMessage: undefined };
 
@@ -1311,10 +1458,31 @@ async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartE
   return result;
 }
 
+/**
+ * Build a fresh AgentAdapter of the requested kind. Used by both first-boot
+ * session creation and explicit /api/sessions/new POSTs. CC adapter creation
+ * goes via makeClaudeCodeAdapter() which spawns no child process until the
+ * first prompt; pi adapter creation goes via the existing makeAgentSession().
+ */
+async function makeAdapter(
+  agent: AgentKind,
+  options: { path?: string; sessionStartEvent?: SessionStartEvent } = {},
+): Promise<{ session: any; modelFallbackMessage?: string }> {
+  if (agent === "claude-code") {
+    const sessionId = options.path ? options.path.match(/([0-9a-f-]{36})\.jsonl$/i)?.[1] : undefined;
+    return { session: await makeClaudeCodeAdapter(sessionId) };
+  }
+  // Both "pi" and "mock" go through makeAgentSession; mockMode is a process-
+  // wide flag that makeAgentSession() already honors when constructing the
+  // session via createMockSession().
+  return makeAgentSession(options.path, options.sessionStartEvent);
+}
+
 async function getOrCreateLiveSession(path: string) {
   const existing = liveSessions.get(path)?.session;
   if (existing) return existing;
-  const created = await makeAgentSession(path);
+  const agent = detectAgentForPath(path);
+  const created = await makeAdapter(agent, { path });
   if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
   return registerLiveSession(created.session);
 }
@@ -1332,17 +1500,37 @@ async function applyDefaultSessionSettings(value: any) {
   }
 }
 
-async function createNewLiveSession(cwd?: string) {
+async function createNewLiveSession(cwd?: string, agent?: AgentKind) {
   if (cwd) await setPiCwd(cwd);
   const previousSessionFile = session?.sessionFile;
-  const created = await makeAgentSession(undefined, { type: "session_start", reason: "new", previousSessionFile });
+  const settings = await settingsStore.read();
+  // Same precedence rule as boot: explicit param wins; in mockMode we always
+  // produce a mock session; otherwise consult the persisted last-used agent.
+  const targetAgent: AgentKind = agent
+    || (mockMode ? "mock" : (settings.defaults.agent || "pi"));
+
+  const created = await makeAdapter(targetAgent, {
+    sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
+  });
   if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
   const value = created.session;
   if (mockMode) {
     value.sessionManager.newSession();
     value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
   }
-  await applyDefaultSessionSettings(value);
+  // Apply default model/thinking only for pi-style sessions; CC adapter
+  // bootstraps its own defaults from settings inside createClaudeCodeAdapter().
+  if (targetAgent !== "claude-code") {
+    await applyDefaultSessionSettings(value);
+  }
+
+  // Persist last-used agent so the next "+" defaults to the same kind.
+  if (targetAgent === "pi" || targetAgent === "claude-code") {
+    if (settings.defaults.agent !== targetAgent) {
+      await settingsStore.patch({ defaults: { agent: targetAgent } });
+    }
+  }
+
   return registerLiveSession(value);
 }
 
@@ -1350,13 +1538,21 @@ async function switchEmptySessionCwd(cwd: string) {
   if (session.isStreaming) throw new Error("Wait for the current response to finish before changing the working directory.");
   if (session.isCompacting) throw new Error("Wait for compaction to finish before changing the working directory.");
   if (hasUserMessages(session)) throw new Error("Working directory can only be changed before the first message.");
-  session = await createNewLiveSession(cwd);
+  session = await createNewLiveSession(cwd, session.kind === "claude-code" ? "claude-code" : session.kind === "mock" ? "mock" : "pi");
   return currentStateWithThinkingLevels();
 }
 
 await ensurePiWebStorage();
 
-const createdSession = await makeAgentSession();
+// Boot the initial session using the persisted last-used agent (defaults to
+// pi on first run). In mockMode we always boot the mock harness regardless of
+// saved settings so test fixtures stay deterministic; the saved "agent"
+// preference is only relevant outside mockMode.
+const bootSettings = await settingsStore.read();
+const bootAgent: AgentKind = mockMode
+  ? "mock"
+  : (bootSettings.defaults.agent || "pi");
+const createdSession = await makeAdapter(bootAgent);
 session = registerLiveSession(createdSession.session);
 modelFallbackMessage = createdSession.modelFallbackMessage;
 
@@ -1402,6 +1598,14 @@ const server = createServer(async (req, res) => {
       if (method === "GET" && url.pathname === "/api/git/status") {
         try {
           return sendJson(res, 200, await gitStatus(await gitCwdFromRepoParam(url.searchParams.get("repo")), url.searchParams.get("fetch") === "1"));
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/repo-info") {
+        try {
+          return sendJson(res, 200, await getRepoInfo(await gitCwdFromRepoParam(url.searchParams.get("repo"))));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -1732,8 +1936,12 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
-        const body = await readBody(req) as { cwd?: unknown };
-        session = await createNewLiveSession(typeof body.cwd === "string" ? body.cwd : undefined);
+        const body = await readBody(req) as { cwd?: unknown; agent?: unknown };
+        const requestedAgent = body.agent === "pi" || body.agent === "claude-code" ? body.agent : undefined;
+        session = await createNewLiveSession(
+          typeof body.cwd === "string" ? body.cwd : undefined,
+          requestedAgent,
+        );
         const state = currentStateWithThinkingLevels();
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
@@ -1824,6 +2032,8 @@ wss.on("connection", (ws, req) => {
     model: simplifyModel(session.model),
     thinkingLevel: session.thinkingLevel,
     isStreaming: session.isStreaming,
+    agent: session.kind,
+    capabilities: session.getCapabilities(),
   }));
   ws.on("close", () => clients.delete(ws));
 });
