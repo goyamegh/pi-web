@@ -150,6 +150,14 @@
             </button>
             <div id="modelSettingsPopover" class="modelSettingsPopover" role="dialog" aria-label="Model and reasoning settings" hidden>
               <label class="modelSettingsField">
+                <span>Agent</span>
+                <select id="agentSelect" title="Select agent" aria-label="Select agent">
+                  <option value="pi">pi</option>
+                  <option value="claude-code">claude-code</option>
+                </select>
+              </label>
+              <p class="modelSettingsHint" id="agentLockedHint" hidden>Agent is locked once a session has messages. Start a new session to switch agents.</p>
+              <label class="modelSettingsField">
                 <span>Model</span>
                 <select id="modelSelect" title="Select model" aria-label="Select model">
                   <option value="">Loading models…</option>

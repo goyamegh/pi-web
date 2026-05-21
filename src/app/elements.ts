@@ -34,6 +34,8 @@ export type AppElements = {
   modelSettingsLabel: HTMLSpanElement;
   modelSettingsThinking: HTMLSpanElement;
   modelSettingsPopover: HTMLDivElement;
+  agentSelectEl: HTMLSelectElement;
+  agentLockedHint: HTMLParagraphElement;
   modelSelectEl: HTMLSelectElement;
   thinkingSelectEl: HTMLSelectElement;
   newSessionHeaderButton: HTMLButtonElement;
@@ -102,6 +104,8 @@ export function getAppElements(): AppElements {
     modelSettingsLabel: requiredElement<HTMLSpanElement>("#modelSettingsLabel"),
     modelSettingsThinking: requiredElement<HTMLSpanElement>("#modelSettingsThinking"),
     modelSettingsPopover: requiredElement<HTMLDivElement>("#modelSettingsPopover"),
+    agentSelectEl: requiredElement<HTMLSelectElement>("#agentSelect"),
+    agentLockedHint: requiredElement<HTMLParagraphElement>("#agentLockedHint"),
     modelSelectEl: requiredElement<HTMLSelectElement>("#modelSelect"),
     thinkingSelectEl: requiredElement<HTMLSelectElement>("#thinkingSelect"),
     newSessionHeaderButton: requiredElement<HTMLButtonElement>("#newSessionHeaderButton"),

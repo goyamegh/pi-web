@@ -50,6 +50,14 @@ function updateMeta(data: any) {
   state.currentThinkingLevel = data.thinkingLevel || "off";
   state.currentSessionId = data.sessionId || state.currentSessionId;
   state.currentCwd = data.cwd || state.currentCwd;
+  if (data.agent === "pi" || data.agent === "claude-code" || data.agent === "mock") {
+    state.currentAgent = data.agent;
+  }
+  if (data.capabilities && typeof data.capabilities === "object") {
+    state.currentCapabilities = { ...state.currentCapabilities, ...data.capabilities };
+    // Hide affordances for capabilities the active agent does not support.
+    elements.conversationTreeButton.hidden = !state.currentCapabilities.conversationTree;
+  }
   if ("stats" in data) contextMeter.update(data.stats);
   if ("webFooters" in data) renderWebFooters(elements.extensionFooterEl, data.webFooters);
   if ("sessionTitle" in data) statusBar.setStatusTitle(data.sessionTitle?.trim() || "New session");

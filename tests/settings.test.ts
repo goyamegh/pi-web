@@ -26,9 +26,12 @@ describe("pi-web settings", () => {
       defaults: { model: { provider: "", id: "model" }, thinkingLevel: "", sessionBucketColor: "orange" },
     })).toEqual({
       version: 1,
-      appearance: { density: "comfortable" },
+      appearance: { density: "comfortable", navPinned: false },
       composer: { queueMode: "steer", expanded: false },
-      defaults: {},
+      defaults: {
+        model: { provider: "amazon-bedrock", id: "us.anthropic.claude-opus-4-7" },
+        thinkingLevel: "high",
+      },
     });
   });
 
@@ -42,7 +45,7 @@ describe("pi-web settings", () => {
 
     expect(next).toEqual({
       version: 1,
-      appearance: { density: "compact" },
+      appearance: { density: "compact", navPinned: false },
       composer: { queueMode: "followUp", expanded: true },
       defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low", sessionBucketColor: "purple" },
     });

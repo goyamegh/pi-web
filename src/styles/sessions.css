@@ -417,6 +417,28 @@
   align-items: center;
   gap: 6px;
 }
+.sessionAgentBadge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  line-height: 1.4;
+  color: color-mix(in srgb, var(--muted) 90%, transparent);
+  background: color-mix(in srgb, var(--muted) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
+}
+.sessionAgentBadge-claude-code {
+  color: #c89b7a;
+  background: color-mix(in srgb, #c89b7a 12%, transparent);
+  border-color: color-mix(in srgb, #c89b7a 35%, transparent);
+}
 .sessionItemTitle {
   min-width: 0;
   overflow: hidden;

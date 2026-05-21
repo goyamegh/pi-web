@@ -32,13 +32,64 @@ export function createModelSettings(options: {
 
   function updateSummary() {
     const level = elements.thinkingSelectEl.value || state.currentThinkingLevel || "off";
-    const label = state.currentModelDisplay || state.currentModelKey || "No model";
+    const modelText = state.currentModelDisplay || state.currentModelKey || "No model";
+    // Composer footer label shows `<agent> · <model>` so the active agent is
+    // visible without opening the popover.
+    const label = `${state.currentAgent} · ${modelText}`;
     elements.modelSettingsLabel.textContent = label;
     elements.modelSettingsThinking.textContent = "";
     elements.modelSettingsThinking.append(iconElement("brain"), document.createTextNode(level));
     elements.modelSettingsButton.dataset.thinkingLevel = level;
+    elements.modelSettingsButton.dataset.agent = state.currentAgent;
     elements.modelSettingsButton.title = `${label} · reasoning: ${level}`;
-    elements.modelSettingsButton.setAttribute("aria-label", `Model and reasoning settings: ${label}, reasoning ${level}`);
+    elements.modelSettingsButton.setAttribute("aria-label", `Agent ${state.currentAgent}, model ${modelText}, reasoning ${level}`);
+    // Reflect the active agent in the popover dropdown.
+    if (elements.agentSelectEl.value !== state.currentAgent && state.currentAgent !== "mock") {
+      elements.agentSelectEl.value = state.currentAgent;
+    }
+    updateAgentLockState();
+  }
+
+  /**
+   * The agent dropdown is editable only while the current session has zero
+   * user messages. Once the user has sent their first prompt the underlying
+   * transcript is committed to that agent's on-disk format and changing the
+   * agent would orphan the conversation; mirroring how cwd locks today.
+   */
+  function updateAgentLockState() {
+    const userMessages = state.stats?.userMessages ?? 0;
+    const locked = userMessages > 0;
+    elements.agentSelectEl.disabled = locked;
+    elements.agentLockedHint.hidden = !locked;
+  }
+
+  /**
+   * Switch the active session's agent by creating a brand-new session with
+   * the chosen kind. Only invokable while the dropdown is unlocked (zero user
+   * messages); the server enforces the same precondition.
+   */
+  async function setAgentFromControl() {
+    const next = elements.agentSelectEl.value;
+    if (next !== "pi" && next !== "claude-code") return;
+    if (next === state.currentAgent) return;
+    elements.agentSelectEl.disabled = true;
+    try {
+      const res = await fetch("/api/sessions/new", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ agent: next }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      updateMeta(data);
+      await refreshModels();
+    } catch (error) {
+      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      // Roll the dropdown back to whatever the server actually has.
+      if (state.currentAgent !== "mock") elements.agentSelectEl.value = state.currentAgent;
+    } finally {
+      updateAgentLockState();
+    }
   }
 
   function setModelSettingsOpen(open: boolean) {
@@ -129,6 +180,9 @@ export function createModelSettings(options: {
     });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !elements.modelSettingsPopover.hidden) setModelSettingsOpen(false);
+    });
+    elements.agentSelectEl.addEventListener("change", () => {
+      void setAgentFromControl();
     });
     elements.modelSelectEl.addEventListener("change", () => {
       const selected = elements.modelSelectEl.selectedOptions[0]?.textContent;

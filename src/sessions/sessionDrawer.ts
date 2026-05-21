@@ -1437,6 +1437,14 @@ export function createSessions(options: {
 
     const titleRow = document.createElement("span");
     titleRow.className = "sessionItemTitleRow";
+    // Per-session agent badge so a unified pi+claude-code list is scannable.
+    if (item.agent === "claude-code" || item.agent === "pi") {
+      const badge = document.createElement("span");
+      badge.className = `sessionAgentBadge sessionAgentBadge-${item.agent}`;
+      badge.textContent = item.agent === "claude-code" ? "cc" : "pi";
+      badge.title = item.agent === "claude-code" ? "Claude Code session" : "pi session";
+      titleRow.append(badge);
+    }
     const title = document.createElement("span");
     title.className = "sessionItemTitle";
     title.textContent = sessionTitle(item);

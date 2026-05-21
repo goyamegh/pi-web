@@ -1,3 +1,31 @@
+export type AgentKind = "pi" | "claude-code" | "mock";
+
+export type AgentCapabilities = {
+  compaction: boolean;
+  conversationTree: boolean;
+  extensionDialogs: boolean;
+  multiProviderModels: boolean;
+  imageInput: boolean;
+  permissionPrompts: boolean;
+  thinkingLevels: boolean;
+  promptTemplates: boolean;
+  reload: boolean;
+  branchSummaries: boolean;
+};
+
+export const defaultAgentCapabilities: AgentCapabilities = {
+  compaction: true,
+  conversationTree: true,
+  extensionDialogs: true,
+  multiProviderModels: true,
+  imageInput: true,
+  permissionPrompts: false,
+  thinkingLevels: true,
+  promptTemplates: true,
+  reload: true,
+  branchSummaries: true,
+};
+
 export type Role = "user" | "assistant" | "tool" | "system";
 
 export type PiEvent = {
@@ -7,7 +35,7 @@ export type PiEvent = {
 
 export type QueueMode = "steer" | "followUp";
 
-export type SlashCommandSource = "web" | "extension" | "prompt" | "skill";
+export type SlashCommandSource = "web" | "extension" | "prompt" | "skill" | "claude-code";
 
 export type SlashCommand = {
   name: string;
@@ -187,6 +215,7 @@ export type SessionInfo = {
   modified: string;
   messageCount: number;
   cwd?: string;
+  agent?: AgentKind;
   isCurrent: boolean;
   inactive?: boolean;
   saved?: boolean;
@@ -221,6 +250,8 @@ export type AppState = {
   pinnedSessions: PinnedSession[];
   sessionMarkers: SessionMarker[];
   selectedMarkerColor: SessionMarkerColorId;
+  currentAgent: AgentKind;
+  currentCapabilities: AgentCapabilities;
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   hideInactiveSessions: boolean;
@@ -310,6 +341,8 @@ export function createAppState(): AppState {
     pinnedSessions: readLegacyPinnedSessions(),
     sessionMarkers: readLegacySessionMarkers(),
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
+    currentAgent: "pi",
+    currentCapabilities: defaultAgentCapabilities,
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
     hideInactiveSessions: localStorage.getItem("pi-web:hideInactiveSessions") === "true",
