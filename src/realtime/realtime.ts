@@ -280,9 +280,21 @@ export function createRealtime(options: {
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
         if (data.type === "state_changed" && !isReplay) {
-          refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
-          if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
-          scheduleSessionRefresh();
+          // Skip the redundant refresh when this state_changed is the broadcast
+          // echo of a session switch the client already applied directly from
+          // the /api/sessions/open response. The 5s window is generous; under
+          // normal latency the echo arrives within ~50ms.
+          const switched = state.lastSwitchedSession;
+          const isOwnSwitchEcho = switched
+            && switched.sessionId === data.sessionId
+            && Date.now() - switched.ts < 5000;
+          if (isOwnSwitchEcho) {
+            state.lastSwitchedSession = undefined;
+          } else {
+            refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+            if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
+            scheduleSessionRefresh();
+          }
         }
         return;
       }

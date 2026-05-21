@@ -113,6 +113,22 @@ export function createSessions(options: {
   // refreshSessions() completes.
   const pinnedRuntimes = new Map<string, SessionInfo["runtime"]>();
 
+  // Apply the state payload returned by /api/sessions/open without the extra
+  // /api/state round-trip refreshState() does. The POST response already carries
+  // the new session's full state; combining its data with a single
+  // refreshMessages() + refreshModels() roughly halves switch latency by
+  // eliminating one full /api/state and one duplicate /api/messages call. The
+  // marker on AppState lets the WS state_changed echo skip its own refresh.
+  async function applySwitchedSessionState(data: any) {
+    if (data && typeof data === "object") {
+      updateMeta(data);
+      state.isStreaming = Boolean(data.isStreaming);
+      if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
+      if (data.sessionId) state.lastSwitchedSession = { sessionId: data.sessionId, ts: Date.now() };
+    }
+    await Promise.all([refreshModels(), refreshMessages()]);
+  }
+
   function updateEmptyCwdChooser() {
     elements.emptyCwdPathEl.textContent = state.currentCwd;
     elements.emptyCwdChooserEl.hidden = elements.messagesEl.children.length > 0 || state.isStreaming;
@@ -352,9 +368,10 @@ export function createSessions(options: {
               body: JSON.stringify({ sessionId: live.id, cwd }),
             });
             if (!openRes.ok) throw new Error(await openRes.text());
+            const openData = await openRes.json().catch(() => ({}));
             rememberSessionCwd(cwd);
             markCachedCurrentSession(live.id, cwd);
-            await refreshState();
+            await applySwitchedSessionState(openData);
           } catch (error) {
             // Revert the optimistic highlight if the switch failed.
             state.currentSessionId = previousSessionId;
@@ -665,11 +682,12 @@ export function createSessions(options: {
           body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd }),
         });
         if (!openRes.ok) throw new Error(await openRes.text());
+        const openData = await openRes.json().catch(() => ({}));
         const nextCwd = item.cwd || cwd;
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
-        await refreshState();
+        await applySwitchedSessionState(openData);
       } catch (error) {
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
         if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
