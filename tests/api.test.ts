@@ -90,8 +90,16 @@ describe("pi-web mock API", () => {
     expect(messages.messages[0].text).toContain("image attachments");
 
     const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
-    expect(sessions.sessions).toHaveLength(2);
+    // The mock harness ships three sessions: two pi + one claude-code so e2e
+    // tests can assert mixed-agent rendering. Every entry must carry an
+    // `agent` field so the unified session list never renders a row without
+    // a badge (the original "toggling" regression).
+    expect(sessions.sessions).toHaveLength(3);
     expect(sessions.sessions[0].isCurrent).toBe(true);
+    const agents = new Set(sessions.sessions.map((s: { agent: string }) => s.agent));
+    expect(agents.has("pi")).toBe(true);
+    expect(agents.has("claude-code")).toBe(true);
+    for (const session of sessions.sessions) expect(["pi", "claude-code"]).toContain(session.agent);
   });
 
   it("returns and navigates the conversation tree", async () => {

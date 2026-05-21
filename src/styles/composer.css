@@ -382,6 +382,14 @@ select {
   padding: 0;
   border-bottom: 0;
 }
+/* `display: inline-grid` above overrides the browser UA's `[hidden] { display:
+   none }` rule (equal specificity, class wins by source order), so without
+   this any iconButton with the `hidden` attribute would still render. The
+   capability-driven gating in updateMeta sets `button.hidden = true` and
+   relies on this rule to actually hide the affordance. */
+.iconButton[hidden] {
+  display: none;
+}
 .iconButton svg {
   width: 17px;
   height: 17px;
