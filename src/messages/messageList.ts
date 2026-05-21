@@ -14,6 +14,23 @@ type ToolCallSummary = {
   args: Record<string, unknown>;
 };
 
+type RenderedState = {
+  sessionId: string;
+  count: number;
+  lastFingerprint: string;
+};
+
+// Stable per-message identity used to detect whether the rendered prefix
+// still matches the server's transcript. Timestamp + role + id + text length
+// is unique enough that a prefix match is reliable, and cheap to compute.
+function messageFingerprint(message: any): string {
+  const role = String(message?.role || "");
+  const ts = String(message?.timestamp || message?.raw?.timestamp || "");
+  const id = String(message?.toolCallId || message?.raw?.toolCallId || "");
+  const textLen = typeof message?.text === "string" ? message.text.length : 0;
+  return `${role}|${ts}|${id}|${textLen}`;
+}
+
 export type MessageList = {
   addMessage: (role: Role, text: string, extraClass?: string, images?: AttachedImage[]) => HTMLDivElement;
   appendStreamingDelta: (delta: string) => void;
@@ -59,6 +76,16 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   let shouldFollowStream = true;
   let programmaticScroll = false;
   let userScrollIntent = false;
+  // Snapshot of what's currently rendered. Lets refreshMessages skip the rebuild
+  // when nothing changed, or do an append-only render when only new messages
+  // arrived. Cleared by clear(), invalidated by ad-hoc DOM mutations.
+  let rendered: RenderedState | null = null;
+  let renderedFingerprints: string[] = [];
+
+  function invalidateRendered() {
+    rendered = null;
+    renderedFingerprints = [];
+  }
   const bottomThreshold = 48;
   const resumeBottomThreshold = 4;
 
@@ -196,6 +223,9 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     }
 
     messagesEl.append(div);
+    // Out-of-band DOM addition — caller controls semantics, so the next
+    // refreshMessages must do a full rebuild rather than try to reconcile.
+    invalidateRendered();
     scrollToBottom();
     return div;
   }
@@ -203,6 +233,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   function clear() {
     messagesEl.textContent = "";
     streamingAssistant = null;
+    invalidateRendered();
     setJumpButtonVisible(false);
   }
 
@@ -254,43 +285,86 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     const res = await fetch(`/api/messages${query}`, { headers: headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    const wasFollowing = shouldFollowStream;
-    const previousScrollTop = messagesEl.scrollTop;
-    clear();
-    clearActiveToolCards();
-    const allMessages = data.messages || [];
+    const allMessages = (data.messages || []) as any[];
+    const fingerprints = allMessages.map(messageFingerprint);
+    const lastFingerprint = fingerprints[fingerprints.length - 1] || "";
+
+    // Decide: skip / append-only / full rebuild. The same-sessionId guard is
+    // critical — switching sessions reuses messagesEl, so a different
+    // sessionId always demands a rebuild even if counts happen to match.
+    const sameSession = rendered !== null && rendered.sessionId === sessionId;
+    const matchesPrefix = sameSession
+      && renderedFingerprints.length <= fingerprints.length
+      && renderedFingerprints.every((fp, i) => fp === fingerprints[i]);
+
+    // No-op fast path: already showing exactly this transcript. Avoids a full
+    // wipe-and-rebuild on every WS state_changed echo / drawer-open refresh.
+    if (sameSession && matchesPrefix && rendered!.count === allMessages.length && rendered!.lastFingerprint === lastFingerprint) {
+      updateEmptyCwdChooser?.();
+      return;
+    }
+
     const completedToolCallIds = new Set<string>();
     for (const message of allMessages) {
       const id = message?.toolCallId || message?.raw?.toolCallId;
       if (message?.role === "toolResult" && typeof id === "string") completedToolCallIds.add(id);
     }
-    for (const message of allMessages) {
-      if (message.role === "toolResult") {
-        const toolName = message.toolName || message.raw?.toolName || message.name || "tool";
-        const isError = Boolean(message.isError);
-        const resultText = messageText(message);
-        addToolHistoryCard(toolName, isError, resultText, message.toolArgs);
-        continue;
-      }
-      const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
-      const text = messageText(message);
-      if (text) {
-        if (role === "assistant" && message.isError) {
-          const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
-          addRuntimeErrorCard("assistant error", text, rawError);
+
+    const renderRange = (start: number, end: number) => {
+      for (let i = start; i < end; i++) {
+        const message = allMessages[i];
+        if (message.role === "toolResult") {
+          const toolName = message.toolName || message.raw?.toolName || message.name || "tool";
+          const isError = Boolean(message.isError);
+          const resultText = messageText(message);
+          addToolHistoryCard(toolName, isError, resultText, message.toolArgs);
           continue;
         }
-        const rawImages = role === "user" ? imagesFromRawContent(message.raw?.content || message.content) : [];
-        const extraClass = message.role === "compactionSummary" ? "compaction" : message.isError ? "error" : "";
-        addMessage(role, text, extraClass, rawImages);
-      }
-      if (role === "assistant" && isStreaming) {
-        for (const call of messageToolCalls(message)) {
-          if (call.id && completedToolCallIds.has(call.id)) continue;
-          addPendingToolCard(call.id, call.toolName, call.args);
+        const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
+        const text = messageText(message);
+        if (text) {
+          if (role === "assistant" && message.isError) {
+            const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
+            addRuntimeErrorCard("assistant error", text, rawError);
+            continue;
+          }
+          const rawImages = role === "user" ? imagesFromRawContent(message.raw?.content || message.content) : [];
+          const extraClass = message.role === "compactionSummary" ? "compaction" : message.isError ? "error" : "";
+          addMessage(role, text, extraClass, rawImages);
+        }
+        if (role === "assistant" && isStreaming) {
+          for (const call of messageToolCalls(message)) {
+            if (call.id && completedToolCallIds.has(call.id)) continue;
+            addPendingToolCard(call.id, call.toolName, call.args);
+          }
         }
       }
+    };
+
+    const wasFollowing = shouldFollowStream;
+    const previousScrollTop = messagesEl.scrollTop;
+
+    if (sameSession && matchesPrefix) {
+      // Append-only path: keep the rendered prefix, render only the new tail.
+      // Scroll position is preserved automatically because we don't touch
+      // existing nodes; addMessage's own scrollToBottom honors shouldFollowStream.
+      // addMessage invalidates the cache, so we re-snapshot at the end.
+      renderRange(renderedFingerprints.length, allMessages.length);
+      rendered = { sessionId, count: allMessages.length, lastFingerprint };
+      renderedFingerprints = fingerprints;
+      updateEmptyCwdChooser?.();
+      return;
     }
+
+    // Full rebuild fallback. Same behavior as before the cache existed:
+    // wipe DOM, restore scroll if user wasn't following, render everything.
+    clear();
+    clearActiveToolCards();
+    renderRange(0, allMessages.length);
+
+    rendered = { sessionId, count: allMessages.length, lastFingerprint };
+    renderedFingerprints = fingerprints;
+
     if (wasFollowing) scrollToBottom();
     else {
       programmaticScroll = true;
