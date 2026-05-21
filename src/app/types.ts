@@ -261,10 +261,24 @@ export type AppState = {
   editorExpanded: boolean;
   settings: PiWebSettings;
   stats?: SessionStats;
+  // Marker set when the client initiates a session switch so the WS-triggered
+  // state_changed echo can skip the redundant message refresh.
+  lastSwitchedSession?: { sessionId: string; ts: number };
 };
 
+// Connection-status timing.
+//
+// When pi-web is served behind a reverse tunnel or proxy that periodically
+// recycles the upstream connection, the client may briefly auto-reconnect
+// (~1s on the server side). The browser then waits `reconnectDelayMs` (1.5s)
+// before retrying its WebSocket, so the typical end-to-end gap during such a
+// hiccup is ~2–3s. The "Live updates reconnecting…" pill should not flicker
+// in this window — it's noise, not an outage. `reconnectNoticeDelayMs` is
+// therefore set above that natural recovery window so brief hiccups stay
+// completely silent and the pill only appears for genuine longer outages,
+// after which `connectionLostDelayMs` escalates to "Live updates unavailable".
 export const reconnectDelayMs = 1500;
-export const reconnectNoticeDelayMs = 2500;
+export const reconnectNoticeDelayMs = 4000;
 export const connectionLostDelayMs = 15000;
 export const sessionFolderPreviewLimit = 8;
 
