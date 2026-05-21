@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import "./style.css";
 import "./components/diff.css";
 import "./git/git.css";
@@ -20,6 +21,42 @@ import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
 
 initAppHeightSync();
+
+// Dev-mode hygiene: vite-plugin-pwa registers a Service Worker for production
+// builds only (devOptions.enabled defaults to false), but browsers persist any
+// SW once registered — if this origin ever served a production build (e.g. via
+// `npm run start` or a deployed tunnel URL), that SW is still active and will
+// keep intercepting asset requests with stale precached bundles, racing the
+// fresh dev modules from Vite. A hard reload does NOT unregister SWs (it only
+// bypasses the HTTP cache), so the only reliable way to recover is for the page
+// itself to actively unregister any lingering registration on dev startup.
+//
+// This mirrors create-react-app's `serviceWorkerRegistration.ts` pattern and
+// is recommended in vite-plugin-pwa's FAQ for the same reason. It is a no-op
+// in production where the SW is the canonical asset source, and idempotent so
+// safe to run on every dev page load.
+if (import.meta.env.DEV && "serviceWorker" in navigator) {
+  void (async () => {
+    try {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      if (registrations.length === 0) return;
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+      if (typeof caches !== "undefined") {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((key) => caches.delete(key)));
+      }
+      // Reload once after the cleanup so the page no longer races a half-active
+      // SW. We mark the reload via a sessionStorage flag so we never loop.
+      const reloadKey = "pi-web:dev-sw-reload";
+      if (!sessionStorage.getItem(reloadKey)) {
+        sessionStorage.setItem(reloadKey, "1");
+        location.reload();
+      }
+    } catch {
+      // Browsers without SW support, private mode quirks, etc. — nothing to do.
+    }
+  })();
+}
 
 const elements = getAppElements();
 const state = createAppState();
