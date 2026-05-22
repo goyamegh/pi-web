@@ -1167,7 +1167,10 @@ async function executeSlashCommand(input: string, targetSession: AgentAdapter = 
 async function findSessionInfoById(id: string, cwd?: string) {
   if (!id) return undefined;
   if (noSession) return undefined;
-  if (mockMode) return mockSessions.find((info) => info.id === id);
+  if (mockMode) {
+    const hit = mockSessions.find((info) => info.id === id);
+    return hit ? { ...hit, cwd: hit.cwd || cwd } : undefined;
+  }
 
   if (cwd && cwd.trim()) {
     const resolvedCwd = resolve(cwd);
@@ -1175,6 +1178,7 @@ async function findSessionInfoById(id: string, cwd?: string) {
     if (sessionInfo?.cwd) knownCwds.add(sessionInfo.cwd);
     if (sessionInfo) return sessionInfo;
   }
+
 
   for (const knownCwd of knownCwds) {
     const sessionInfo = (await SessionManager.list(knownCwd)).find((info) => info.id === id);
@@ -1186,15 +1190,20 @@ async function findSessionInfoById(id: string, cwd?: string) {
   if (sessionInfo?.cwd) knownCwds.add(sessionInfo.cwd);
   if (sessionInfo) return sessionInfo;
 
-  // Claude Code fallback: scan ~/.claude/projects/<slug>/ for the id. We return
-  // a uniform shape with `.path` so getOrCreateLiveSession() can route through
-  // detectAgentForPath() and dispatch to the right adapter.
+  // Claude Code fallback: scan ~/.claude/projects/<slug>/ for the id across all
+  // known cwds (not just the active one) so a CC session stays openable after
+  // the user switches cwd. The result carries the cwd the hit was found under so
+  // getOrCreateLiveSessionById can flip piCwd to it before constructing the
+  // adapter — the CC adapter binds its `--add-dir` and transcript path off piCwd
+  // at construction time, and a mismatched piCwd would write the new turn into
+  // the wrong project slug.
   const ccCwds = [cwd, ...knownCwds].filter((c): c is string => Boolean(c && c.trim()));
   for (const ccCwd of (ccCwds.length ? ccCwds : [piCwd])) {
     const ccSessions = await listCCSessions(ccCwd).catch(() => []);
     const ccHit = ccSessions.find((info) => info.id === id);
-    if (ccHit) return { id: ccHit.id, path: ccHit.path } as { id: string; path: string };
+    if (ccHit) return { id: ccHit.id, path: ccHit.path, cwd: ccCwd } as { id: string; path: string; cwd: string };
   }
+
 
   return undefined;
 }
@@ -1245,7 +1254,13 @@ async function getOrCreateLiveSessionById(id: string, cwd?: string) {
     if (entry.session.sessionId === id) return entry.session;
   }
   const info = await findSessionInfoById(id, cwd);
-  return info ? getOrCreateLiveSession(info.path) : undefined;
+  if (!info) return undefined;
+  // Switch piCwd to the session's home cwd before constructing the adapter
+  // so the CC adapter's --add-dir and transcript path resolve correctly. No-op
+  // when the session lives in the active cwd.
+  const targetCwd = (info as { cwd?: string }).cwd;
+  if (targetCwd && targetCwd !== piCwd) await setPiCwd(targetCwd);
+  return getOrCreateLiveSession(info.path);
 }
 
 async function switchToSessionId(id: string, cwd?: string) {
