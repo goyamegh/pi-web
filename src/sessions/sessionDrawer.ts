@@ -141,6 +141,12 @@ export function createSessions(options: {
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
   type SessionRowTool = "pin" | SessionMarkerColorId;
   let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
+  // When the user is inline-renaming a session, we must not rebuild the list
+  // row underneath them — otherwise removing the focused <input> from the DOM
+  // fires `blur`, which triggers a save with the in-progress text. While a
+  // session is streaming, runtime events fire frequently and would otherwise
+  // clobber the rename input on every tick. Set while editing is active.
+  let activeRenameSessionId: string | null = null;
 
   type SessionAction = {
     id: string;
@@ -332,7 +338,9 @@ export function createSessions(options: {
       return pinned;
     });
     if (labelsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
-    renderSessionList(cachedSessions);
+    // Skip list rebuild while inline-renaming so the focused input survives.
+    // The active rename's `finish` will re-render once it completes.
+    if (activeRenameSessionId === null) renderSessionList(cachedSessions);
     renderSessionBar();
   }
 
@@ -366,7 +374,9 @@ export function createSessions(options: {
       if (isPinned) renderSessionBar();
       return;
     }
-    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
+    // Don't rebuild the list while the user is inline-renaming — it would
+    // remove the focused <input>, fire blur, and save unintentionally.
+    if (!elements.sessionDrawer.hidden && activeRenameSessionId === null) renderSessionList(cachedSessions);
     renderSessionBar();
   }
 
@@ -1328,6 +1338,9 @@ export function createSessions(options: {
   }
 
   function beginInlineRename(row: HTMLElement, navBtn: HTMLElement, item: SessionInfo) {
+    // Mark this session as being renamed so list re-renders triggered by
+    // streaming runtime updates don't yank the input out from under the user.
+    activeRenameSessionId = item.id;
     // Hide the nav button and show an inline input for renaming
     const input = document.createElement("input");
     input.type = "text";
@@ -1351,6 +1364,7 @@ export function createSessions(options: {
     const finish = async (save: boolean) => {
       if (finished) return;
       finished = true;
+      activeRenameSessionId = null;
       const newName = input.value.trim();
       input.remove();
       navBtn.style.display = originalDisplay;
