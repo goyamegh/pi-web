@@ -96,11 +96,17 @@ test.describe("composer layout", () => {
       (window as any).__piWebSocketAutoOpen = false;
       (window as any).__piWebSockets.at(-1).emitClose();
     });
+    // Stay below reconnectNoticeDelayMs (4000ms) — pill must remain hidden so
+    // brief tunnel hiccups don't flicker in/out.
     await page.clock.runFor(2501);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    // Cross reconnectNoticeDelayMs — pill should now appear.
+    await page.clock.runFor(1_500);
     await expect(page.locator("#connectionStatus")).toHaveText("Live updates reconnecting…");
     await expect(page.locator(".message.system", { hasText: "Disconnected" })).toHaveCount(0);
 
-    await page.clock.runFor(12_500);
+    // Total elapsed since close: 2501 + 1500 + 11_000 = 15_001ms ≥ connectionLostDelayMs (15_000).
+    await page.clock.runFor(11_000);
     await expect(page.locator("#connectionStatus")).toHaveText("Live updates unavailable");
 
     await page.evaluate(() => {
@@ -124,6 +130,58 @@ test.describe("composer layout", () => {
     await expect(page.locator("#statusTitle")).toHaveText("Renamed from title");
     const sessions = await (await page.request.get("/api/sessions")).json();
     expect(sessions.sessions.find((item: any) => item.id === "mock-current").name).toBe("Renamed from title");
+  });
+
+  test("inline rename of a streaming session is not clobbered by runtime updates", async ({ page }) => {
+    // Regression: while a session is streaming, session_runtime_changed events
+    // (and pi_event-driven session refreshes) used to call renderSessionList,
+    // which removed the focused rename <input> from the DOM. The native blur
+    // that fired on removal triggered finish(true), POSTing a save with the
+    // partial value and re-creating the row — i.e. the pencil kept refreshing
+    // and the edit bar kept saving. The fix suppresses list re-renders while
+    // an inline rename is active. This test exercises the streaming session
+    // path and asserts the input survives plus exactly one save is sent.
+    let renameRequestCount = 0;
+    await page.route("**/api/session/name", async (route) => {
+      if (route.request().method() === "POST") renameRequestCount += 1;
+      await route.continue();
+    });
+
+    await page.goto("/");
+
+    // Kick off a slow task on the current session so runtime updates keep
+    // streaming in for the duration of the rename interaction.
+    await page.locator("#prompt").fill("slow background task");
+    await page.locator("#primaryButton").click();
+
+    // Open the session drawer and wait for the spinner that confirms streaming.
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+    const row = page.locator(".sessionItem.current").first();
+    await expect(row.locator(".sessionSpinner")).toBeVisible({ timeout: 3000 });
+
+    // Begin inline rename while runtime events are still flowing.
+    await row.locator(".sessionRenameBtn").click();
+    const input = row.locator(".sessionRenameInput");
+    await expect(input).toBeVisible();
+    await input.fill("Renamed mid-stream");
+
+    // Give the streaming session enough time to emit several runtime updates
+    // and at least one pi_event-driven session refresh. Without the fix, the
+    // input would have been removed by now and one or more saves would have
+    // already been sent.
+    await page.waitForTimeout(900);
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue("Renamed mid-stream");
+    expect(renameRequestCount).toBe(0);
+
+    // Commit the rename. The list re-renders once finish() runs.
+    await input.press("Enter");
+    await expect(row.locator(".sessionItemTitle")).toHaveText("Renamed mid-stream");
+    expect(renameRequestCount).toBe(1);
+
+    const sessions = await (await page.request.get("/api/sessions")).json();
+    expect(sessions.sessions.find((item: any) => item.id === "mock-current").name).toBe("Renamed mid-stream");
   });
 
   test("new session resets status title", async ({ page }) => {
