@@ -17,6 +17,7 @@ export type PiWebSettings = {
   appearance: {
     density: "comfortable" | "compact";
     navPinned: boolean;
+    navWidth: number;
   };
   composer: {
     queueMode: "steer" | "followUp";
@@ -35,6 +36,7 @@ export type PiWebSettingsPatch = Partial<{
   appearance: Partial<{
     density: unknown;
     navPinned: unknown;
+    navWidth: unknown;
   }>;
   composer: Partial<{
     queueMode: unknown;
@@ -53,6 +55,7 @@ export const defaultPiWebSettings: PiWebSettings = {
   appearance: {
     density: "comfortable",
     navPinned: false,
+    navWidth: 360,
   },
   composer: {
     queueMode: "steer",
@@ -94,6 +97,9 @@ export function normalizeSettings(value: unknown): PiWebSettings {
     settings.appearance.density = appearance.density;
   }
   if (typeof appearance?.navPinned === "boolean") settings.appearance.navPinned = appearance.navPinned;
+  if (typeof appearance?.navWidth === "number" && Number.isFinite(appearance.navWidth)) {
+    settings.appearance.navWidth = Math.round(Math.max(240, Math.min(520, appearance.navWidth)));
+  }
 
   const composer = isRecord(value.composer) ? value.composer : undefined;
   if (composer?.queueMode === "followUp" || composer?.queueMode === "steer") {
@@ -125,6 +131,9 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
       next.appearance.density = patch.appearance.density;
     }
     if (typeof patch.appearance.navPinned === "boolean") next.appearance.navPinned = patch.appearance.navPinned;
+    if (typeof patch.appearance.navWidth === "number" && Number.isFinite(patch.appearance.navWidth)) {
+      next.appearance.navWidth = Math.round(Math.max(240, Math.min(520, patch.appearance.navWidth)));
+    }
   }
 
   if (isRecord(patch.composer)) {
