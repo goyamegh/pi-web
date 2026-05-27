@@ -16,6 +16,7 @@ import { createMessageList } from "./messages/messageList.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
+import { initSessionDrawerResize } from "./sessions/sessionDrawerResize.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createToolCards } from "./tools/toolCards.js";
@@ -176,6 +177,9 @@ settings = createSettings({
       sessions.setSessionDrawerOpen(false, true);
     }
   },
+  onNavWidthChange: (width) => {
+    document.documentElement.style.setProperty("--session-drawer-width", `${width}px`);
+  },
 });
 
 contextMeter = createContextMeter({ state, elements });
@@ -248,6 +252,7 @@ composer.init();
 conversationTree.init();
 modelSettings.init();
 settings.init();
+initSessionDrawerResize({ elements, settings });
 repoInfoBar.init();
 composer.updateQueueToggle();
 initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, apiHeaders: api.headers });

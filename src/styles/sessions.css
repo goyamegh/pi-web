@@ -626,3 +626,38 @@ body.hasPinnedSessions .app {
     opacity: 0.7;
   }
 }
+
+/* ── Resize handle ── */
+.sessionDrawerResizeHandle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 22;
+}
+.sessionDrawerResizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 3px;
+  bottom: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.sessionDrawerResizeHandle:hover::after,
+body.sessionDrawerResizing .sessionDrawerResizeHandle::after {
+  background: var(--accent);
+}
+body.sessionDrawerResizing {
+  cursor: col-resize !important;
+  user-select: none;
+}
+@media (max-width: 700px) {
+  .sessionDrawerResizeHandle {
+    display: none;
+  }
+}

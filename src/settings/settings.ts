@@ -7,7 +7,9 @@ export type SettingsController = {
   init: () => void;
   refreshSettings: () => Promise<void>;
   applySettings: (settings: PiWebSettings) => void;
+  patchSettings: (patch: unknown) => Promise<void>;
   isNavPinned: () => boolean;
+  getNavWidth: () => number;
 };
 
 function cloneSettings(settings: PiWebSettings): PiWebSettings {
@@ -25,6 +27,9 @@ function normalizeSettings(value: unknown): PiWebSettings {
   const appearance = isRecord(value.appearance) ? value.appearance : undefined;
   if (appearance?.density === "compact" || appearance?.density === "comfortable") settings.appearance.density = appearance.density;
   if (typeof appearance?.navPinned === "boolean") settings.appearance.navPinned = appearance.navPinned;
+  if (typeof appearance?.navWidth === "number" && Number.isFinite(appearance.navWidth)) {
+    settings.appearance.navWidth = Math.round(Math.max(240, Math.min(520, appearance.navWidth)));
+  }
 
   const composer = isRecord(value.composer) ? value.composer : undefined;
   if (composer?.queueMode === "steer" || composer?.queueMode === "followUp") settings.composer.queueMode = composer.queueMode;
@@ -63,9 +68,11 @@ export function createSettings(options: {
   api: ApiClient;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
   onNavPinnedChange?: (pinned: boolean) => void;
+  onNavWidthChange?: (width: number) => void;
 }): SettingsController {
-  const { state, elements, api, addMessage, onNavPinnedChange } = options;
+  const { state, elements, api, addMessage, onNavPinnedChange, onNavWidthChange } = options;
   let lastNavPinned: boolean | undefined;
+  let lastNavWidth: number | undefined;
 
   function updateQueueToggle() {
     const isSteer = state.queueMode === "steer";
@@ -100,6 +107,10 @@ export function createSettings(options: {
     if (lastNavPinned !== settings.appearance.navPinned) {
       lastNavPinned = settings.appearance.navPinned;
       onNavPinnedChange?.(settings.appearance.navPinned);
+    }
+    if (lastNavWidth !== settings.appearance.navWidth) {
+      lastNavWidth = settings.appearance.navWidth;
+      onNavWidthChange?.(settings.appearance.navWidth);
     }
   }
 
@@ -200,5 +211,5 @@ export function createSettings(options: {
     });
   }
 
-  return { init, refreshSettings, applySettings, isNavPinned: () => state.settings.appearance.navPinned };
+  return { init, refreshSettings, applySettings, patchSettings, isNavPinned: () => state.settings.appearance.navPinned, getNavWidth: () => state.settings.appearance.navWidth };
 }

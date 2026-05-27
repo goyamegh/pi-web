@@ -26,7 +26,7 @@ describe("pi-web settings", () => {
       defaults: { model: { provider: "", id: "model" }, thinkingLevel: "" },
     })).toEqual({
       version: 1,
-      appearance: { density: "comfortable", navPinned: false },
+      appearance: { density: "comfortable", navPinned: false, navWidth: 360 },
       composer: { queueMode: "steer", expanded: false },
       defaults: {
         model: { provider: "amazon-bedrock", id: "us.anthropic.claude-opus-4-7" },
@@ -45,7 +45,7 @@ describe("pi-web settings", () => {
 
     expect(next).toEqual({
       version: 1,
-      appearance: { density: "compact", navPinned: false },
+      appearance: { density: "compact", navPinned: false, navWidth: 360 },
       composer: { queueMode: "followUp", expanded: true },
       defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low" },
     });
