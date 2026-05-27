@@ -12,6 +12,7 @@ import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
+import { createRepoInfoBar, type RepoInfoBarController } from "./composer/repoInfoBar.js";
 import { initGitPanel } from "./git/panel.js";
 import { createMarkdownRenderer } from "./markdown/render.js";
 import { createMessageList } from "./messages/messageList.js";
@@ -71,6 +72,7 @@ const tools = createToolCards(elements.messagesEl, messages.scrollToBottom);
 
 let composer: ComposerController;
 let contextMeter: ContextMeterController;
+let repoInfoBar: RepoInfoBarController;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
 let settings: SettingsController;
@@ -108,6 +110,7 @@ function updateMeta(data: any) {
       sessions.renderCurrentSessionBucketButton();
     }
   }
+  if (repoInfoBar) repoInfoBar.scheduleRefresh();
 }
 
 function updateSessionStats(stats: any) {
@@ -202,6 +205,8 @@ settings = createSettings({
 });
 
 contextMeter = createContextMeter({ state, elements });
+
+repoInfoBar = createRepoInfoBar({ state, elements, api });
 
 sessions = createSessions({
   state,
@@ -305,6 +310,7 @@ initKeyboardShortcuts([
   },
   onError: showSystemError,
 });
+repoInfoBar.init();
 composer.updateQueueToggle();
 initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 window.addEventListener("popstate", () => {

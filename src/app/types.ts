@@ -89,6 +89,7 @@ export type PiWebSettings = {
   appearance: {
     density: "comfortable" | "compact";
     navPinned: boolean;
+    navWidth: number;
   };
   composer: {
     queueMode: QueueMode;
@@ -284,7 +285,7 @@ export const sessionFolderPreviewLimit = 8;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
-  appearance: { density: "comfortable", navPinned: false },
+  appearance: { density: "comfortable", navPinned: false, navWidth: 360 },
   composer: { queueMode: "steer", expanded: false },
   defaults: {
     model: { provider: "amazon-bedrock", id: "us.anthropic.claude-opus-4-7" },

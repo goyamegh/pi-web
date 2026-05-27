@@ -25,6 +25,7 @@ export type AppElements = {
   sessionNewButton: HTMLButtonElement;
   sessionListEl: HTMLDivElement;
   sessionBarEl: HTMLDivElement;
+  repoInfoBarEl: HTMLDivElement;
   queueToggle: HTMLButtonElement;
   attachButton: HTMLButtonElement;
   imageInput: HTMLInputElement;
@@ -95,6 +96,7 @@ export function getAppElements(): AppElements {
     sessionNewButton: requiredElement<HTMLButtonElement>("#sessionNewButton"),
     sessionListEl: requiredElement<HTMLDivElement>("#sessionList"),
     sessionBarEl: requiredElement<HTMLDivElement>("#sessionBar"),
+    repoInfoBarEl: requiredElement<HTMLDivElement>("#repoInfoBar"),
     queueToggle: requiredElement<HTMLButtonElement>("#queueToggle"),
     attachButton: requiredElement<HTMLButtonElement>("#attachButton"),
     imageInput: requiredElement<HTMLInputElement>("#imageInput"),
