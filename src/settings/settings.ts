@@ -65,6 +65,7 @@ export function createSettings(options: {
   onNavPinnedChange?: (pinned: boolean) => void;
 }): SettingsController {
   const { state, elements, api, addMessage, onNavPinnedChange } = options;
+  let lastNavPinned: boolean | undefined;
 
   function updateQueueToggle() {
     const isSteer = state.queueMode === "steer";
@@ -96,7 +97,10 @@ export function createSettings(options: {
 
     updateQueueToggle();
     updateExpandedComposer();
-    onNavPinnedChange?.(settings.appearance.navPinned);
+    if (lastNavPinned !== settings.appearance.navPinned) {
+      lastNavPinned = settings.appearance.navPinned;
+      onNavPinnedChange?.(settings.appearance.navPinned);
+    }
   }
 
   function setSettingsStatus(message: string, isError = false) {
