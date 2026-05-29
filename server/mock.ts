@@ -312,6 +312,7 @@ export function createMockHarness(options: MockSessionOptions) {
         const slow = /slow|running/i.test(message);
         const withShowcase = /showcase/i.test(message);
         const withProviderError = /provider error|assistant error|usage limit/i.test(message);
+        const withThinking = /thinking card/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
         const withEditTool = !withShowcase && !withMalformedEditTool && /edit diff/i.test(message);
         const withPendingToolRefresh = /pending tool refresh/i.test(message);
@@ -328,6 +329,11 @@ export function createMockHarness(options: MockSessionOptions) {
             errorMessage: "Codex error: {\"type\":\"error\",\"error\":{\"type\":\"usage_limit_reached\",\"message\":\"The usage limit has been reached\",\"resets_in_seconds\":120},\"status_code\":429}",
             timestamp: new Date().toISOString(),
           });
+        } else if (withThinking) {
+          appendMockMessage({ role: "assistant", content: [
+            { type: "thinking", thinking: "First I will inspect the request and decide what to answer." },
+            { type: "text", text: "Final answer after thinking." },
+          ], timestamp: new Date().toISOString() });
         } else if (withShowcase) {
           const editArgs = { path: "/Users/ashwin/projects/pi-web/src/style.css", edits: [{ oldText: ".sessionItem {\n  min-height: 40px;\n}", newText: ".sessionItem {\n  height: auto;\n  min-height: 0;\n}\n\n@media (max-width: 700px) {\n  .sessionDrawer { width: 100vw; }\n}" }] };
           appendMockMessage({ role: "assistant", content: [

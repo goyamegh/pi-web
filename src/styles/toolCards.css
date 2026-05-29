@@ -15,6 +15,7 @@
 .toolCard--running { background: color-mix(in srgb, var(--panel-2) 80%, #1a3050); }
 .toolCard--success { background: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
 .toolCard--error   { background: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
+.toolCard--thinking { background: color-mix(in srgb, var(--tool) 70%, #251a3d); }
 
 .toolCardHeader {
   display: flex;
@@ -70,6 +71,7 @@
 }
 .toolCard--success .toolCardIcon::before { content: "✓"; color: #4ade80; }
 .toolCard--error   .toolCardIcon::before { content: "✗"; color: var(--danger); }
+.toolCard--thinking .toolCardIcon::before { content: "✦"; color: #c4b5fd; }
 @keyframes toolSpin { to { transform: rotate(360deg); } }
 
 .toolCardLabel {
@@ -161,6 +163,7 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
 .toolCard--running .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--panel-2) 80%, #1a3050); }
 .toolCard--success .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
 .toolCard--error   .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
+.toolCard--thinking .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 70%, #251a3d); }
 
 :root[data-density="compact"] .toolCard {
   font-size: 12px;

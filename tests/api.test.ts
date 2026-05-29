@@ -94,6 +94,26 @@ describe("pi-web mock API", () => {
     expect(sessions.sessions[0].isCurrent).toBe(true);
   });
 
+  it("creates folders from the directory picker API", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-web-picker-"));
+    try {
+      const res = await fetch(`${baseUrl}/api/fs/dirs`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ parent, name: "new-project" }),
+      });
+      expect(res.status).toBe(201);
+      const data = await res.json();
+      expect(data.path).toBe(join(parent, "new-project"));
+      expect(data.parent).toBe(parent);
+
+      const listed = await (await fetch(`${baseUrl}/api/fs/dirs?path=${encodeURIComponent(parent)}`)).json();
+      expect(listed.dirs.some((dir: any) => dir.name === "new-project")).toBe(true);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it("returns and navigates the conversation tree", async () => {
     const tree = await (await fetch(`${baseUrl}/api/session/tree`)).json();
     expect(tree.sessionId).toBe("mock-current");

@@ -2,7 +2,7 @@ import type { ApiHeaders } from "../app/api.js";
 import type { AttachedImage, Role } from "../app/types.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
-import { imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote } from "./content.js";
+import { imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote, thinkingFromRawContent } from "./content.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>) => void;
@@ -200,6 +200,60 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     return div;
   }
 
+  function addThinkingCard(text: string) {
+    const card = document.createElement("div");
+    card.className = "toolCard toolCard--thinking";
+
+    const header = document.createElement("div");
+    header.className = "toolCardHeader";
+
+    const icon = document.createElement("span");
+    icon.className = "toolCardIcon";
+    icon.setAttribute("aria-hidden", "true");
+
+    const label = document.createElement("span");
+    label.className = "toolCardLabel";
+
+    const name = document.createElement("span");
+    name.className = "toolCardName";
+    name.textContent = "thinking";
+
+    const subtitle = document.createElement("span");
+    subtitle.className = "toolCardSubtitle";
+    subtitle.textContent = `${text.split(/\s+/).filter(Boolean).length.toLocaleString()} words`;
+
+    label.append(name, subtitle);
+    header.append(icon, label);
+
+    const body = document.createElement("pre");
+    body.className = `toolCardBody${text.length > 1200 || text.split("\n").length > 16 ? " collapsed" : ""}`;
+    body.textContent = text;
+
+    card.append(header, body);
+
+    if (body.classList.contains("collapsed")) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "toolCardCollapseToggle";
+      const setCollapsed = (collapsed: boolean) => {
+        body.classList.toggle("collapsed", collapsed);
+        toggle.textContent = collapsed ? "▾" : "▴";
+        toggle.setAttribute("aria-label", collapsed ? "Show thinking" : "Hide thinking");
+        toggle.title = collapsed ? "Show thinking" : "Hide thinking";
+        toggle.setAttribute("aria-expanded", String(!collapsed));
+      };
+      setCollapsed(true);
+      body.addEventListener("click", () => setCollapsed(!body.classList.contains("collapsed")));
+      toggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setCollapsed(!body.classList.contains("collapsed"));
+      });
+      card.append(toggle);
+    }
+
+    messagesEl.append(card);
+  }
+
   function clear() {
     messagesEl.textContent = "";
     streamingAssistant = null;
@@ -273,6 +327,9 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
         continue;
       }
       const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
+      if (role === "assistant") {
+        for (const thinking of thinkingFromRawContent(message.raw?.content || message.content)) addThinkingCard(thinking);
+      }
       const text = messageText(message);
       if (text) {
         if (role === "assistant" && message.isError) {

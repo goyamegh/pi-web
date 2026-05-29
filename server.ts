@@ -210,6 +210,20 @@ async function listDirectories(path: string) {
   return { ok: true, path: resolved, parent: resolve(resolved, ".."), dirs };
 }
 
+async function createDirectory(parent: string, name: string) {
+  const trimmedName = name.trim();
+  if (!trimmedName) throw new Error("Folder name is required");
+  if (isAbsolute(trimmedName) || trimmedName === "." || trimmedName === ".." || trimmedName.includes("/") || trimmedName.includes("\\")) {
+    throw new Error("Folder name must be a single directory name");
+  }
+  const parentDir = await assertDirectory(parent);
+  const target = resolve(parentDir, trimmedName);
+  const rel = relative(parentDir, target);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error("Folder name must stay inside the selected directory");
+  await mkdir(target);
+  return listDirectories(target);
+}
+
 function hasUserMessages(value: PiWebSession) {
   return value.messages.some((message: any) => message?.role === "user");
 }
@@ -481,7 +495,9 @@ function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<str
     };
   }
   const text = textFromContent(m.content);
-  const errorText = m.role === "assistant" && !text && m.errorMessage ? assistantErrorPreview(m) : "";
+  const errorText = m.role === "assistant" && m.errorMessage ? assistantErrorPreview(m) : "";
+  const stopReasonText = m.role === "assistant" && !errorText ? assistantStopReasonPreview(m) : "";
+  const displayText = errorText || (text && stopReasonText ? `${text}\n\n${stopReasonText}` : stopReasonText || text);
   const toolCalls = m.role === "assistant" && Array.isArray(m.content)
     ? m.content.filter((part: any) => part?.type === "toolCall").map((part: any) => ({
       id: part.id,
@@ -491,9 +507,9 @@ function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<str
     : undefined;
   return {
     role: m.role,
-    text: errorText || text,
+    text: displayText,
     toolCalls,
-    isError: Boolean(m.errorMessage || m.stopReason === "error"),
+    isError: Boolean(m.errorMessage || m.stopReason === "error" || stopReasonText),
     timestamp: m.timestamp,
     raw: m,
   };
@@ -566,11 +582,19 @@ function assistantErrorPreview(message: any) {
   }
 }
 
+function assistantStopReasonPreview(message: any) {
+  const reason = String(message?.stopReason || "").trim();
+  if (!reason || reason === "stop" || reason === "toolUse") return "";
+  if (reason === "length") return "Response stopped because the model hit its output length limit.";
+  if (reason === "aborted") return "Response was aborted.";
+  return `Response stopped unexpectedly: ${reason}`;
+}
+
 function entryRole(entry: any) {
   const message = entryMessage(entry);
   if (message?.role === "assistant" && !messageTextPreview(message).trim()) {
     if (messageToolCalls(message).length > 0) return "toolCall";
-    if (message.errorMessage) return "error";
+    if (message.errorMessage || assistantStopReasonPreview(message)) return "error";
   }
   if (message?.role) return String(message.role);
   switch (entry?.type) {
@@ -598,6 +622,8 @@ function entryPreview(entry: any) {
     if (calls) return calls;
     const error = assistantErrorPreview(message);
     if (error) return error;
+    const stopReason = assistantStopReasonPreview(message);
+    if (stopReason) return stopReason;
     return message.role === "assistant" ? "Empty assistant message" : `${message.role || "Message"} message`;
   }
   switch (entry?.type) {
@@ -1355,6 +1381,15 @@ const server = createServer(async (req, res) => {
       if (method === "GET" && url.pathname === "/api/fs/dirs") {
         try {
           return sendJson(res, 200, await listDirectories(url.searchParams.get("path") || piCwd));
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/fs/dirs") {
+        const body = await readBody(req) as { parent?: unknown; name?: unknown };
+        try {
+          return sendJson(res, 201, await createDirectory(String(body.parent || piCwd), String(body.name || "")));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }

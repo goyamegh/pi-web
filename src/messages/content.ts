@@ -28,9 +28,22 @@ export function textFromRawContent(content: unknown): string {
     const value = part as Record<string, unknown>;
     if (value.type === "text") return typeof value.text === "string" ? value.text : "";
     if (value.type === "image") return "[image]";
-    // toolCall parts are rendered as tool cards — skip them in text bubbles
+    // toolCall and thinking parts are rendered as cards — skip them in text bubbles
     return "";
   }).filter(Boolean).join("\n");
+}
+
+export function thinkingFromRawContent(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  return content.map((part) => {
+    if (!part || typeof part !== "object") return "";
+    const value = part as Record<string, unknown>;
+    if (value.type !== "thinking") return "";
+    if (typeof value.thinking === "string") return value.thinking;
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.content === "string") return value.content;
+    return "";
+  }).map((text) => text.trim()).filter(Boolean);
 }
 
 function errorTextFromRaw(message: any) {
@@ -44,6 +57,14 @@ function errorTextFromRaw(message: any) {
   } catch {
     return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw;
   }
+}
+
+function stopReasonTextFromRaw(message: any) {
+  const reason = String(message?.raw?.stopReason || message?.stopReason || "").trim();
+  if (!reason || reason === "stop" || reason === "toolUse") return "";
+  if (reason === "length") return "Response stopped because the model hit its output length limit.";
+  if (reason === "aborted") return "Response was aborted.";
+  return `Response stopped unexpectedly: ${reason}`;
 }
 
 export function messageText(message: any): string {
@@ -60,5 +81,10 @@ export function messageText(message: any): string {
   if (precomputed && !/^(\[tool call: [^\]]+\]\n?)+$/.test(precomputed.trim())) {
     return precomputed;
   }
-  return textFromRawContent(message?.raw?.content || message?.content) || errorTextFromRaw(message) || "";
+  const text = textFromRawContent(message?.raw?.content || message?.content);
+  const error = errorTextFromRaw(message);
+  const stopReason = stopReasonTextFromRaw(message);
+  if (error) return error;
+  if (text && stopReason) return `${text}\n\n${stopReason}`;
+  return text || stopReason || "";
 }

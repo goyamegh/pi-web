@@ -134,6 +134,9 @@ export function createSessions(options: {
     error.className = "folderPickerError";
     const actions = document.createElement("div");
     actions.className = "folderPickerActions";
+    const create = document.createElement("button");
+    create.type = "button";
+    create.textContent = "New folder";
     const cancel = document.createElement("button");
     cancel.type = "button";
     cancel.textContent = "Cancel";
@@ -141,7 +144,7 @@ export function createSessions(options: {
     select.type = "button";
     select.className = "primaryAction";
     select.textContent = "Select folder";
-    actions.append(cancel, select);
+    actions.append(create, cancel, select);
     modal.append(title, input, list, error, actions);
     backdrop.append(modal);
     document.body.append(backdrop);
@@ -170,6 +173,27 @@ export function createSessions(options: {
       }
     }
 
+    create.addEventListener("click", async () => {
+      const name = window.prompt("New folder name");
+      if (name === null) return;
+      try {
+        create.disabled = true;
+        error.textContent = "";
+        const res = await fetch("/api/fs/dirs", {
+          method: "POST",
+          headers: api.headers(),
+          body: JSON.stringify({ parent: input.value, name }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) throw new Error(data.error || "Could not create folder");
+        input.value = data.path;
+        await load(data.path);
+      } catch (e) {
+        error.textContent = e instanceof Error ? e.message : String(e);
+      } finally {
+        create.disabled = false;
+      }
+    });
     cancel.addEventListener("click", () => backdrop.remove());
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) backdrop.remove(); });
     input.addEventListener("keydown", (event) => {
