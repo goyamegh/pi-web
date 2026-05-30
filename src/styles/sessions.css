@@ -292,6 +292,37 @@
   color: var(--muted);
 }
 
+.sessionItemActionsBtn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  min-width: 36px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.sessionItemActionsBtn svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2;
+}
+.sessionItemActionsBtn:hover,
+.sessionItemActionsBtn:focus-visible {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  opacity: 1;
+}
+
 /* Nav button — takes remaining width */
 .sessionItemNavBtn {
   flex: 1 1 auto;
@@ -316,6 +347,51 @@
 .sessionItem.current .sessionItemNavBtn,
 .sessionItem.current .sessionItemTitle {
   color: var(--accent);
+}
+
+.sessionActionsMenu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  min-width: 180px;
+  max-width: calc(100vw - 16px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 98%, black);
+  box-shadow: 0 12px 36px rgba(0,0,0,.35);
+  padding: 4px;
+}
+.sessionActionsMenuItem {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  padding: 0 10px;
+  text-align: left;
+}
+.sessionActionsMenuItem svg {
+  width: 15px;
+  height: 15px;
+}
+.sessionActionsMenuItem:hover:not(:disabled),
+.sessionActionsMenuItem:focus-visible:not(:disabled) {
+  border: 0;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.sessionActionsMenuItem.danger {
+  color: var(--danger, #ef4444);
+}
+.sessionActionsMenuItem:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 /* Dim sessions that aren't starred or active */

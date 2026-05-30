@@ -465,6 +465,25 @@ test.describe("sessions drawer", () => {
     await expect(page.locator("#sessionDrawer")).toBeHidden();
     await expect(page.locator(".emptyCwdChooser", { hasText: "Working directory" })).toBeVisible();
   });
+
+  test("deletes a non-current session from the row actions menu", async ({ page }) => {
+    page.on("dialog", (dialog) => dialog.accept());
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const drawer = page.locator("#sessionDrawer");
+    const olderRow = drawer.locator(".sessionItem", { hasText: "Older mock session" });
+    await expect(olderRow).toBeVisible();
+
+    await olderRow.locator(".sessionItemActionsBtn").click();
+    const menu = page.locator(".sessionActionsMenu");
+    await expect(menu).toBeVisible();
+    await menu.getByRole("menuitem", { name: "Delete" }).click();
+
+    await expect(drawer.getByText("Older mock session")).toHaveCount(0);
+    await expect(drawer.getByText("Current mock session")).toBeVisible();
+    await expect(page.locator(".message.system", { hasText: /Session (deleted|moved to trash)/ })).toBeVisible();
+  });
 });
 
 test.describe("slash commands", () => {

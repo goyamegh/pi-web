@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -977,6 +977,51 @@ async function findSessionInfoById(id: string, cwd = piCwd) {
   return sessions.find((info) => info.id === id);
 }
 
+async function trashOrRemoveSessionFile(path: string) {
+  try {
+    await execFileAsync("trash", [path], { timeout: 15_000 });
+    return "trashed" as const;
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") throw error;
+    await rm(path, { force: true });
+    return "deleted" as const;
+  }
+}
+
+async function deleteSessionById(id: string, cwd = piCwd) {
+  if (noSession) throw new Error("Sessions are disabled.");
+  if (id === session.sessionId) {
+    const error = new Error("Switch to another session before deleting the current session.");
+    (error as any).status = 409;
+    throw error;
+  }
+
+  const info = await findSessionInfoById(id, cwd);
+  if (!info) {
+    const error = new Error("Session not found");
+    (error as any).status = 404;
+    throw error;
+  }
+
+  const live = liveSessions.get(info.path);
+  if (live?.session?.isStreaming || live?.session?.isCompacting) {
+    const error = new Error("Wait for the session to finish before deleting it.");
+    (error as any).status = 409;
+    throw error;
+  }
+
+  live?.unsubscribe?.();
+  liveSessions.delete(info.path);
+
+  if (mockMode) {
+    const index = mockSessions.findIndex((item) => item.id === id);
+    if (index >= 0) mockSessions.splice(index, 1);
+    return { id, disposition: "deleted" as const };
+  }
+
+  return { id, disposition: await trashOrRemoveSessionFile(info.path) };
+}
+
 async function getOrCreateLiveSessionById(id: string) {
   if (id === session.sessionId) return session;
   for (const entry of liveSessions.values()) {
@@ -1565,6 +1610,20 @@ const server = createServer(async (req, res) => {
         const extraCwds = url.searchParams.getAll("cwd");
         return sendJson(res, 200, { ok: true, sessions: await listSessionInfos(extraCwds) });
       }
+
+      if (method === "POST" && url.pathname === "/api/sessions/delete") {
+        const body = await readBody(req) as { sessionId?: unknown; id?: unknown; cwd?: unknown };
+        const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
+        if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
+        try {
+          const result = await deleteSessionById(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : piCwd);
+          broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
+          return sendJson(res, 200, { ok: true, ...result });
+        } catch (error: any) {
+          return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
 
       if (method === "GET" && url.pathname === "/api/settings") {
         return sendJson(res, 200, { ok: true, settings: await settingsStore.read() });

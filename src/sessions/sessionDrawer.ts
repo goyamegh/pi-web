@@ -1,6 +1,6 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
-import { setIcon } from "../app/icons.js";
+import { setIcon, type IconName } from "../app/icons.js";
 import type { AppState, SessionInfo } from "../app/types.js";
 import { maxPinnedSessions, persistCollapsedSessionFolders, persistPinnedSessions, sessionFolderPreviewLimit } from "../app/types.js";
 
@@ -96,6 +96,17 @@ export function createSessions(options: {
   // session_runtime_changed events can update the bar even before the first
   // refreshSessions() completes.
   const pinnedRuntimes = new Map<string, SessionInfo["runtime"]>();
+  let closeSessionActionsMenu: (() => void) | undefined;
+
+  type SessionAction = {
+    id: string;
+    label: string;
+    icon?: IconName;
+    danger?: boolean;
+    disabled?: boolean;
+    disabledReason?: string;
+    run: () => Promise<void> | void;
+  };
 
   function updateEmptyCwdChooser() {
     elements.emptyCwdPathEl.textContent = state.currentCwd;
@@ -230,6 +241,7 @@ export function createSessions(options: {
   }
 
   function setSessionDrawerOpen(open: boolean) {
+    if (!open) closeOpenSessionActionsMenu();
     elements.sessionDrawer.hidden = !open;
     elements.sessionBackdrop.hidden = !open;
     document.body.classList.toggle("sessionDrawerOpen", open);
@@ -376,9 +388,123 @@ export function createSessions(options: {
     }
   }
 
+  // ── Session actions ───────────────────────────────────────────────────────
+
+  function closeOpenSessionActionsMenu() {
+    closeSessionActionsMenu?.();
+    closeSessionActionsMenu = undefined;
+  }
+
+  async function deleteSession(item: SessionInfo, cwd: string) {
+    if (item.isCurrent) throw new Error("Switch to another session before deleting the current session.");
+    if (item.runtime?.isRunning) throw new Error("Wait for the session to finish before deleting it.");
+
+    const title = sessionTitle(item);
+    if (!window.confirm(`Delete session “${title}”?`)) return;
+
+    const res = await fetch("/api/sessions/delete", {
+      method: "POST",
+      headers: api.headers(),
+      body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+
+    cachedSessions = cachedSessions.filter((session) => session.id !== item.id);
+    pinnedRuntimes.delete(item.id);
+    const pinnedCount = state.pinnedSessions.length;
+    state.pinnedSessions = state.pinnedSessions.filter((session) => session.id !== item.id);
+    if (state.pinnedSessions.length !== pinnedCount) persistPinnedSessions(state.pinnedSessions);
+    renderSessionList(cachedSessions);
+    renderSessionBar();
+    addMessage("system", data.disposition === "trashed" ? "Session moved to trash." : "Session deleted.");
+  }
+
+  function getSessionActions(item: SessionInfo, cwd: string): SessionAction[] {
+    const deleteDisabledReason = item.isCurrent
+      ? "Switch to another session before deleting the current session"
+      : item.runtime?.isRunning
+        ? "Wait for the session to finish before deleting it"
+        : undefined;
+    return [
+      {
+        id: "delete",
+        label: "Delete",
+        icon: "trash-2",
+        danger: true,
+        disabled: Boolean(deleteDisabledReason),
+        disabledReason: deleteDisabledReason,
+        run: () => deleteSession(item, cwd),
+      },
+    ];
+  }
+
+  function openSessionActionsMenu(anchor: HTMLButtonElement, item: SessionInfo, cwd: string) {
+    closeOpenSessionActionsMenu();
+
+    const menu = document.createElement("div");
+    menu.className = "sessionActionsMenu";
+    menu.setAttribute("role", "menu");
+
+    for (const action of getSessionActions(item, cwd)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sessionActionsMenuItem${action.danger ? " danger" : ""}`;
+      button.setAttribute("role", "menuitem");
+      button.disabled = Boolean(action.disabled);
+      button.title = action.disabledReason || action.label;
+      if (action.icon) setIcon(button, action.icon);
+      const label = document.createElement("span");
+      label.textContent = action.label;
+      button.append(label);
+      button.addEventListener("click", async () => {
+        closeOpenSessionActionsMenu();
+        try {
+          await action.run();
+        } catch (error) {
+          addMessage("system", error instanceof Error ? error.message : String(error), "error");
+          if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
+        }
+      });
+      menu.append(button);
+    }
+
+    document.body.append(menu);
+    const rect = anchor.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const margin = 8;
+    const left = Math.min(Math.max(margin, rect.right - menuRect.width), window.innerWidth - menuRect.width - margin);
+    const below = rect.bottom + 4;
+    const top = below + menuRect.height <= window.innerHeight - margin
+      ? below
+      : Math.max(margin, rect.top - menuRect.height - 4);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (menu.contains(target) || anchor.contains(target))) return;
+      closeOpenSessionActionsMenu();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeOpenSessionActionsMenu();
+    };
+    const onResize = () => closeOpenSessionActionsMenu();
+    closeSessionActionsMenu = () => {
+      menu.remove();
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
+    setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+  }
+
   // ── Session list ───────────────────────────────────────────────────────────
 
   function renderSessionList(sessions: SessionInfo[]) {
+    closeOpenSessionActionsMenu();
     elements.sessionListEl.textContent = "";
 
     if (sessions.length === 0) {
@@ -541,7 +667,19 @@ export function createSessions(options: {
       }
     });
 
-    row.append(pinBtn, navBtn);
+    const actionsBtn = document.createElement("button");
+    actionsBtn.type = "button";
+    actionsBtn.className = "sessionItemActionsBtn";
+    actionsBtn.title = "Session actions";
+    actionsBtn.setAttribute("aria-label", actionsBtn.title);
+    actionsBtn.setAttribute("aria-haspopup", "menu");
+    setIcon(actionsBtn, "more-vertical");
+    actionsBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openSessionActionsMenu(actionsBtn, item, cwd);
+    });
+
+    row.append(pinBtn, navBtn, actionsBtn);
     return row;
   }
 

@@ -94,6 +94,32 @@ describe("pi-web mock API", () => {
     expect(sessions.sessions[0].isCurrent).toBe(true);
   });
 
+  it("deletes a non-current session and rejects deleting the current session", async () => {
+    try {
+      const currentRes = await fetch(`${baseUrl}/api/sessions/delete`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "mock-current" }),
+      });
+      expect(currentRes.status).toBe(409);
+      expect((await currentRes.json()).error).toContain("current session");
+
+      const deleteRes = await fetch(`${baseUrl}/api/sessions/delete`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "mock-older" }),
+      });
+      expect(deleteRes.status).toBe(200);
+      const deleted = await deleteRes.json();
+      expect(deleted).toMatchObject({ ok: true, id: "mock-older", disposition: "deleted" });
+
+      const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
+      expect(sessions.sessions.map((item: any) => item.id)).toEqual(["mock-current"]);
+    } finally {
+      await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    }
+  });
+
   it("creates folders from the directory picker API", async () => {
     const parent = await mkdtemp(join(tmpdir(), "pi-web-picker-"));
     try {

@@ -286,6 +286,10 @@ export function createRealtime(options: {
         }
         return;
       }
+      if (data.type === "session_deleted") {
+        if (!isReplay) scheduleSessionRefresh();
+        return;
+      }
       if (data.type === "session_runtime_changed") {
         const key = String(data.sessionId || data.sessionFile || "");
         const nextRuntimeKey = runtimeKey(data.runtime);
