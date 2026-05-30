@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Spinner / runtime lifecycle coverage for the Claude Code adapter.
@@ -195,5 +195,94 @@ describe("Claude Code adapter runtime lifecycle (spinner contract)", () => {
     // After unsubscribe, no further events are recorded. The agent_end from
     // the safety net would otherwise have appeared.
     expect(events.some((e) => (e as { type?: string }).type === "agent_end")).toBe(false);
+  });
+});
+
+/**
+ * `getAgentSlashCommands()` is the integration seam between the CC adapter
+ * and pi-web's `/api/commands` endpoint. The composer's picker calls
+ * /api/commands → server.ts merges these with web overlay → frontend renders.
+ *
+ * These tests pin the contract that the adapter:
+ *   - always emits CC's built-in slash commands (clear, compact, ...);
+ *   - bridges user-level command files at $HOME/.claude/commands;
+ *   - bridges plugin commands and skills via installed_plugins.json;
+ *   - reads fresh from disk on each call (newly added files are picked up
+ *     without restarting the adapter), since pi-web caches results for
+ *     5s in the composer but expects the server to be authoritative.
+ */
+async function writeFileEnsuringDir(path: string, body: string) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, body, "utf-8");
+}
+
+describe("Claude Code adapter slash command discovery integration", () => {
+  it("merges built-ins, user-level commands, and plugin commands into getAgentSlashCommands()", async () => {
+    // User-level command — the case from `~/.claude/commands/cp-oncall.md`.
+    await writeFileEnsuringDir(
+      join(homeDir, ".claude", "commands", "cp-oncall.md"),
+      "CP Oncall diagnostic assistant for AWS OpenSearch Service.\n",
+    );
+
+    // Plugin with both a command file and a skill — covers the two surfaces
+    // CC itself exposes as slash commands for a plugin install.
+    const pluginRoot = join(homeDir, ".claude", "plugins", "cache", "official", "demo-plugin", "1.0.0");
+    await writeFileEnsuringDir(
+      join(pluginRoot, "commands", "do-thing.md"),
+      "---\ndescription: Do a thing\n---\nbody",
+    );
+    await writeFileEnsuringDir(
+      join(pluginRoot, "skills", "investigate", "SKILL.md"),
+      "---\nname: investigate\ndescription: Investigate a ticket\n---\nbody",
+    );
+    await writeFileEnsuringDir(
+      join(homeDir, ".claude", "plugins", "installed_plugins.json"),
+      JSON.stringify({
+        version: 2,
+        plugins: { "demo-plugin@official": [{ scope: "project", installPath: pluginRoot }] },
+      }),
+    );
+
+    const adapter = await createClaudeCodeAdapter({ cwd: "/tmp/cc-discovery" });
+    const cmds = (adapter as unknown as { getAgentSlashCommands(): Array<{ name: string; description?: string }> })
+      .getAgentSlashCommands();
+    const names = cmds.map((c) => c.name);
+
+    // Built-ins — must always be present so the picker never goes empty.
+    expect(names).toContain("clear");
+    expect(names).toContain("compact");
+    expect(names).toContain("init");
+
+    // User-level discovery surfaces /cp-oncall.
+    expect(names).toContain("cp-oncall");
+    const cp = cmds.find((c) => c.name === "cp-oncall");
+    expect(cp?.description).toMatch(/CP Oncall diagnostic/);
+
+    // Plugin commands and skills are namespaced as <plugin>:<name>, matching
+    // CC's own terminal picker layout.
+    expect(names).toContain("demo-plugin:do-thing");
+    expect(names).toContain("demo-plugin:investigate");
+  });
+
+  it("re-reads disk on every call so newly installed plugins appear without restart", async () => {
+    const adapter = await createClaudeCodeAdapter({ cwd: "/tmp/cc-discovery" });
+    const reader = adapter as unknown as { getAgentSlashCommands(): Array<{ name: string }> };
+
+    const before = reader.getAgentSlashCommands().map((c) => c.name);
+    expect(before).not.toContain("late:hello");
+
+    // After the adapter is constructed, "install" a plugin by writing files.
+    const pluginRoot = join(homeDir, ".claude", "plugins", "cache", "official", "late", "1.0.0");
+    await writeFileEnsuringDir(
+      join(pluginRoot, "commands", "hello.md"),
+      "---\ndescription: Late-bound\n---\nbody",
+    );
+    await writeFileEnsuringDir(
+      join(homeDir, ".claude", "plugins", "installed_plugins.json"),
+      JSON.stringify({ version: 2, plugins: { "late@official": [{ installPath: pluginRoot }] } }),
+    );
+
+    const after = reader.getAgentSlashCommands().map((c) => c.name);
+    expect(after).toContain("late:hello");
   });
 });

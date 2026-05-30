@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { PiWebSession, PiWebModel } from "../../types.js";
 import type { AgentAdapter, AgentCapabilities, AgentSlashCommand } from "../types.js";
+import { discoverCCSlashCommands } from "./commands.js";
 import { ccProjectDir, ccSessionFile, loadCCMessages } from "./sessions.js";
 import { translateCCMessage } from "./translator.js";
 import type { CCContentBlock, CCEffort, CCMessage, CCStreamEvent } from "./types.js";
@@ -143,6 +144,12 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
   // synthesize a terminal event when the CC subprocess exits without one.
   let agentEndEmitted = true;
   let activeChild: ChildProcessWithoutNullStreams | undefined;
+  // Once abort() is invoked we must stop forwarding any further stream events
+  // from the (possibly still-alive) CC subprocess: stdout buffering can have
+  // queued partial JSONL frames that arrive after the SIGTERM but before the
+  // child has actually exited. Without this guard the UI would keep receiving
+  // assistant / tool_execution events long after the user clicked Stop.
+  let aborted = false;
   let lastUsage: { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined;
 
   const toolNamesById = new Map<string, string>();
@@ -321,6 +328,7 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
     if (isStreaming) throw new Error("Claude Code session is already processing a prompt.");
     isStreaming = true;
     agentEndEmitted = false;
+    aborted = false;
     emit({ type: "agent_start" });
 
     const args = [
@@ -362,8 +370,16 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
         if (err) reject(err); else resolve();
       };
 
-      const buf = makeLineBuffer((event) => applyStreamEvent(event));
+      const buf = makeLineBuffer((event) => {
+        // Drop everything that comes in after abort() \u2014 the user has already
+        // seen agent_end and the UI has cleared its streaming state. Letting
+        // queued assistant / tool events through here causes the post-stop
+        // "ghost streaming" the user reported.
+        if (aborted) return false;
+        return applyStreamEvent(event);
+      });
       child.stdout.on("data", (chunk) => {
+        if (aborted) return;
         if (buf.push(chunk)) {
           // Terminal result seen \u2014 mark first turn done, but keep stream open
           // until child exits to drain trailing events.
@@ -371,6 +387,7 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
         }
       });
       child.stderr.on("data", (chunk) => {
+        if (aborted) return;
         // CC stderr is mostly diagnostic; surface as server_error-shaped events
         // via the subscribe channel so server.ts broadcasts them.
         const text = chunk.toString("utf-8");
@@ -458,13 +475,29 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
       await runTurn(messageText, options?.images);
     },
     async abort() {
-      if (activeChild) {
-        try { activeChild.kill("SIGTERM"); } catch { /* already gone */ }
-      }
+      // Order matters: flip `aborted` BEFORE killing the child so the stdout
+      // / stderr listeners installed in runTurn() drop any frames the CC
+      // subprocess emits between SIGTERM and actual exit. Otherwise the UI
+      // shows agent_end and then keeps receiving assistant text deltas /
+      // tool_execution events from the dying child.
+      aborted = true;
       isStreaming = false;
+      const child = activeChild;
       activeChild = undefined;
-      agentEndEmitted = true;
-      emit({ type: "agent_end", aborted: true });
+      if (!agentEndEmitted) {
+        agentEndEmitted = true;
+        emit({ type: "agent_end", aborted: true });
+      }
+      if (child && !child.killed) {
+        try { child.kill("SIGTERM"); } catch { /* already gone */ }
+        // CC may not respond to SIGTERM promptly when it's mid-tool-call;
+        // escalate to SIGKILL after a short grace so the child can't keep
+        // running in the background after the user hit Stop.
+        const killTimer = setTimeout(() => {
+          try { if (!child.killed) child.kill("SIGKILL"); } catch { /* already gone */ }
+        }, 2000);
+        child.once("exit", () => clearTimeout(killTimer));
+      }
     },
     async bindExtensions(_bindings: unknown) {
       // CC has no pi-style extension surface; intentionally a no-op so server.ts
@@ -481,9 +514,10 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
   Object.defineProperty(adapter, "getCapabilities", { value: () => CC_CAPABILITIES, enumerable: false, configurable: true });
   Object.defineProperty(adapter, "getAgentSlashCommands", {
     value: (): AgentSlashCommand[] => {
-      // Built-in CC slash commands users invoke from the composer. Project /
-      // user-level .claude/commands/*.md are not bridged in v1.
-      const builtins: Array<[string, string]> = [
+      // CC's built-in slash commands. These are not on disk; we hardcode them so
+      // the picker can offer them even before any user-level / plugin commands
+      // are discovered.
+      const builtins: AgentSlashCommand[] = [
         ["clear", "Clear conversation history"],
         ["compact", "Compact context (use /compact <instructions>)"],
         ["cost", "Show session cost"],
@@ -491,13 +525,20 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
         ["help", "Show built-in commands"],
         ["review", "Review the current diff"],
         ["init", "Initialize a CLAUDE.md from this project"],
-      ];
-      return builtins.map(([name, description]) => ({
+      ].map(([name, description]) => ({
         name,
         description,
         source: "claude-code",
         sourceInfo: { path: "<claude-code>", source: "claude-code", scope: "agent", origin: "top-level" },
       }));
+
+      // User-level (~/.claude/commands), project-level (<cwd>/.claude/commands),
+      // and plugin commands (~/.claude/plugins/installed_plugins.json) — read
+      // fresh on every call so newly installed plugins / new command files are
+      // visible without a server restart.
+      const discovered = discoverCCSlashCommands(opts.cwd);
+      const builtinNames = new Set(builtins.map((c) => c.name));
+      return [...builtins, ...discovered.filter((c) => !builtinNames.has(c.name))];
     },
     enumerable: false,
     configurable: true,
