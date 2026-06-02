@@ -16,6 +16,7 @@
 .toolCard--success { background: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
 .toolCard--error   { background: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
 .toolCard--thinking { background: color-mix(in srgb, var(--tool) 70%, #251a3d); }
+.toolCard--thinkingEmpty .toolCardBody { display: none; }
 
 .toolCardHeader {
   display: flex;

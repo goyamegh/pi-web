@@ -255,6 +255,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   }
 
   function updateThinkingCardText(card: HTMLDivElement, text: string, streaming = false) {
+    card.classList.toggle("toolCard--thinkingEmpty", !text.trim());
     const body = card.querySelector<HTMLElement>(".toolCardBody");
     const subtitle = card.querySelector<HTMLElement>(".toolCardSubtitle");
     if (body) {
@@ -267,6 +268,23 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
         ? words > 0 ? `${words.toLocaleString()} words · streaming` : "streaming"
         : `${words.toLocaleString()} words`;
     }
+  }
+
+  function isCompactDensity() {
+    return document.documentElement.dataset.density === "compact";
+  }
+
+  function updateThinkingCompactToggle(toggle: HTMLButtonElement, collapsed: boolean) {
+    toggle.textContent = collapsed ? "▸" : "▾";
+    toggle.setAttribute("aria-label", collapsed ? "Show thinking" : "Hide thinking");
+    toggle.title = collapsed ? "Show thinking" : "Hide thinking";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  }
+
+  function setThinkingCompactCollapsed(card: HTMLDivElement, collapsed: boolean) {
+    card.classList.toggle("toolCard--compactCollapsed", collapsed);
+    const toggle = card.querySelector<HTMLButtonElement>(".toolCardExpandToggle");
+    if (toggle) updateThinkingCompactToggle(toggle, collapsed);
   }
 
   function addThinkingCard(text: string, streaming = false) {
@@ -292,12 +310,29 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     subtitle.className = "toolCardSubtitle";
 
     label.append(name, subtitle);
-    header.append(icon, label);
+
+    const expandToggle = document.createElement("button");
+    expandToggle.type = "button";
+    expandToggle.className = "toolCardExpandToggle";
+    updateThinkingCompactToggle(expandToggle, true);
+    expandToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setThinkingCompactCollapsed(card, !card.classList.contains("toolCard--compactCollapsed"));
+    });
+
+    header.addEventListener("click", (event) => {
+      const target = event.target instanceof HTMLElement ? event.target : undefined;
+      if (!isCompactDensity() || target?.closest("button")) return;
+      setThinkingCompactCollapsed(card, !card.classList.contains("toolCard--compactCollapsed"));
+    });
+
+    header.append(icon, label, expandToggle);
 
     const body = document.createElement("pre");
     body.className = `toolCardBody${!streaming && (text.length > 1200 || text.split("\n").length > 16) ? " collapsed" : ""}`;
 
     card.append(header, body);
+    setThinkingCompactCollapsed(card, true);
     updateThinkingCardText(card, text, streaming);
 
     if (body.classList.contains("collapsed")) {
@@ -392,8 +427,12 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     const card = streamingThinkingCards.get(key);
     if (!card?.isConnected) return;
     card.classList.remove("toolCard--thinkingStreaming");
-    if (typeof content === "string") updateThinkingCardText(card, content, false);
-    else updateThinkingCardText(card, card.querySelector<HTMLElement>(".toolCardBody")?.textContent || "", false);
+    const finalText = typeof content === "string" ? content : card.querySelector<HTMLElement>(".toolCardBody")?.textContent || "";
+    if (!finalText.trim()) {
+      card.remove();
+    } else {
+      updateThinkingCardText(card, finalText, false);
+    }
     streamingThinkingCards.delete(key);
     streamingAssistant = null;
     scrollToBottom();
