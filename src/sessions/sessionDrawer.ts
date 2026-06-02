@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
+import { createTracker, type PerfTracker } from "../app/perf.js";
 import type { AppState, SessionInfo } from "../app/types.js";
 import { maxPinnedSessions, persistCollapsedSessionFolders, persistPinnedSessions, sessionFolderPreviewLimit } from "../app/types.js";
 
@@ -87,7 +88,7 @@ export function createSessions(options: {
   updateMeta: (data: any) => void;
   updateThinkingOptions: (levels?: string[]) => void;
   refreshModels: () => Promise<void>;
-  refreshMessages: () => Promise<void>;
+  refreshMessages: (opts?: { prefetchedMessages?: any[] }) => Promise<void>;
   refreshState: () => Promise<void>;
   refreshSessionTitle: () => Promise<void>;
   clearMessages: () => void;
@@ -121,18 +122,26 @@ export function createSessions(options: {
 
   // Apply the state payload returned by /api/sessions/open without the extra
   // /api/state round-trip refreshState() does. The POST response already carries
-  // the new session's full state; combining its data with a single
-  // refreshMessages() + refreshModels() roughly halves switch latency by
-  // eliminating one full /api/state and one duplicate /api/messages call. The
-  // marker on AppState lets the WS state_changed echo skip its own refresh.
-  async function applySwitchedSessionState(data: any) {
+  // the new session's full state — and now its full transcript — so we can render
+  // immediately without GET /api/messages, and defer GET /api/models to idle time
+  // since the model dropdown is not visible during the switch. The marker on
+  // AppState lets the WS state_changed echo skip its own refresh.
+  async function applySwitchedSessionState(data: any, perf?: PerfTracker | null) {
     if (data && typeof data === "object") {
       updateMeta(data);
       state.isStreaming = Boolean(data.isStreaming);
       if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
       if (data.sessionId) state.lastSwitchedSession = { sessionId: data.sessionId, ts: Date.now() };
     }
-    await Promise.all([refreshModels(), refreshMessages()]);
+    perf?.mark("meta");
+    if (Array.isArray(data?.messages)) {
+      await refreshMessages({ prefetchedMessages: data.messages });
+    } else {
+      await refreshMessages();
+    }
+    perf?.mark("render");
+    const idle = (window as any).requestIdleCallback || ((cb: () => void) => window.setTimeout(cb, 50));
+    idle(() => { void refreshModels().catch(() => undefined); });
   }
 
   function updateEmptyCwdChooser() {
@@ -278,7 +287,12 @@ export function createSessions(options: {
       ...session,
       isCurrent: session.id === sessionId && (session.cwd || cwd) === cwd,
     }));
-    renderSessionList(cachedSessions);
+    // Skip the (potentially large) drawer DOM rebuild while it's hidden —
+    // refreshSessions() will rebuild lazily when the drawer is next opened.
+    // The pinned-tab bar is cheap (≤4 tabs) and stays in sync.
+    if (!elements.sessionDrawer.hidden && activeRenameSessionId === null) {
+      renderSessionList(cachedSessions);
+    }
     renderSessionBar();
   }
 
@@ -363,6 +377,7 @@ export function createSessions(options: {
 
       if (live) {
         tab.addEventListener("click", async () => {
+          const perf = createTracker("session-switch:bar");
           // Optimistic update: switch the active tab highlight immediately before any
           // network round-trips so the UI feels instant even during streaming.
           const previousSessionId = state.currentSessionId;
@@ -370,6 +385,13 @@ export function createSessions(options: {
             state.currentSessionId = live.id;
             renderSessionBar();
           }
+          // Mark the switch BEFORE the fetch so the broadcast WS state_changed
+          // echo is recognized as our own (and thus skips its own
+          // refreshMessages) even if it races the HTTP response and arrives
+          // first — which it can, because the server broadcasts the echo on the
+          // same tick it sends the HTTP reply.
+          state.lastSwitchedSession = { sessionId: live.id, ts: Date.now() };
+          perf?.mark("optimistic");
           try {
             const cwd = live.cwd || state.currentCwd;
             const openRes = await fetch("/api/sessions/open", {
@@ -379,9 +401,14 @@ export function createSessions(options: {
             });
             if (!openRes.ok) throw new Error(await openRes.text());
             const openData = await openRes.json().catch(() => ({}));
+            perf?.mark("network");
             rememberSessionCwd(cwd);
             markCachedCurrentSession(live.id, cwd);
-            await applySwitchedSessionState(openData);
+            await applySwitchedSessionState(openData, perf);
+            perf?.end({
+              embedded: Array.isArray(openData?.messages),
+              messages: Array.isArray(openData?.messages) ? openData.messages.length : 0,
+            });
           } catch (error) {
             // Revert the optimistic highlight if the switch failed.
             state.currentSessionId = previousSessionId;
@@ -689,6 +716,11 @@ export function createSessions(options: {
 
     navBtn.append(titleRow, meta);
     navBtn.addEventListener("click", async () => {
+      const perf = createTracker("session-switch:drawer");
+      // See bar-tab handler for rationale: prevents a WS state_changed echo
+      // from racing the HTTP response and triggering a redundant
+      // refreshMessages on the critical path.
+      state.lastSwitchedSession = { sessionId: item.id, ts: Date.now() };
       try {
         const openRes = await fetch("/api/sessions/open", {
           method: "POST",
@@ -697,11 +729,16 @@ export function createSessions(options: {
         });
         if (!openRes.ok) throw new Error(await openRes.text());
         const openData = await openRes.json().catch(() => ({}));
+        perf?.mark("network");
         const nextCwd = item.cwd || cwd;
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
-        await applySwitchedSessionState(openData);
+        await applySwitchedSessionState(openData, perf);
+        perf?.end({
+          embedded: Array.isArray(openData?.messages),
+          messages: Array.isArray(openData?.messages) ? openData.messages.length : 0,
+        });
       } catch (error) {
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
         if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);

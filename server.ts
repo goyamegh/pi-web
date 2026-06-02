@@ -556,6 +556,20 @@ async function persistPromptImages(images: Array<{ data: string; mimeType: strin
   return `\n\nAttached image file${images.length === 1 ? "" : "s"}:\n${lines.join("\n")}`;
 }
 
+function simplifySessionMessages(target: AgentAdapter) {
+  const msgs = target.messages;
+  const toolCallArgs = new Map<string, Record<string, unknown>>();
+  for (const m of msgs) {
+    const msg = m as any;
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || {});
+      }
+    }
+  }
+  return msgs.map((m: unknown) => simplifyMessage(m, toolCallArgs));
+}
+
 function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<string, unknown>>) {
   if (!message || typeof message !== "object") return message;
   const m = message as Record<string, unknown>;
@@ -1781,20 +1795,7 @@ const server = createServer(async (req, res) => {
         const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
         const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
         if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const msgs = targetSession.messages;
-        // Build toolCallId -> args map from assistant messages
-        const toolCallArgs = new Map<string, Record<string, unknown>>();
-        for (const m of msgs) {
-          const msg = m as any;
-          if (msg.role === "assistant" && Array.isArray(msg.content)) {
-            for (const part of msg.content) {
-              if (part?.type === "toolCall" && part.id) {
-                toolCallArgs.set(part.id, part.arguments || {});
-              }
-            }
-          }
-        }
-        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown) => simplifyMessage(m, toolCallArgs)) });
+        return sendJson(res, 200, { ok: true, messages: simplifySessionMessages(targetSession) });
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
@@ -2005,7 +2006,9 @@ const server = createServer(async (req, res) => {
         }
         const state = currentStateWithThinkingLevels();
         broadcast({ type: "state_changed", ...state });
-        return sendJson(res, 200, { ok: true, ...state });
+        // Embed the full transcript so the client can render immediately without a
+        // follow-up GET /api/messages round-trip — halves perceived switch latency.
+        return sendJson(res, 200, { ok: true, ...state, messages: simplifySessionMessages(session) });
       }
 
       return sendJson(res, 404, { ok: false, error: "Unknown API route" });

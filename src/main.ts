@@ -107,7 +107,7 @@ function updateSessionStats(stats: any) {
   contextMeter.update(stats);
 }
 
-async function refreshMessages() {
+async function refreshMessages(opts: { prefetchedMessages?: any[] } = {}) {
   await messages.refreshMessages({
     sessionId: state.currentSessionId,
     headers: api.headers,
@@ -117,6 +117,7 @@ async function refreshMessages() {
     clearActiveToolCards: tools.clearActiveToolCards,
     isStreaming: state.isStreaming,
     updateEmptyCwdChooser: () => sessions.updateEmptyCwdChooser(),
+    prefetchedMessages: opts.prefetchedMessages,
   });
 }
 

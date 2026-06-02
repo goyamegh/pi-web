@@ -46,6 +46,8 @@ export type MessageList = {
     clearActiveToolCards: () => void;
     isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
+    /** When provided, skips the GET /api/messages round-trip and renders these directly. */
+    prefetchedMessages?: any[];
   }) => Promise<void>;
   resetStreamingAssistant: () => void;
   scrollToBottom: () => void;
@@ -76,6 +78,12 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   let shouldFollowStream = true;
   let programmaticScroll = false;
   let userScrollIntent = false;
+  // While true, addMessage skips per-call scrollToBottom() and cache
+  // invalidation. Used by refreshMessages during bulk renders so a transcript
+  // of N messages costs ONE scroll/snapshot instead of N. Also routes
+  // non-collapsible assistant markdown through the lazy IO pipeline so the
+  // initial DOM build doesn't pay for marked.parse + hljs on every message.
+  let bulkRenderMode = false;
   // Snapshot of what's currently rendered. Lets refreshMessages skip the rebuild
   // when nothing changed, or do an append-only render when only new messages
   // arrived. Cleared by clear(), invalidated by ad-hoc DOM mutations.
@@ -198,7 +206,11 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
       body.append(imgWrap);
     } else if (role === "assistant" && text) {
       body.textContent = text;
-      if (collapsible) markdown.queueAssistantMarkdownRender(body, text);
+      // In bulk mode (full transcript rebuild), defer markdown rendering for
+      // ALL assistant messages so the initial DOM build is cheap. The IO
+      // observer will render visible ones near the viewport, and we explicitly
+      // force-render the last few after the bulk completes (see renderRange).
+      if (collapsible || bulkRenderMode) markdown.queueAssistantMarkdownRender(body, text);
       else markdown.renderAssistantMarkdown(body, text);
     } else {
       body.textContent = text || "";
@@ -223,10 +235,12 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     }
 
     messagesEl.append(div);
-    // Out-of-band DOM addition — caller controls semantics, so the next
-    // refreshMessages must do a full rebuild rather than try to reconcile.
-    invalidateRendered();
-    scrollToBottom();
+    if (!bulkRenderMode) {
+      // Out-of-band DOM addition — caller controls semantics, so the next
+      // refreshMessages must do a full rebuild rather than try to reconcile.
+      invalidateRendered();
+      scrollToBottom();
+    }
     return div;
   }
 
@@ -271,7 +285,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     }));
   }
 
-  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser }: {
+  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser, prefetchedMessages }: {
     sessionId: string;
     headers: ApiHeaders;
     addToolHistoryCard: AddToolHistoryCard;
@@ -280,12 +294,18 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     clearActiveToolCards: () => void;
     isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
+    prefetchedMessages?: any[];
   }) {
-    const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-    const res = await fetch(`/api/messages${query}`, { headers: headers() });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    const allMessages = (data.messages || []) as any[];
+    let allMessages: any[];
+    if (prefetchedMessages) {
+      allMessages = prefetchedMessages;
+    } else {
+      const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+      const res = await fetch(`/api/messages${query}`, { headers: headers() });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      allMessages = (data.messages || []) as any[];
+    }
     const fingerprints = allMessages.map(messageFingerprint);
     const lastFingerprint = fingerprints[fingerprints.length - 1] || "";
 
@@ -360,7 +380,12 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     // wipe DOM, restore scroll if user wasn't following, render everything.
     clear();
     clearActiveToolCards();
-    renderRange(0, allMessages.length);
+    bulkRenderMode = true;
+    try {
+      renderRange(0, allMessages.length);
+    } finally {
+      bulkRenderMode = false;
+    }
 
     rendered = { sessionId, count: allMessages.length, lastFingerprint };
     renderedFingerprints = fingerprints;
@@ -374,7 +399,27 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
       }, 0);
       setJumpButtonVisible(true);
     }
+    // Force-render markdown for the last few assistant messages so the user
+    // sees formatted output immediately at the bottom (where focus typically
+    // lands after a switch). Older messages stay in the lazy IO queue and
+    // render as they scroll into view.
+    forceRenderTrailingAssistants(8);
     updateEmptyCwdChooser?.();
+  }
+
+  function forceRenderTrailingAssistants(maxCount: number) {
+    const children = messagesEl.children;
+    let count = 0;
+    for (let i = children.length - 1; i >= 0 && count < maxCount; i--) {
+      const body = (children[i] as HTMLElement).querySelector<HTMLElement>(".body");
+      if (!body) continue;
+      const queuedText = body.dataset.markdownText;
+      if (queuedText && !body.dataset.markdownRendered) {
+        markdown.unobserve(body);
+        markdown.renderAssistantMarkdown(body, queuedText);
+        count++;
+      }
+    }
   }
 
   return {

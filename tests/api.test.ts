@@ -313,6 +313,32 @@ describe("pi-web mock API", () => {
     });
     expect(invalid.status).toBe(400);
   });
+
+  it("embeds the full transcript in /api/sessions/open so the client skips a follow-up GET /api/messages", async () => {
+    // Reset to a clean mock state so message arrays are deterministic.
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+
+    const openRes = await fetch(`${baseUrl}/api/sessions/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-older" }),
+    });
+    expect(openRes.status).toBe(200);
+    const openData = await openRes.json();
+
+    // Embedded payload contract: present, an array, and shaped like the messages API.
+    expect(Array.isArray(openData.messages)).toBe(true);
+    if (openData.messages.length > 0) {
+      expect(openData.messages[0]).toHaveProperty("role");
+    }
+
+    // The embedded transcript must match a follow-up GET /api/messages response
+    // exactly — client-side renderer treats them interchangeably.
+    const messagesRes = await fetch(`${baseUrl}/api/messages?sessionId=mock-older`);
+    expect(messagesRes.status).toBe(200);
+    const messagesData = await messagesRes.json();
+    expect(openData.messages).toEqual(messagesData.messages);
+  });
 });
 
 describe("git repo discovery API", () => {
