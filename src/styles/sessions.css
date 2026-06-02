@@ -65,14 +65,31 @@
   background: var(--panel-2);
   color: var(--text);
 }
-.sessionNewButton {
+.sessionDrawerFooter {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 98%, black);
+}
+.sessionDrawerFooter .sessionNewButton,
+.sessionDrawerFooter .sessionDrawerFooterButton {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  margin: 10px 12px;
+  min-height: 34px;
+  margin: 0;
   border-radius: 6px;
   font-size: 13px;
+}
+.sessionDrawerFooter .sessionDrawerFooterButton svg {
+  width: 15px;
+  height: 15px;
 }
 .sessionList {
   display: flex;
@@ -279,10 +296,6 @@
   opacity: 1;
   color: var(--accent);
 }
-.sessionItemPinBtn.pinned svg {
-  fill: currentColor;
-  stroke: currentColor;
-}
 .sessionItemPinBtn:disabled {
   opacity: 0.15;
   cursor: default;
@@ -394,7 +407,7 @@
   opacity: 0.45;
 }
 
-/* Dim sessions that aren't starred or active */
+/* Dim sessions that aren't pinned or active */
 .sessionItem:not(.pinned):not(.current) .sessionItemNavBtn {
   opacity: 0.45;
 }
@@ -410,14 +423,21 @@
   margin-top: 8px;
   border-top: 1px solid var(--border);
   background: color-mix(in srgb, var(--panel) 97%, black);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
   padding-bottom: 0;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.sessionBar::-webkit-scrollbar {
+  display: none;
 }
 .sessionBar[hidden] { display: none; }
 
 .sessionBarTab {
   flex: 1 1 0;
-  min-width: 0;
+  min-width: calc(8ch + 12px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -445,6 +465,19 @@
 }
 .sessionBarTab + .sessionBarTab {
   border-left: 1px solid var(--border);
+}
+.statusPinButton {
+  color: var(--muted);
+}
+.statusPinButton.pinned {
+  color: var(--accent);
+}
+.statusPinButton:not(.pinned):focus,
+.statusPinButton:not(.pinned):active {
+  color: var(--muted);
+}
+.statusPinButton:disabled {
+  opacity: 0.35;
 }
 
 .sessionBarTabLabel {

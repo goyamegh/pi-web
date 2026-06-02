@@ -19,7 +19,11 @@
 }
 .statusBarButton:hover {
   border-color: transparent;
-  color: var(--accent);
+}
+@media (hover: hover) and (pointer: fine) {
+  .statusBarButton:hover {
+    color: var(--accent);
+  }
 }
 .statusBar .iconButton svg {
   width: 15px;

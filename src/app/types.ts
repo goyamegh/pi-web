@@ -78,7 +78,6 @@ export type AttachedImage = {
 };
 
 export type PinnedSession = { id: string; label: string };
-export const maxPinnedSessions = 4;
 
 const pinnedSessionsKey = "pi-web-pinned-sessions";
 
