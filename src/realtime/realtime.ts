@@ -216,6 +216,9 @@ export function createRealtime(options: {
       case "message_update": {
         const deltaEvent = event.assistantMessageEvent;
         if (deltaEvent?.type === "text_delta") messages.appendStreamingDelta(deltaEvent.delta || "");
+        else if (deltaEvent?.type === "thinking_start") messages.startStreamingThinking(deltaEvent.contentIndex);
+        else if (deltaEvent?.type === "thinking_delta") messages.appendStreamingThinkingDelta(deltaEvent.delta || "", deltaEvent.contentIndex);
+        else if (deltaEvent?.type === "thinking_end") messages.endStreamingThinking(deltaEvent.content || deltaEvent.thinking, deltaEvent.contentIndex);
         break;
       }
       case "tool_execution_start":
@@ -259,7 +262,10 @@ export function createRealtime(options: {
 
   function connect() {
     const ws = new WebSocket(api.wsUrl());
-    ws.addEventListener("open", status.markWebSocketOpen);
+    ws.addEventListener("open", () => {
+      status.markWebSocketOpen();
+      composer.updatePrimaryAction();
+    });
     ws.addEventListener("message", (message) => {
       const data = JSON.parse(String(message.data));
       if (typeof data.seq === "number" && Number.isFinite(data.seq) && data.seq > state.lastRealtimeSeq) {
@@ -317,19 +323,25 @@ export function createRealtime(options: {
       }
       if (data.type === "pi_event") {
         if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
-        if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event, isReplay);
-        // Force-clear the running state immediately on agent_end — the deduplication in
-        // session_runtime_changed can swallow the final isRunning:false update if the
-        // runtime key hasn't changed between the last event and agent_end.
-        if (!isReplay && data.event?.type === "agent_end" && data.sessionId) {
-          sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: false, isStreaming: false, isCompacting: false, pendingMessageCount: 0 });
+        if (data.sessionId) {
+          if (data.event?.type === "agent_start") {
+            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: true, isCompacting: false, pendingMessageCount: 0 });
+          } else if (data.event?.type === "agent_end") {
+            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: false, isStreaming: false, isCompacting: false, pendingMessageCount: 0 });
+          } else if (data.event?.type === "compaction_start") {
+            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: false, isCompacting: true, pendingMessageCount: 0 });
+          } else if (data.event?.type === "compaction_end") {
+            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: false, isStreaming: false, isCompacting: false, pendingMessageCount: 0 });
+          }
         }
+        if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event, isReplay);
         return;
       }
       if (data.type === "server_error" && (!data.sessionId || data.sessionId === state.currentSessionId)) addMessage("system", data.error, "error");
     });
     ws.addEventListener("close", () => {
       status.markWebSocketClosed();
+      composer.updatePrimaryAction();
       window.setTimeout(connect, reconnectDelayMs);
     });
   }

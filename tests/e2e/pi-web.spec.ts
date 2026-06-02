@@ -4,6 +4,13 @@ import { join } from "node:path";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
+  await page.request.patch("/api/settings", {
+    data: {
+      appearance: { density: "comfortable" },
+      composer: { queueMode: "steer", expanded: false },
+      defaults: { model: null, thinkingLevel: null },
+    },
+  });
 });
 
 test.describe("composer layout", () => {
@@ -111,6 +118,81 @@ test.describe("composer layout", () => {
     expect(messagesRequestCount).toBe(1);
     await page.clock.runFor(1_500);
     await expect(page.locator("#connectionStatus")).toBeHidden();
+  });
+
+  test("keeps send disabled until initial messages and websocket are ready", async ({ page }) => {
+    let releaseMessages!: () => void;
+    const messagesGate = new Promise<void>((resolve) => { releaseMessages = resolve; });
+    let heldMessages = false;
+    await page.route("**/api/messages**", async (route) => {
+      if (!heldMessages) {
+        heldMessages = true;
+        await messagesGate;
+      }
+      await route.continue();
+    });
+
+    await page.addInitScript(() => {
+      const NativeWebSocket = window.WebSocket;
+      const fakeSockets: any[] = [];
+      (window as any).__piWebSockets = fakeSockets;
+
+      class FakeWebSocket extends EventTarget {
+        static readonly CONNECTING = 0;
+        static readonly OPEN = 1;
+        static readonly CLOSING = 2;
+        static readonly CLOSED = 3;
+        readonly url: string;
+        readonly protocol = "";
+        readonly extensions = "";
+        binaryType: BinaryType = "blob";
+        bufferedAmount = 0;
+        readyState = FakeWebSocket.CONNECTING;
+        onopen: ((event: Event) => void) | null = null;
+        onclose: ((event: CloseEvent) => void) | null = null;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        onerror: ((event: Event) => void) | null = null;
+
+        constructor(url: string | URL, protocols?: string | string[]) {
+          super();
+          const parsed = new URL(String(url), location.href);
+          if (parsed.pathname !== "/ws") {
+            return protocols === undefined ? new NativeWebSocket(url) : new NativeWebSocket(url, protocols);
+          }
+          this.url = parsed.href;
+          fakeSockets.push(this);
+        }
+
+        send() {}
+        close() { this.emitClose(); }
+        emitOpen() {
+          this.readyState = FakeWebSocket.OPEN;
+          const event = new Event("open");
+          this.dispatchEvent(event);
+          this.onopen?.(event);
+        }
+        emitClose() {
+          if (this.readyState === FakeWebSocket.CLOSED) return;
+          this.readyState = FakeWebSocket.CLOSED;
+          const event = new CloseEvent("close");
+          this.dispatchEvent(event);
+          this.onclose?.(event);
+        }
+      }
+
+      (window as any).WebSocket = FakeWebSocket as any;
+    });
+
+    await page.goto("/");
+    await page.locator("#prompt").fill("hello");
+    await expect(page.locator("#primaryButton")).toBeDisabled();
+
+    releaseMessages();
+    await expect(page.locator("#primaryButton")).toBeDisabled();
+    await page.waitForFunction(() => (window as any).__piWebSockets.length > 0);
+    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emitOpen());
+
+    await expect(page.locator("#primaryButton")).toBeEnabled();
   });
 
   test("renames the current session from the status title", async ({ page }) => {
@@ -588,7 +670,8 @@ test.describe("tool cards", () => {
     await page.evaluate(() => { document.documentElement.dataset.density = "compact"; });
     await page.locator("#prompt").fill("use tool");
     await page.locator("#primaryButton").click();
-    await expect(page.locator(".message.assistant", { hasText: "Done reading." }).last()).toContainText("Let me check that for you.");
+    await expect(page.locator(".message.assistant", { hasText: "Let me check that for you." }).last()).toBeVisible();
+    await expect(page.locator(".message.assistant", { hasText: "Done reading." }).last()).toBeVisible();
 
     const card = page.locator(".toolCard.toolCard--success").last();
     await expect(card).toBeVisible();

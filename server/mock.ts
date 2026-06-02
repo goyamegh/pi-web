@@ -330,9 +330,16 @@ export function createMockHarness(options: MockSessionOptions) {
             timestamp: new Date().toISOString(),
           });
         } else if (withThinking) {
+          const thinking = "First I will inspect the request and decide what to answer.";
+          const finalText = "Final answer after thinking.";
+          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } } });
+          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: thinking } } });
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: thinking } } });
+          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: finalText } } });
           appendMockMessage({ role: "assistant", content: [
-            { type: "thinking", thinking: "First I will inspect the request and decide what to answer." },
-            { type: "text", text: "Final answer after thinking." },
+            { type: "thinking", thinking },
+            { type: "text", text: finalText },
           ], timestamp: new Date().toISOString() });
         } else if (withShowcase) {
           const editArgs = { path: "/Users/ashwin/projects/pi-web/src/style.css", edits: [{ oldText: ".sessionItem {\n  min-height: 40px;\n}", newText: ".sessionItem {\n  height: auto;\n  min-height: 0;\n}\n\n@media (max-width: 700px) {\n  .sessionDrawer { width: 100vw; }\n}" }] };

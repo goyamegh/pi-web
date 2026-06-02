@@ -84,6 +84,8 @@ async function refreshState() {
   state.isStreaming = Boolean(data.isStreaming);
   composer.updatePrimaryAction();
   await Promise.all([settings.refreshSettings(), modelSettings.refreshModels(), refreshMessages()]);
+  state.initialSyncComplete = true;
+  composer.updatePrimaryAction();
 }
 
 function initStaticIcons() {

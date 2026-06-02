@@ -124,6 +124,7 @@ export type AppState = {
   isStreaming: boolean;
   wsHasOpened: boolean;
   wsDisconnected: boolean;
+  initialSyncComplete: boolean;
   lastRealtimeSeq: number;
   reconnectNoticeTimer: number | undefined;
   connectionLostTimer: number | undefined;
@@ -191,6 +192,7 @@ export function createAppState(): AppState {
     isStreaming: false,
     wsHasOpened: false,
     wsDisconnected: false,
+    initialSyncComplete: false,
     lastRealtimeSeq: 0,
     reconnectNoticeTimer: undefined,
     connectionLostTimer: undefined,

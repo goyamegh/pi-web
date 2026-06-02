@@ -48,7 +48,9 @@ export function createComposer(options: {
 
   function updatePrimaryAction() {
     const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0;
-    elements.primaryButton.disabled = !hasInput;
+    const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
+    elements.primaryButton.disabled = !hasInput || !initialRealtimeReady;
+    elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
     elements.stopButton.style.display = state.isStreaming ? "" : "none";
   }
 
