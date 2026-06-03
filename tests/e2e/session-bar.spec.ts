@@ -1,9 +1,7 @@
 import { expect, test } from "@playwright/test";
 
-const pinnedKey = "pi-web-pinned-sessions";
-
-function seedPinned(...sessions: Array<{ id: string; label: string }>) {
-  return JSON.stringify(sessions);
+async function seedServerPinned(page: import("@playwright/test").Page, ...sessions: Array<{ id: string; label: string; cwd?: string }>) {
+  await page.request.patch("/api/session-ui-state", { data: { pinnedSessions: sessions } });
 }
 
 test.beforeEach(async ({ page }) => {
@@ -28,10 +26,7 @@ test.describe("session quick bar", () => {
   });
 
   test("unpinning the last pinned session leaves it as the current unpinned tab", async ({ page }) => {
-    await page.addInitScript(
-      ([key, value]) => localStorage.setItem(key, value),
-      [pinnedKey, seedPinned({ id: "mock-current", label: "Current mock session" })],
-    );
+    await seedServerPinned(page, { id: "mock-current", label: "Current mock session" });
 
     await page.goto("/");
     await expect(page.locator("#sessionBar")).toBeVisible();
@@ -43,28 +38,24 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab.temporary")).toContainText("Current mock session");
   });
 
-  test("bar is restored from localStorage on load without opening the drawer", async ({ page }) => {
-    await page.addInitScript(
-      ([key, value]) => localStorage.setItem(key, value),
-      [pinnedKey, seedPinned(
-        { id: "mock-current", label: "Current mock session" },
-        { id: "mock-older", label: "Older mock session" },
-      )],
+  test("bar is restored from server storage on load without opening the drawer", async ({ page }) => {
+    await seedServerPinned(
+      page,
+      { id: "mock-current", label: "Current mock session" },
+      { id: "mock-older", label: "Older mock session" },
     );
 
     await page.goto("/");
-    // Drawer never opened — bar should still render from stored labels
+    // Drawer never opened — bar should still render from server-stored labels
     await expect(page.locator("#sessionBar")).toBeVisible();
     await expect(page.locator(".sessionBarTab")).toHaveCount(2);
   });
 
   test("current session tab is marked active", async ({ page }) => {
-    await page.addInitScript(
-      ([key, value]) => localStorage.setItem(key, value),
-      [pinnedKey, seedPinned(
-        { id: "mock-current", label: "Current mock session" },
-        { id: "mock-older", label: "Older mock session" },
-      )],
+    await seedServerPinned(
+      page,
+      { id: "mock-current", label: "Current mock session" },
+      { id: "mock-older", label: "Older mock session" },
     );
 
     await page.goto("/");
@@ -73,12 +64,10 @@ test.describe("session quick bar", () => {
   });
 
   test("clicking a tab switches sessions and moves the active marker", async ({ page }) => {
-    await page.addInitScript(
-      ([key, value]) => localStorage.setItem(key, value),
-      [pinnedKey, seedPinned(
-        { id: "mock-current", label: "Current mock session" },
-        { id: "mock-older", label: "Older mock session" },
-      )],
+    await seedServerPinned(
+      page,
+      { id: "mock-current", label: "Current mock session" },
+      { id: "mock-older", label: "Older mock session" },
     );
 
     await page.goto("/");
@@ -94,9 +83,11 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
   });
 
-  test("session drawer quick-marks and long-presses sessions into colored buckets", async ({ page }) => {
+  test("session drawer uses selected marker colors and one-line marker actions", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();
+
+    await expect(page.locator(".sessionMarkerColorButton.selected")).toContainText("Blue");
 
     const olderItem = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
     const markerButton = olderItem.locator(".sessionItemMarkerBtn");
@@ -109,19 +100,21 @@ test.describe("session quick bar", () => {
     await markerButton.click();
     await expect(olderItem).not.toHaveClass(/\bmarked\b/);
 
-    await markerButton.evaluate((button) => {
-      button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 1 }));
-    });
-    await expect(page.locator(".sessionMarkerMenu")).toBeVisible();
-    await markerButton.evaluate((button) => {
-      button.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerId: 1 }));
-    });
-    await page.locator(".sessionMarkerMenuItem", { hasText: "Green" }).click();
+    await page.locator(".sessionMarkerColorButton.marker-green").click();
+    await expect(page.locator(".sessionMarkerColorButton.selected")).toContainText("Green");
+    await markerButton.click();
 
     await expect(olderItem).toHaveClass(/marker-green/);
     await expect(olderItem.locator(".sessionMarkerChip")).toHaveCount(0);
 
-    await page.locator(".sessionDrawerFilterSelect").selectOption("green");
+    await olderItem.locator(".sessionItemActionsBtn").click();
+    await expect(page.locator(".sessionActionsMarkerRow")).toBeVisible();
+    await expect(page.locator(".sessionActionsMarkerRow")).toContainText("Marker");
+    await expect(page.locator(".sessionActionsMarkerButton")).toHaveCount(6);
+    await page.locator(".sessionActionsMarkerButton.marker-red").click();
+    await expect(olderItem).toHaveClass(/marker-red/);
+
+    await page.locator(".sessionDrawerFilterSelect").selectOption("red");
     await expect(page.locator(".sessionItem")).toHaveCount(1);
     await expect(page.locator(".sessionItem")).toContainText("Older mock session");
   });
@@ -130,12 +123,10 @@ test.describe("session quick bar", () => {
     // Regression test: pinned session tabs must work even if the drawer was never opened.
     // Previously cachedSessions was empty until the drawer was opened, so click handlers
     // were never attached.
-    await page.addInitScript(
-      ([key, value]) => localStorage.setItem(key, value),
-      [pinnedKey, seedPinned(
-        { id: "mock-current", label: "Current mock session" },
-        { id: "mock-older", label: "Older mock session" },
-      )],
+    await seedServerPinned(
+      page,
+      { id: "mock-current", label: "Current mock session" },
+      { id: "mock-older", label: "Older mock session" },
     );
 
     await page.goto("/");
@@ -152,12 +143,10 @@ test.describe("session quick bar", () => {
   test("clicked tab highlights immediately before the server responds", async ({ page }) => {
     // Regression test: the active-tab highlight must switch optimistically on click,
     // not wait for the POST /api/sessions/open round-trip to complete.
-    await page.addInitScript(
-      ([key, value]) => localStorage.setItem(key, value),
-      [pinnedKey, seedPinned(
-        { id: "mock-current", label: "Current mock session" },
-        { id: "mock-older", label: "Older mock session" },
-      )],
+    await seedServerPinned(
+      page,
+      { id: "mock-current", label: "Current mock session" },
+      { id: "mock-older", label: "Older mock session" },
     );
 
     // Delay the sessions/open response so we can observe the pre-response state.
@@ -186,10 +175,7 @@ test.describe("session quick bar", () => {
   });
 
   test("running session tab gets the running class and loses it after the session ends", async ({ page }) => {
-    await page.addInitScript(
-      ([key, value]) => localStorage.setItem(key, value),
-      [pinnedKey, seedPinned({ id: "mock-current", label: "Current mock session" })],
-    );
+    await seedServerPinned(page, { id: "mock-current", label: "Current mock session" });
 
     await page.goto("/");
     await expect(page.locator("#sessionBar")).toBeVisible();
@@ -210,12 +196,10 @@ test.describe("session quick bar", () => {
   test("running class appears on a background session without opening the drawer", async ({ page }) => {
     // Regression: running state for any pinned session must appear via
     // session_runtime_changed WebSocket events, not just when refreshSessions() fires.
-    await page.addInitScript(
-      ([key, value]) => localStorage.setItem(key, value),
-      [pinnedKey, seedPinned(
-        { id: "mock-current", label: "Current mock session" },
-        { id: "mock-older", label: "Older mock session" },
-      )],
+    await seedServerPinned(
+      page,
+      { id: "mock-current", label: "Current mock session" },
+      { id: "mock-older", label: "Older mock session" },
     );
 
     await page.goto("/");

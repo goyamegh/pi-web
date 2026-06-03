@@ -23,6 +23,7 @@ pnpm-debug.log*
 # Test artifacts
 test-results/
 playwright-report/
+.pi/playwright-session-ui-state-*.json
 
 # OS / editor
 .DS_Store

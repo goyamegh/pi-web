@@ -73,9 +73,56 @@
 }
 .sessionDrawerFilterSelect {
   flex: 0 0 auto;
-  max-width: 96px;
+  max-width: 86px;
   padding: 0 6px;
   appearance: none;
+}
+.sessionMarkerPalette {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.sessionMarkerColorButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 18px;
+  min-width: 18px;
+  height: 22px;
+  min-height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--session-marker-color);
+  padding: 0;
+}
+.sessionMarkerColorButton.selected {
+  width: auto;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--session-marker-color) 42%, transparent);
+  background: color-mix(in srgb, var(--session-marker-color) 12%, transparent);
+  padding: 0 6px;
+}
+.sessionMarkerColorButton:hover,
+.sessionMarkerColorButton:focus-visible {
+  border-color: color-mix(in srgb, var(--session-marker-color) 60%, transparent);
+  background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
+}
+.sessionMarkerColorSwatch {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--session-marker-color);
+}
+.sessionMarkerColorLabel {
+  color: color-mix(in srgb, var(--session-marker-color) 82%, var(--text));
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
 }
 .sessionDrawerSearch:focus,
 .sessionDrawerFilterSelect:focus {
@@ -397,12 +444,11 @@
   color: var(--accent);
 }
 
-.sessionActionsMenu,
-.sessionMarkerMenu {
+.sessionActionsMenu {
   position: fixed;
   z-index: 50;
   display: flex;
-  min-width: 180px;
+  min-width: 218px;
   max-width: calc(100vw - 16px);
   flex-direction: column;
   overflow: hidden;
@@ -412,12 +458,57 @@
   box-shadow: 0 12px 36px rgba(0,0,0,.35);
   padding: 4px;
 }
-.sessionMarkerMenu {
-  z-index: 55;
-  min-width: 156px;
+.sessionActionsMarkerRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 34px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  padding: 2px 4px 6px;
+  white-space: nowrap;
 }
-.sessionActionsMenuItem,
-.sessionMarkerMenuItem {
+.sessionActionsMarkerLabel {
+  flex: 1 1 auto;
+  min-width: 44px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.sessionActionsMarkerButton {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  min-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+}
+.sessionActionsMarkerButton.clear {
+  font-size: 16px;
+  line-height: 1;
+}
+.sessionActionsMarkerButton:not(.clear) {
+  color: var(--session-marker-color);
+}
+.sessionActionsMarkerButton:hover,
+.sessionActionsMarkerButton:focus-visible,
+.sessionActionsMarkerButton.selected {
+  border-color: color-mix(in srgb, currentColor 55%, transparent);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.sessionActionsMarkerSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--session-marker-color);
+}
+.sessionActionsMenuItem {
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -431,54 +522,21 @@
   padding: 0 10px;
   text-align: left;
 }
-.sessionActionsMenuItem svg,
-.sessionMarkerMenuItem svg {
+.sessionActionsMenuItem svg {
   width: 15px;
   height: 15px;
 }
 .sessionActionsMenuItem:hover:not(:disabled),
-.sessionActionsMenuItem:focus-visible:not(:disabled),
-.sessionMarkerMenuItem:hover:not(:disabled),
-.sessionMarkerMenuItem:focus-visible:not(:disabled) {
+.sessionActionsMenuItem:focus-visible:not(:disabled) {
   border: 0;
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 .sessionActionsMenuItem.danger {
   color: var(--danger, #ef4444);
 }
-.sessionActionsMenuItem:disabled,
-.sessionMarkerMenuItem:disabled {
+.sessionActionsMenuItem:disabled {
   cursor: default;
   opacity: 0.45;
-}
-.sessionMarkerMenuSwatch {
-  flex: 0 0 auto;
-  width: 12px;
-  height: 12px;
-  border-radius: 999px;
-  background: var(--session-marker-color);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--session-marker-color) 35%, transparent);
-}
-.sessionMarkerMenuItem.selected {
-  background: color-mix(in srgb, var(--session-marker-color) 13%, transparent);
-  color: color-mix(in srgb, var(--session-marker-color) 82%, var(--text));
-}
-.sessionMarkerMenuItem.selected .sessionMarkerMenuSwatch {
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--session-marker-color) 45%, transparent);
-}
-.sessionMarkerMenuItem.clear {
-  color: var(--muted);
-}
-.sessionMarkerMenu.bottomSheet {
-  left: 8px;
-  right: 8px;
-  bottom: calc(env(safe-area-inset-bottom) + 8px);
-  top: auto;
-  display: grid;
-  width: auto;
-  max-width: none;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
-  gap: 4px;
 }
 
 

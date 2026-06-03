@@ -77,49 +77,104 @@ export type AttachedImage = {
   path?: string;
 };
 
-export type PinnedSession = { id: string; label: string };
-export type SessionMarkerBucketId = "later" | "review" | "waiting" | "important" | "green";
-export type SessionMarkerBucket = { id: SessionMarkerBucketId; label: string; color: string };
-export type SessionMarker = { sessionId: string; bucket: SessionMarkerBucketId; note?: string; updatedAt: string };
+export type PinnedSession = { id: string; label: string; cwd?: string };
+export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
+export type SessionMarkerColor = { id: SessionMarkerColorId; label: string };
+export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; note?: string; updatedAt: string };
+export type SessionUiState = {
+  version: 1;
+  pinnedSessions: PinnedSession[];
+  sessionMarkers: SessionMarker[];
+  selectedMarkerColor: SessionMarkerColorId;
+};
 
-export const sessionMarkerBuckets: SessionMarkerBucket[] = [
-  { id: "later", label: "Later", color: "blue" },
-  { id: "review", label: "Review", color: "purple" },
-  { id: "waiting", label: "Waiting", color: "yellow" },
-  { id: "important", label: "Important", color: "red" },
-  { id: "green", label: "Green", color: "green" },
+export const sessionMarkerColors: SessionMarkerColor[] = [
+  { id: "blue", label: "Blue" },
+  { id: "purple", label: "Purple" },
+  { id: "yellow", label: "Yellow" },
+  { id: "red", label: "Red" },
+  { id: "green", label: "Green" },
 ];
+
+export const defaultSessionUiState: SessionUiState = {
+  version: 1,
+  pinnedSessions: [],
+  sessionMarkers: [],
+  selectedMarkerColor: "blue",
+};
+
+const markerColorIds = new Set<SessionMarkerColorId>(sessionMarkerColors.map((color) => color.id));
+const legacyMarkerBucketToColor: Record<string, SessionMarkerColorId> = {
+  later: "blue",
+  review: "purple",
+  waiting: "yellow",
+  important: "red",
+  green: "green",
+};
 
 const pinnedSessionsKey = "pi-web-pinned-sessions";
 const sessionMarkersKey = "pi-web-session-markers";
+const selectedMarkerColorKey = "pi-web-selected-session-marker-color";
 
-export function readPinnedSessions(): PinnedSession[] {
+export function normalizeMarkerColor(value: unknown): SessionMarkerColorId | undefined {
+  return typeof value === "string" && markerColorIds.has(value as SessionMarkerColorId)
+    ? value as SessionMarkerColorId
+    : undefined;
+}
+
+export function normalizePinnedSessions(value: unknown): PinnedSession[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: PinnedSession[] = [];
+  for (const item of value) {
+    const id = typeof item?.id === "string" ? item.id.trim() : "";
+    const label = typeof item?.label === "string" ? item.label.trim() : "";
+    if (!id || !label || seen.has(id)) continue;
+    seen.add(id);
+    const cwd = typeof item?.cwd === "string" && item.cwd.trim() ? item.cwd.trim() : undefined;
+    result.push({ id, label, ...(cwd ? { cwd } : {}) });
+  }
+  return result;
+}
+
+export function normalizeSessionMarkers(value: unknown): SessionMarker[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: SessionMarker[] = [];
+  for (const item of value) {
+    const sessionId = typeof item?.sessionId === "string" ? item.sessionId.trim() : "";
+    const color = normalizeMarkerColor(item?.color) || (typeof item?.bucket === "string" ? legacyMarkerBucketToColor[item.bucket] : undefined);
+    if (!sessionId || !color || seen.has(sessionId)) continue;
+    seen.add(sessionId);
+    result.push({ sessionId, color, updatedAt: typeof item?.updatedAt === "string" ? item.updatedAt : new Date().toISOString() });
+  }
+  return result;
+}
+
+export function normalizeSessionUiState(value: unknown): SessionUiState {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return {
+    version: 1,
+    pinnedSessions: normalizePinnedSessions(raw.pinnedSessions),
+    sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
+    selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
+  };
+}
+
+export function readLegacyPinnedSessions(): PinnedSession[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(pinnedSessionsKey) || "[]");
-    if (!Array.isArray(raw)) return [];
-    return raw.filter((v): v is PinnedSession => typeof v?.id === "string" && typeof v?.label === "string");
+    return normalizePinnedSessions(JSON.parse(localStorage.getItem(pinnedSessionsKey) || "[]"));
   } catch { return []; }
 }
 
-export function persistPinnedSessions(sessions: PinnedSession[]) {
-  localStorage.setItem(pinnedSessionsKey, JSON.stringify(sessions));
-}
-
-export function readSessionMarkers(): SessionMarker[] {
+export function readLegacySessionMarkers(): SessionMarker[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(sessionMarkersKey) || "[]");
-    if (!Array.isArray(raw)) return [];
-    const bucketIds = new Set(sessionMarkerBuckets.map((bucket) => bucket.id));
-    return raw.filter((value): value is SessionMarker => (
-      typeof value?.sessionId === "string"
-      && bucketIds.has(value.bucket)
-      && typeof value?.updatedAt === "string"
-    ));
+    return normalizeSessionMarkers(JSON.parse(localStorage.getItem(sessionMarkersKey) || "[]"));
   } catch { return []; }
 }
 
-export function persistSessionMarkers(markers: SessionMarker[]) {
-  localStorage.setItem(sessionMarkersKey, JSON.stringify(markers));
+export function readLegacySelectedMarkerColor(): SessionMarkerColorId | undefined {
+  return normalizeMarkerColor(localStorage.getItem(selectedMarkerColorKey));
 }
 
 export type SessionInfo = {
@@ -159,6 +214,7 @@ export type AppState = {
   reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
   sessionMarkers: SessionMarker[];
+  selectedMarkerColor: SessionMarkerColorId;
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   queueMode: QueueMode;
@@ -226,8 +282,9 @@ export function createAppState(): AppState {
     reconnectNoticeTimer: undefined,
     connectionLostTimer: undefined,
     reconnectedClearTimer: undefined,
-    pinnedSessions: readPinnedSessions(),
-    sessionMarkers: readSessionMarkers(),
+    pinnedSessions: readLegacyPinnedSessions(),
+    sessionMarkers: readLegacySessionMarkers(),
+    selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
     queueMode: "steer",

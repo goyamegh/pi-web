@@ -65,7 +65,7 @@ describe("pi-web mock API", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json") },
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -202,6 +202,32 @@ describe("pi-web mock API", () => {
 
     const current = await (await fetch(`${baseUrl}/api/settings`)).json();
     expect(current.settings.composer.queueMode).toBe("followUp");
+  });
+
+  it("persists and returns server session UI state", async () => {
+    const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
+    expect(initial.sessionUiState.pinnedSessions).toEqual([]);
+    expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
+
+    const patchedRes = await fetch(`${baseUrl}/api/session-ui-state`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+        sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
+        selectedMarkerColor: "green",
+      }),
+    });
+    expect(patchedRes.status).toBe(200);
+    const patched = await patchedRes.json();
+    expect(patched.sessionUiState).toMatchObject({
+      pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+      sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
+      selectedMarkerColor: "green",
+    });
+
+    const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
+    expect(current.sessionUiState.selectedMarkerColor).toBe("green");
   });
 
   it("applies saved model defaults to new sessions", async () => {

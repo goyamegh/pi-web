@@ -22,6 +22,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths } from "./server/extensions.js";
+import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { createSettingsStore } from "./server/settings.js";
 import type { PiWebSession } from "./server/types.js";
 
@@ -1040,6 +1041,7 @@ async function switchToSessionId(id: string) {
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
+const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
 const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
@@ -1418,7 +1420,9 @@ const server = createServer(async (req, res) => {
         for (const entry of liveSessions.values()) entry.unsubscribe?.();
         liveSessions.clear();
         resetMockSessions();
+        await sessionUiStateStore.write(defaultSessionUiState);
         session = registerLiveSession(createMockSession());
+        broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
       }
@@ -1523,6 +1527,7 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, {
           ok: true,
           ...currentStateWithThinkingLevels(),
+          sessionUiState: await sessionUiStateStore.read(),
           tokenRequired: Boolean(token),
         });
       }
@@ -1611,13 +1616,25 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, sessions: await listSessionInfos(extraCwds) });
       }
 
+      if (method === "GET" && url.pathname === "/api/session-ui-state") {
+        return sendJson(res, 200, { ok: true, sessionUiState: await sessionUiStateStore.read() });
+      }
+
+      if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
+        const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
+        broadcast({ type: "session_ui_state_changed", sessionUiState });
+        return sendJson(res, 200, { ok: true, sessionUiState });
+      }
+
       if (method === "POST" && url.pathname === "/api/sessions/delete") {
         const body = await readBody(req) as { sessionId?: unknown; id?: unknown; cwd?: unknown };
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
         try {
           const result = await deleteSessionById(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : piCwd);
+          const sessionUiState = await sessionUiStateStore.removeSession(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
+          broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, ...result });
         } catch (error: any) {
           return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });

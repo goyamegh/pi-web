@@ -317,6 +317,10 @@ export function createRealtime(options: {
         settings.applySettings(data.settings);
         return;
       }
+      if (data.type === "session_ui_state_changed") {
+        sessions.applySessionUiState(data.sessionUiState);
+        return;
+      }
       if (data.type === "extension_ui_request") {
         handleExtensionUiRequest(data);
         return;

@@ -51,7 +51,10 @@ function updateMeta(data: any) {
   else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
   modelSettings.updateSummary();
-  if (sessions) sessions.renderSessionBar();
+  if (sessions) {
+    if (data.sessionUiState) sessions.applySessionUiState(data.sessionUiState);
+    else sessions.renderSessionBar();
+  }
 }
 
 function updateSessionStats(stats: any) {
