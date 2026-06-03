@@ -101,6 +101,7 @@ export function createSessions(options: {
   let sessionSearchInput: HTMLInputElement | undefined;
   let sessionFilterSelect: HTMLSelectElement | undefined;
   let sessionFilterMode: "all" | "marked" | "unmarked" | "running" | SessionMarkerBucketId = "all";
+  const markerLongPressMs = 480;
 
   type SessionAction = {
     id: string;
@@ -332,6 +333,106 @@ export function createSessions(options: {
     renderSessionList(cachedSessions);
   }
 
+  function markerButtonTitle(markerBucket: { label: string } | undefined) {
+    return markerBucket
+      ? `Marked: ${markerBucket.label}. Click to clear. Press and hold to choose a different marker.`
+      : "Mark session for later. Press and hold to choose marker.";
+  }
+
+  function shouldUseBottomSheetMenu() {
+    return window.matchMedia("(max-width: 700px), (pointer: coarse)").matches;
+  }
+
+  function positionSessionMenu(menu: HTMLElement, anchor: HTMLElement, options: { bottomSheet?: boolean } = {}) {
+    if (options.bottomSheet && shouldUseBottomSheetMenu()) {
+      menu.classList.add("bottomSheet");
+      return;
+    }
+    const rect = anchor.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const margin = 8;
+    const left = Math.min(Math.max(margin, rect.right - menuRect.width), window.innerWidth - menuRect.width - margin);
+    const below = rect.bottom + 4;
+    const top = below + menuRect.height <= window.innerHeight - margin
+      ? below
+      : Math.max(margin, rect.top - menuRect.height - 4);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  function installSessionMenuCloseHandlers(menu: HTMLElement, anchor: HTMLElement) {
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (menu.contains(target) || anchor.contains(target))) return;
+      closeOpenSessionActionsMenu();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeOpenSessionActionsMenu();
+    };
+    const onResize = () => closeOpenSessionActionsMenu();
+    const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
+    closeSessionActionsMenu = () => {
+      window.clearTimeout(installPointerListener);
+      menu.remove();
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+  }
+
+  function openSessionMarkerMenu(anchor: HTMLButtonElement, item: SessionInfo) {
+    closeOpenSessionActionsMenu();
+
+    const marker = markerForSession(item.id);
+    const menu = document.createElement("div");
+    menu.className = "sessionMarkerMenu";
+    menu.setAttribute("role", "menu");
+
+    for (const bucket of sessionMarkerBuckets) {
+      const selected = marker?.bucket === bucket.id;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sessionMarkerMenuItem marker-${bucket.color}${selected ? " selected" : ""}`;
+      button.setAttribute("role", "menuitemradio");
+      button.setAttribute("aria-checked", String(selected));
+      button.title = selected ? `${bucket.label} marker selected` : `Mark as ${bucket.label}`;
+
+      const swatch = document.createElement("span");
+      swatch.className = "sessionMarkerMenuSwatch";
+      swatch.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.textContent = bucket.label;
+      button.append(swatch, label);
+      button.addEventListener("click", () => {
+        closeOpenSessionActionsMenu();
+        setSessionMarker(item.id, bucket.id);
+      });
+      menu.append(button);
+    }
+
+    if (marker) {
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "sessionMarkerMenuItem clear";
+      clear.setAttribute("role", "menuitem");
+      clear.title = "Clear marker";
+      setIcon(clear, "x");
+      const label = document.createElement("span");
+      label.textContent = "Clear marker";
+      clear.append(label);
+      clear.addEventListener("click", () => {
+        closeOpenSessionActionsMenu();
+        clearSessionMarker(item.id);
+      });
+      menu.append(clear);
+    }
+
+    document.body.append(menu);
+    positionSessionMenu(menu, anchor, { bottomSheet: true });
+    installSessionMenuCloseHandlers(menu, anchor);
+  }
 
   function isPinned(id: string) {
     return state.pinnedSessions.some((p) => p.id === id);
@@ -563,7 +664,7 @@ export function createSessions(options: {
     const marker = markerForSession(item.id);
     const markerActions: SessionAction[] = sessionMarkerBuckets.map((bucket) => ({
       id: `mark-${bucket.id}`,
-      label: marker?.bucket === bucket.id ? `✓ ${bucket.label}` : `Mark: ${bucket.label}`,
+      label: marker?.bucket === bucket.id ? `✓ ${bucket.label}` : `Mark as ${bucket.label}`,
       icon: "flag",
       run: () => setSessionMarker(item.id, bucket.id),
     }));
@@ -618,35 +719,8 @@ export function createSessions(options: {
     }
 
     document.body.append(menu);
-    const rect = anchor.getBoundingClientRect();
-    const menuRect = menu.getBoundingClientRect();
-    const margin = 8;
-    const left = Math.min(Math.max(margin, rect.right - menuRect.width), window.innerWidth - menuRect.width - margin);
-    const below = rect.bottom + 4;
-    const top = below + menuRect.height <= window.innerHeight - margin
-      ? below
-      : Math.max(margin, rect.top - menuRect.height - 4);
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (target && (menu.contains(target) || anchor.contains(target))) return;
-      closeOpenSessionActionsMenu();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenSessionActionsMenu();
-    };
-    const onResize = () => closeOpenSessionActionsMenu();
-    closeSessionActionsMenu = () => {
-      menu.remove();
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("resize", onResize);
-    };
-    setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
-    document.addEventListener("keydown", onKeyDown);
-    window.addEventListener("resize", onResize);
+    positionSessionMenu(menu, anchor);
+    installSessionMenuCloseHandlers(menu, anchor);
   }
 
   // ── Session list ───────────────────────────────────────────────────────────
@@ -779,11 +853,52 @@ export function createSessions(options: {
     const markerButton = document.createElement("button");
     markerButton.type = "button";
     markerButton.className = "sessionItemMarkerBtn";
-    markerButton.title = markerBucket ? `Marked: ${markerBucket.label}. Click to clear.` : "Mark session for later";
+    markerButton.title = markerButtonTitle(markerBucket);
     markerButton.setAttribute("aria-label", markerButton.title);
     markerButton.setAttribute("aria-pressed", String(Boolean(markerBucket)));
     setIcon(markerButton, "flag");
-    markerButton.addEventListener("click", () => {
+
+    let longPressTimer: number | undefined;
+    let suppressNextMarkerClick = false;
+    const clearLongPressTimer = () => {
+      if (longPressTimer === undefined) return;
+      window.clearTimeout(longPressTimer);
+      longPressTimer = undefined;
+    };
+    const suppressMarkerClickBriefly = () => {
+      suppressNextMarkerClick = true;
+      window.setTimeout(() => { suppressNextMarkerClick = false; }, markerLongPressMs * 2);
+    };
+    markerButton.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      clearLongPressTimer();
+      longPressTimer = window.setTimeout(() => {
+        longPressTimer = undefined;
+        suppressMarkerClickBriefly();
+        openSessionMarkerMenu(markerButton, item);
+      }, markerLongPressMs);
+    });
+    markerButton.addEventListener("pointerup", clearLongPressTimer);
+    markerButton.addEventListener("pointerleave", clearLongPressTimer);
+    markerButton.addEventListener("pointercancel", clearLongPressTimer);
+    markerButton.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      clearLongPressTimer();
+      suppressMarkerClickBriefly();
+      openSessionMarkerMenu(markerButton, item);
+    });
+    markerButton.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowDown" && event.key !== "ContextMenu" && !(event.shiftKey && (event.key === "Enter" || event.key === " "))) return;
+      event.preventDefault();
+      clearLongPressTimer();
+      openSessionMarkerMenu(markerButton, item);
+    });
+    markerButton.addEventListener("click", (event) => {
+      if (suppressNextMarkerClick) {
+        event.preventDefault();
+        suppressNextMarkerClick = false;
+        return;
+      }
       if (markerBucket) clearSessionMarker(item.id);
       else setSessionMarker(item.id, "later");
     });
@@ -799,13 +914,6 @@ export function createSessions(options: {
     title.className = "sessionItemTitle";
     title.textContent = sessionTitle(item);
     titleRow.append(title);
-
-    if (markerBucket) {
-      const chip = document.createElement("span");
-      chip.className = `sessionMarkerChip marker-${markerBucket.color}`;
-      chip.textContent = markerBucket.label;
-      titleRow.append(chip);
-    }
 
     if (item.runtime?.isRunning) {
       const spinner = document.createElement("span");

@@ -94,16 +94,32 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
   });
 
-  test("session drawer marks sessions into default colored buckets", async ({ page }) => {
+  test("session drawer quick-marks and long-presses sessions into colored buckets", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();
 
     const olderItem = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
-    await olderItem.locator(".sessionItemActionsBtn").click();
-    await page.locator(".sessionActionsMenuItem", { hasText: "Mark: Green" }).click();
+    const markerButton = olderItem.locator(".sessionItemMarkerBtn");
 
-    await expect(olderItem.locator(".sessionMarkerChip")).toHaveText("Green");
+    await markerButton.click();
+    await expect(olderItem).toHaveClass(/\bmarked\b/);
+    await expect(olderItem).toHaveClass(/marker-blue/);
+    await expect(olderItem.locator(".sessionMarkerChip")).toHaveCount(0);
+
+    await markerButton.click();
+    await expect(olderItem).not.toHaveClass(/\bmarked\b/);
+
+    await markerButton.evaluate((button) => {
+      button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 1 }));
+    });
+    await expect(page.locator(".sessionMarkerMenu")).toBeVisible();
+    await markerButton.evaluate((button) => {
+      button.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerId: 1 }));
+    });
+    await page.locator(".sessionMarkerMenuItem", { hasText: "Green" }).click();
+
     await expect(olderItem).toHaveClass(/marker-green/);
+    await expect(olderItem.locator(".sessionMarkerChip")).toHaveCount(0);
 
     await page.locator(".sessionDrawerFilterSelect").selectOption("green");
     await expect(page.locator(".sessionItem")).toHaveCount(1);
