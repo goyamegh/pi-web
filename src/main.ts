@@ -4,6 +4,7 @@ import "./git/git.css";
 import "highlight.js/styles/github-dark.css";
 import { createApiClient } from "./app/api.js";
 import { getAppElements, initAppHeightSync } from "./app/elements.js";
+import { initSwAutoReload } from "./app/sw-update.js";
 import { setIcon } from "./app/icons.js";
 import { createAppState } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
@@ -20,6 +21,7 @@ import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
 
 initAppHeightSync();
+initSwAutoReload();
 
 const elements = getAppElements();
 const state = createAppState();
