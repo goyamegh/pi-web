@@ -1,7 +1,14 @@
 import { expect, test } from "@playwright/test";
 
+async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
+  pinnedSessions?: Array<{ id: string; label: string; cwd?: string }>;
+  sessionMarkers?: Array<{ sessionId: string; color: string; updatedAt: string }>;
+}) {
+  await page.request.patch("/api/session-ui-state", { data: state });
+}
+
 async function seedServerPinned(page: import("@playwright/test").Page, ...sessions: Array<{ id: string; label: string; cwd?: string }>) {
-  await page.request.patch("/api/session-ui-state", { data: { pinnedSessions: sessions } });
+  await seedServerSessionUiState(page, { pinnedSessions: sessions });
 }
 
 test.beforeEach(async ({ page }) => {
@@ -38,17 +45,22 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab.temporary")).toContainText("Current mock session");
   });
 
-  test("bar is restored from server storage on load without opening the drawer", async ({ page }) => {
-    await seedServerPinned(
-      page,
-      { id: "mock-current", label: "Current mock session" },
-      { id: "mock-older", label: "Older mock session" },
-    );
+  test("bar is restored from server storage and marked tabs use marker color backgrounds", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      pinnedSessions: [
+        { id: "mock-current", label: "Current mock session" },
+        { id: "mock-older", label: "Older mock session" },
+      ],
+      sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
 
     await page.goto("/");
     // Drawer never opened — bar should still render from server-stored labels
     await expect(page.locator("#sessionBar")).toBeVisible();
     await expect(page.locator(".sessionBarTab")).toHaveCount(2);
+    const olderTab = page.locator(".sessionBarTab").filter({ hasText: "Older mock session" });
+    await expect(olderTab).toHaveClass(/\bmarked\b/);
+    await expect(olderTab).toHaveClass(/marker-green/);
   });
 
   test("current session tab is marked active", async ({ page }) => {
@@ -114,9 +126,22 @@ test.describe("session quick bar", () => {
     await page.locator(".sessionActionsMarkerButton.marker-red").click();
     await expect(olderItem).toHaveClass(/marker-red/);
 
-    await page.locator(".sessionDrawerFilterSelect").selectOption("red");
+    const currentItem = page.locator(".sessionItem").filter({ hasText: "Current mock session" });
+    await page.locator(".sessionMarkerColorButton.marker-blue").click();
+    await currentItem.locator(".sessionItemMarkerBtn").click();
+    await expect(currentItem).toHaveClass(/marker-blue/);
+
+    await page.locator(".sessionColorFilterButton").click();
+    await expect(page.locator(".sessionColorFilterMenu")).toBeVisible();
+    await page.locator(".sessionColorFilterMenuItem.marker-red").click();
     await expect(page.locator(".sessionItem")).toHaveCount(1);
     await expect(page.locator(".sessionItem")).toContainText("Older mock session");
+
+    await page.locator(".sessionColorFilterMenuItem.marker-blue").click();
+    await expect(page.locator(".sessionItem")).toHaveCount(2);
+    await page.locator(".sessionColorFilterMenuItem.marker-red").click();
+    await expect(page.locator(".sessionItem")).toHaveCount(1);
+    await expect(page.locator(".sessionItem")).toContainText("Current mock session");
   });
 
   test("clicking a tab switches sessions without needing to open the drawer first", async ({ page }) => {

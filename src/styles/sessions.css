@@ -73,9 +73,56 @@
 }
 .sessionDrawerFilterSelect {
   flex: 0 0 auto;
-  max-width: 86px;
+  max-width: 82px;
   padding: 0 6px;
   appearance: none;
+}
+.sessionColorFilterButton {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  max-width: 84px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--muted);
+  padding: 0 6px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 26px;
+}
+.sessionColorFilterButton.active {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  color: var(--text);
+}
+.sessionColorFilterButton:hover,
+.sessionColorFilterButton:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.sessionColorFilterButton > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessionColorFilterDots {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+.sessionColorFilterDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--session-marker-color);
 }
 .sessionMarkerPalette {
   flex: 0 0 auto;
@@ -444,7 +491,8 @@
   color: var(--accent);
 }
 
-.sessionActionsMenu {
+.sessionActionsMenu,
+.sessionColorFilterMenu {
   position: fixed;
   z-index: 50;
   display: flex;
@@ -457,6 +505,54 @@
   background: color-mix(in srgb, var(--panel) 98%, black);
   box-shadow: 0 12px 36px rgba(0,0,0,.35);
   padding: 4px;
+}
+.sessionColorFilterMenu {
+  min-width: 150px;
+}
+.sessionColorFilterTitle {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 8px 4px;
+}
+.sessionColorFilterMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  padding: 0 8px;
+  text-align: left;
+}
+.sessionColorFilterMenuItem:hover,
+.sessionColorFilterMenuItem:focus-visible,
+.sessionColorFilterMenuItem.selected {
+  border: 0;
+  background: color-mix(in srgb, var(--session-marker-color, var(--text)) 12%, transparent);
+}
+.sessionColorFilterMenuItem.all.selected {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.sessionColorFilterMenuItem::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 12px;
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 12px;
+}
+.sessionColorFilterMenuItem.selected::after {
+  content: "✓";
+}
+.sessionColorFilterMenuSwatch {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--session-marker-color);
 }
 .sessionActionsMarkerRow {
   display: flex;
@@ -578,6 +674,17 @@
   border-top-color: var(--accent);
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.sessionBarTab.marked {
+  border-top-color: color-mix(in srgb, var(--session-marker-color) 55%, transparent);
+  background: color-mix(in srgb, var(--session-marker-color) 11%, transparent);
+}
+.sessionBarTab.marked:hover {
+  background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
+}
+.sessionBarTab.marked.active {
+  border-top-color: var(--session-marker-color);
+  background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
 }
 .sessionBarTab + .sessionBarTab {
   border-left: 1px solid var(--border);

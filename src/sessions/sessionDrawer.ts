@@ -101,8 +101,11 @@ export function createSessions(options: {
   let currentSessionPinButton: HTMLButtonElement | undefined;
   let sessionSearchInput: HTMLInputElement | undefined;
   let sessionFilterSelect: HTMLSelectElement | undefined;
+  let sessionColorFilterButton: HTMLButtonElement | undefined;
   let markerPaletteEl: HTMLDivElement | undefined;
-  let sessionFilterMode: "all" | "marked" | "unmarked" | "running" | SessionMarkerColorId = "all";
+  let closeSessionColorFilterMenu: (() => void) | undefined;
+  let sessionFilterMode: "all" | "marked" | "unmarked" | "running" = "all";
+  const allowedMarkerColors = new Set<SessionMarkerColorId>();
 
   type SessionAction = {
     id: string;
@@ -247,7 +250,10 @@ export function createSessions(options: {
   }
 
   function setSessionDrawerOpen(open: boolean) {
-    if (!open) closeOpenSessionActionsMenu();
+    if (!open) {
+      closeOpenSessionActionsMenu();
+      closeOpenSessionColorFilterMenu();
+    }
     elements.sessionDrawer.hidden = !open;
     elements.sessionBackdrop.hidden = !open;
     document.body.classList.toggle("sessionDrawerOpen", open);
@@ -380,6 +386,47 @@ export function createSessions(options: {
     return colorForMarker(state.selectedMarkerColor) || sessionMarkerColors[0];
   }
 
+  function markerColorLabel(color: SessionMarkerColorId) {
+    return colorForMarker(color)?.label || color;
+  }
+
+  function sortedAllowedMarkerColors() {
+    return sessionMarkerColors
+      .map((color) => color.id)
+      .filter((color) => allowedMarkerColors.has(color));
+  }
+
+  function renderSessionColorFilterButton() {
+    if (!sessionColorFilterButton) return;
+    const colors = sortedAllowedMarkerColors();
+    sessionColorFilterButton.textContent = "";
+    sessionColorFilterButton.classList.toggle("active", colors.length > 0);
+    sessionColorFilterButton.title = colors.length === 0
+      ? "Filter marker colors: all colors allowed"
+      : `Filter marker colors: ${colors.map(markerColorLabel).join(", ")}`;
+    sessionColorFilterButton.setAttribute("aria-label", sessionColorFilterButton.title);
+    sessionColorFilterButton.setAttribute("aria-expanded", String(Boolean(closeSessionColorFilterMenu)));
+
+    if (colors.length === 0) {
+      const label = document.createElement("span");
+      label.textContent = "All colors";
+      sessionColorFilterButton.append(label);
+      return;
+    }
+
+    const dots = document.createElement("span");
+    dots.className = "sessionColorFilterDots";
+    for (const color of colors) {
+      const dot = document.createElement("span");
+      dot.className = `sessionColorFilterDot marker-${color}`;
+      dot.setAttribute("aria-hidden", "true");
+      dots.append(dot);
+    }
+    const label = document.createElement("span");
+    label.textContent = colors.length === 1 ? markerColorLabel(colors[0]) : `${colors.length} colors`;
+    sessionColorFilterButton.append(dots, label);
+  }
+
   function setSelectedMarkerColor(color: SessionMarkerColorId) {
     if (state.selectedMarkerColor === color) return;
     state.selectedMarkerColor = color;
@@ -392,6 +439,7 @@ export function createSessions(options: {
     const next = { sessionId, color, updatedAt: new Date().toISOString() };
     state.sessionMarkers = [next, ...state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId)];
     renderSessionList(cachedSessions);
+    renderSessionBar();
     persistSessionUiState({ sessionMarkers: state.sessionMarkers });
   }
 
@@ -400,6 +448,7 @@ export function createSessions(options: {
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId);
     if (state.sessionMarkers.length === count) return;
     renderSessionList(cachedSessions);
+    renderSessionBar();
     persistSessionUiState({ sessionMarkers: state.sessionMarkers });
   }
 
@@ -437,6 +486,12 @@ export function createSessions(options: {
     }
   }
 
+  function closeOpenSessionColorFilterMenu() {
+    closeSessionColorFilterMenu?.();
+    closeSessionColorFilterMenu = undefined;
+    renderSessionColorFilterButton();
+  }
+
   function positionSessionMenu(menu: HTMLElement, anchor: HTMLElement) {
     const rect = anchor.getBoundingClientRect();
     const menuRect = menu.getBoundingClientRect();
@@ -470,6 +525,97 @@ export function createSessions(options: {
     };
     document.addEventListener("keydown", onKeyDown);
     window.addEventListener("resize", onResize);
+  }
+
+  function openSessionColorFilterMenu(anchor: HTMLButtonElement) {
+    closeOpenSessionActionsMenu();
+    closeOpenSessionColorFilterMenu();
+
+    const menu = document.createElement("div");
+    menu.className = "sessionColorFilterMenu";
+    menu.setAttribute("role", "menu");
+
+    const title = document.createElement("div");
+    title.className = "sessionColorFilterTitle";
+    title.textContent = "Allowed marker colors";
+    menu.append(title);
+
+    const allButton = document.createElement("button");
+    allButton.type = "button";
+    allButton.className = "sessionColorFilterMenuItem all";
+    allButton.setAttribute("role", "menuitemcheckbox");
+    const allLabel = document.createElement("span");
+    allLabel.textContent = "All colors";
+    allButton.append(allLabel);
+    menu.append(allButton);
+
+    const colorButtons: Array<{ color: SessionMarkerColorId; button: HTMLButtonElement }> = [];
+    const updateMenuState = () => {
+      const allSelected = allowedMarkerColors.size === 0;
+      allButton.classList.toggle("selected", allSelected);
+      allButton.setAttribute("aria-checked", String(allSelected));
+      allButton.title = allSelected ? "All marker colors are allowed" : "Allow all marker colors";
+      for (const item of colorButtons) {
+        const selected = allowedMarkerColors.has(item.color);
+        item.button.classList.toggle("selected", selected);
+        item.button.setAttribute("aria-checked", String(selected));
+        item.button.title = selected ? `${markerColorLabel(item.color)} allowed` : `Allow ${markerColorLabel(item.color)}`;
+      }
+    };
+
+    allButton.addEventListener("click", () => {
+      allowedMarkerColors.clear();
+      renderSessionColorFilterButton();
+      renderSessionList(cachedSessions);
+      updateMenuState();
+    });
+
+    for (const color of sessionMarkerColors) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sessionColorFilterMenuItem marker-${color.id}`;
+      button.setAttribute("role", "menuitemcheckbox");
+      const swatch = document.createElement("span");
+      swatch.className = "sessionColorFilterMenuSwatch";
+      swatch.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.textContent = color.label;
+      button.append(swatch, label);
+      button.addEventListener("click", () => {
+        if (allowedMarkerColors.has(color.id)) allowedMarkerColors.delete(color.id);
+        else allowedMarkerColors.add(color.id);
+        renderSessionColorFilterButton();
+        renderSessionList(cachedSessions);
+        updateMenuState();
+      });
+      colorButtons.push({ color: color.id, button });
+      menu.append(button);
+    }
+
+    updateMenuState();
+    document.body.append(menu);
+    positionSessionMenu(menu, anchor);
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (menu.contains(target) || anchor.contains(target))) return;
+      closeOpenSessionColorFilterMenu();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeOpenSessionColorFilterMenu();
+    };
+    const onResize = () => closeOpenSessionColorFilterMenu();
+    const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
+    closeSessionColorFilterMenu = () => {
+      window.clearTimeout(installPointerListener);
+      menu.remove();
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+    renderSessionColorFilterButton();
   }
 
   function isPinned(id: string) {
@@ -589,15 +735,16 @@ export function createSessions(options: {
     let activeTab: HTMLElement | undefined;
     const appendTab = (sessionId: string, label: string, cwd: string, options: { pinned: boolean; running?: boolean }) => {
       const isActive = currentId === sessionId;
+      const markerColor = colorForMarker(markerForSession(sessionId)?.color);
       const tab = document.createElement("div");
-      tab.className = `sessionBarTab${isActive ? " active" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}`;
+      tab.className = `sessionBarTab${isActive ? " active" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
       if (isActive) activeTab = tab;
 
       const open = document.createElement("button");
       open.type = "button";
       open.className = "sessionBarTabOpen";
       if (isActive) open.setAttribute("aria-current", "page");
-      open.title = label;
+      open.title = markerColor ? `${label} · ${markerColor.label} marker` : label;
 
       const labelEl = document.createElement("span");
       labelEl.className = "sessionBarTabLabel";
@@ -760,6 +907,7 @@ export function createSessions(options: {
 
   function openSessionActionsMenu(anchor: HTMLButtonElement, item: SessionInfo, cwd: string) {
     closeOpenSessionActionsMenu();
+    closeOpenSessionColorFilterMenu();
 
     const menu = document.createElement("div");
     menu.className = "sessionActionsMenu";
@@ -814,9 +962,9 @@ export function createSessions(options: {
       const matchesFilter = sessionFilterMode === "all"
         || (sessionFilterMode === "marked" && Boolean(marker))
         || (sessionFilterMode === "unmarked" && !marker)
-        || (sessionFilterMode === "running" && item.runtime?.isRunning)
-        || marker?.color === sessionFilterMode;
+        || (sessionFilterMode === "running" && item.runtime?.isRunning);
       if (!matchesFilter) return false;
+      if (allowedMarkerColors.size > 0 && sessionFilterMode !== "unmarked" && !allowedMarkerColors.has(marker?.color as SessionMarkerColorId)) return false;
       if (!query) return true;
       return [sessionTitle(item), item.cwd || "", item.firstMessage || ""]
         .some((value) => value.toLowerCase().includes(query));
@@ -824,7 +972,7 @@ export function createSessions(options: {
     if (visibleSessions.length === 0) {
       const empty = document.createElement("p");
       empty.className = "sessionEmpty";
-      empty.textContent = query ? "No matching sessions." : "No sessions in this color.";
+      empty.textContent = query ? "No matching sessions." : allowedMarkerColors.size > 0 ? "No sessions in the selected colors." : "No sessions for this filter.";
       elements.sessionListEl.append(empty);
       return;
     }
@@ -1015,23 +1163,23 @@ export function createSessions(options: {
         option.textContent = label;
         sessionFilterSelect.append(option);
       }
-      for (const color of sessionMarkerColors) {
-        const option = document.createElement("option");
-        option.value = color.id;
-        option.textContent = color.label;
-        sessionFilterSelect.append(option);
-      }
       sessionFilterSelect.value = sessionFilterMode;
       sessionSearchInput.addEventListener("input", () => renderSessionList(cachedSessions));
       sessionFilterSelect.addEventListener("change", () => {
-        sessionFilterMode = sessionFilterSelect?.value as typeof sessionFilterMode;
+        sessionFilterMode = (sessionFilterSelect?.value || "all") as typeof sessionFilterMode;
         renderSessionList(cachedSessions);
       });
+      sessionColorFilterButton = document.createElement("button");
+      sessionColorFilterButton.type = "button";
+      sessionColorFilterButton.className = "sessionColorFilterButton";
+      sessionColorFilterButton.setAttribute("aria-haspopup", "menu");
+      sessionColorFilterButton.addEventListener("click", () => openSessionColorFilterMenu(sessionColorFilterButton!));
+      renderSessionColorFilterButton();
       markerPaletteEl = document.createElement("div");
       markerPaletteEl.className = "sessionMarkerPalette";
       markerPaletteEl.setAttribute("role", "toolbar");
       renderMarkerPalette();
-      filterWrap.append(sessionSearchInput, sessionFilterSelect, markerPaletteEl);
+      filterWrap.append(sessionSearchInput, sessionFilterSelect, sessionColorFilterButton, markerPaletteEl);
       headerTitle.replaceWith(filterWrap);
     }
 
