@@ -1,8 +1,8 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon, type IconName } from "../app/icons.js";
-import type { AppState, SessionInfo } from "../app/types.js";
-import { persistCollapsedSessionFolders, persistPinnedSessions, sessionFolderPreviewLimit } from "../app/types.js";
+import type { AppState, SessionInfo, SessionMarkerBucketId } from "../app/types.js";
+import { persistCollapsedSessionFolders, persistPinnedSessions, persistSessionMarkers, sessionFolderPreviewLimit, sessionMarkerBuckets } from "../app/types.js";
 
 export type SessionsController = {
   init: () => void;
@@ -98,6 +98,9 @@ export function createSessions(options: {
   const pinnedRuntimes = new Map<string, SessionInfo["runtime"]>();
   let closeSessionActionsMenu: (() => void) | undefined;
   let currentSessionPinButton: HTMLButtonElement | undefined;
+  let sessionSearchInput: HTMLInputElement | undefined;
+  let sessionFilterSelect: HTMLSelectElement | undefined;
+  let sessionFilterMode: "all" | "marked" | "unmarked" | "running" | SessionMarkerBucketId = "all";
 
   type SessionAction = {
     id: string;
@@ -304,7 +307,31 @@ export function createSessions(options: {
     renderSessionBar();
   }
 
-  // ── Pinning ────────────────────────────────────────────────────────────────
+  // ── Markers and pinning ────────────────────────────────────────────────────
+
+  function markerForSession(sessionId: string) {
+    return state.sessionMarkers.find((marker) => marker.sessionId === sessionId);
+  }
+
+  function bucketForMarker(bucketId?: string) {
+    return sessionMarkerBuckets.find((bucket) => bucket.id === bucketId);
+  }
+
+  function setSessionMarker(sessionId: string, bucket: SessionMarkerBucketId) {
+    const next = { sessionId, bucket, updatedAt: new Date().toISOString() };
+    state.sessionMarkers = [next, ...state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId)];
+    persistSessionMarkers(state.sessionMarkers);
+    renderSessionList(cachedSessions);
+  }
+
+  function clearSessionMarker(sessionId: string) {
+    const count = state.sessionMarkers.length;
+    state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId);
+    if (state.sessionMarkers.length === count) return;
+    persistSessionMarkers(state.sessionMarkers);
+    renderSessionList(cachedSessions);
+  }
+
 
   function isPinned(id: string) {
     return state.pinnedSessions.some((p) => p.id === id);
@@ -335,6 +362,36 @@ export function createSessions(options: {
   function togglePin(item: SessionInfo) {
     if (isPinned(item.id)) unpinSession(item.id);
     else pinSession(item);
+  }
+
+  function titleForSessionId(sessionId: string) {
+    const live = cachedSessions.find((s) => s.id === sessionId);
+    const pinned = state.pinnedSessions.find((s) => s.id === sessionId);
+    if (live) return sessionTitle(live);
+    return pinned?.label || state.currentSessionTitle || "New session";
+  }
+
+  async function openSessionTab(sessionId: string, cwd: string) {
+    const previousSessionId = state.currentSessionId;
+    if (state.currentSessionId !== sessionId) {
+      state.currentSessionId = sessionId;
+      renderSessionBar();
+    }
+    try {
+      const openRes = await fetch("/api/sessions/open", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ sessionId, cwd }),
+      });
+      if (!openRes.ok) throw new Error(await openRes.text());
+      rememberSessionCwd(cwd);
+      markCachedCurrentSession(sessionId, cwd);
+      await refreshState();
+    } catch (error) {
+      state.currentSessionId = previousSessionId;
+      renderSessionBar();
+      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+    }
   }
 
   function updateCurrentSessionPinButton() {
@@ -374,7 +431,10 @@ export function createSessions(options: {
     const bar = elements.sessionBarEl;
     const pinned = state.pinnedSessions;
 
-    if (pinned.length === 0) {
+    const currentId = state.currentSessionId;
+    const currentIsPinned = Boolean(currentId && isPinned(currentId));
+
+    if (pinned.length === 0 && !currentId) {
       bar.hidden = true;
       document.body.classList.remove("hasPinnedSessions");
       updateCurrentSessionPinButton();
@@ -387,56 +447,74 @@ export function createSessions(options: {
 
     updateCurrentSessionPinButton();
 
-    let activeTab: HTMLButtonElement | undefined;
-    for (const pinnedEntry of pinned) {
-      const live = cachedSessions.find((s) => s.id === pinnedEntry.id);
-      const isActive = state.currentSessionId === pinnedEntry.id;
-      const isRunning = (live?.runtime ?? pinnedRuntimes.get(pinnedEntry.id))?.isRunning ?? false;
+    let activeTab: HTMLElement | undefined;
+    const appendTab = (sessionId: string, label: string, cwd: string, options: { pinned: boolean; running?: boolean }) => {
+      const isActive = currentId === sessionId;
+      const tab = document.createElement("div");
+      tab.className = `sessionBarTab${isActive ? " active" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}`;
+      if (isActive) activeTab = tab;
 
-      const tab = document.createElement("button");
-      tab.type = "button";
-      tab.className = `sessionBarTab${isActive ? " active" : ""}${isRunning ? " running" : ""}`;
-      if (isActive) {
-        tab.setAttribute("aria-current", "page");
-        activeTab = tab;
-      }
-      tab.title = live ? sessionTitle(live) : pinnedEntry.label;
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "sessionBarTabOpen";
+      if (isActive) open.setAttribute("aria-current", "page");
+      open.title = label;
 
       const labelEl = document.createElement("span");
       labelEl.className = "sessionBarTabLabel";
-      labelEl.textContent = live ? sessionTitle(live) : pinnedEntry.label;
-      tab.append(labelEl);
+      labelEl.textContent = label;
+      open.append(labelEl);
+      open.addEventListener("click", () => void openSessionTab(sessionId, cwd));
+      tab.append(open);
 
-      if (live) {
-        tab.addEventListener("click", async () => {
-          // Optimistic update: switch the active tab highlight immediately before any
-          // network round-trips so the UI feels instant even during streaming.
-          const previousSessionId = state.currentSessionId;
-          if (state.currentSessionId !== live.id) {
-            state.currentSessionId = live.id;
-            renderSessionBar();
-          }
-          try {
-            const cwd = live.cwd || state.currentCwd;
-            const openRes = await fetch("/api/sessions/open", {
-              method: "POST",
-              headers: api.headers(),
-              body: JSON.stringify({ sessionId: live.id, cwd }),
-            });
-            if (!openRes.ok) throw new Error(await openRes.text());
-            rememberSessionCwd(cwd);
-            markCachedCurrentSession(live.id, cwd);
-            await refreshState();
-          } catch (error) {
-            // Revert the optimistic highlight if the switch failed.
-            state.currentSessionId = previousSessionId;
-            renderSessionBar();
-            addMessage("system", error instanceof Error ? error.message : String(error), "error");
-          }
+      if (options.pinned) {
+        const close = document.createElement("button");
+        close.type = "button";
+        close.className = "sessionBarTabAction";
+        close.title = "Unpin tab";
+        close.setAttribute("aria-label", `Unpin ${label}`);
+        setIcon(close, "x");
+        close.addEventListener("click", () => {
+          if (!window.confirm(`Unpin “${label}”?`)) return;
+          unpinSession(sessionId);
         });
+        tab.append(close);
+      } else {
+        const pin = document.createElement("button");
+        pin.type = "button";
+        pin.className = "sessionBarTabAction";
+        pin.title = "Pin tab";
+        pin.setAttribute("aria-label", `Pin ${label}`);
+        setIcon(pin, "pin");
+        pin.addEventListener("click", toggleCurrentSessionPin);
+        tab.append(pin);
       }
 
       bar.append(tab);
+    };
+
+    for (const pinnedEntry of pinned) {
+      const live = cachedSessions.find((s) => s.id === pinnedEntry.id);
+      appendTab(
+        pinnedEntry.id,
+        live ? sessionTitle(live) : pinnedEntry.label,
+        live?.cwd || state.currentCwd,
+        { pinned: true, running: (live?.runtime ?? pinnedRuntimes.get(pinnedEntry.id))?.isRunning ?? false },
+      );
+    }
+
+    if (currentId && !currentIsPinned) {
+      const live = cachedSessions.find((s) => s.id === currentId);
+      if (pinned.length > 0) {
+        const separator = document.createElement("div");
+        separator.className = "sessionBarSeparator";
+        separator.setAttribute("aria-hidden", "true");
+        bar.append(separator);
+      }
+      appendTab(currentId, live ? sessionTitle(live) : titleForSessionId(currentId), live?.cwd || state.currentCwd, {
+        pinned: false,
+        running: (live?.runtime ?? pinnedRuntimes.get(currentId))?.isRunning ?? state.isStreaming,
+      });
     }
 
     if (activeTab) {
@@ -482,7 +560,21 @@ export function createSessions(options: {
       : item.runtime?.isRunning
         ? "Wait for the session to finish before deleting it"
         : undefined;
+    const marker = markerForSession(item.id);
+    const markerActions: SessionAction[] = sessionMarkerBuckets.map((bucket) => ({
+      id: `mark-${bucket.id}`,
+      label: marker?.bucket === bucket.id ? `✓ ${bucket.label}` : `Mark: ${bucket.label}`,
+      icon: "flag",
+      run: () => setSessionMarker(item.id, bucket.id),
+    }));
     return [
+      ...markerActions,
+      ...(marker ? [{
+        id: "clear-marker",
+        label: "Clear marker",
+        icon: "x" as const,
+        run: () => clearSessionMarker(item.id),
+      }] : []),
       {
         id: "delete",
         label: "Delete",
@@ -571,8 +663,29 @@ export function createSessions(options: {
       return;
     }
 
+    const query = sessionSearchInput?.value.trim().toLowerCase() || "";
+    const visibleSessions = sessions.filter((item) => {
+      const marker = markerForSession(item.id);
+      const matchesFilter = sessionFilterMode === "all"
+        || (sessionFilterMode === "marked" && Boolean(marker))
+        || (sessionFilterMode === "unmarked" && !marker)
+        || (sessionFilterMode === "running" && item.runtime?.isRunning)
+        || marker?.bucket === sessionFilterMode;
+      if (!matchesFilter) return false;
+      if (!query) return true;
+      return [sessionTitle(item), item.cwd || "", item.firstMessage || ""]
+        .some((value) => value.toLowerCase().includes(query));
+    });
+    if (visibleSessions.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "sessionEmpty";
+      empty.textContent = query ? "No matching sessions." : "No sessions in this bucket.";
+      elements.sessionListEl.append(empty);
+      return;
+    }
+
     const groups = new Map<string, SessionInfo[]>();
-    for (const item of sessions) {
+    for (const item of visibleSessions) {
       const cwd = item.cwd || state.currentCwd || "";
       groups.set(cwd, [...(groups.get(cwd) || []), item]);
     }
@@ -656,23 +769,24 @@ export function createSessions(options: {
   }
 
   function buildSessionItem(item: SessionInfo, cwd: string): HTMLElement {
-    // Use a div so we can have two sibling buttons (pin + navigate) without nesting buttons
+    // Use a div so we can have sibling buttons (navigate + actions) without nesting buttons
+    const marker = markerForSession(item.id);
+    const markerBucket = bucketForMarker(marker?.bucket);
     const row = document.createElement("div");
-    row.className = `sessionItem${item.isCurrent ? " current" : ""}${isPinned(item.id) ? " pinned" : ""}`;
+    row.className = `sessionItem${item.isCurrent ? " current" : ""}${isPinned(item.id) ? " pinned" : ""}${markerBucket ? ` marked marker-${markerBucket.color}` : ""}`;
     if (item.isCurrent) row.setAttribute("aria-current", "page");
 
-    // ── Pin button (always visible, works on touch) ────────────────────────
-    const pinned = isPinned(item.id);
-    const pinBtn = document.createElement("button");
-    pinBtn.type = "button";
-    pinBtn.className = `sessionItemPinBtn${pinned ? " pinned" : ""}`;
-    pinBtn.title = pinned
-      ? "Remove from quick bar"
-      : "Add to quick bar";
-    pinBtn.setAttribute("aria-label", pinBtn.title);
-    pinBtn.setAttribute("aria-pressed", String(pinned));
-    setIcon(pinBtn, "pin");
-    pinBtn.addEventListener("click", () => togglePin(item));
+    const markerButton = document.createElement("button");
+    markerButton.type = "button";
+    markerButton.className = "sessionItemMarkerBtn";
+    markerButton.title = markerBucket ? `Marked: ${markerBucket.label}. Click to clear.` : "Mark session for later";
+    markerButton.setAttribute("aria-label", markerButton.title);
+    markerButton.setAttribute("aria-pressed", String(Boolean(markerBucket)));
+    setIcon(markerButton, "flag");
+    markerButton.addEventListener("click", () => {
+      if (markerBucket) clearSessionMarker(item.id);
+      else setSessionMarker(item.id, "later");
+    });
 
     // ── Navigate button ────────────────────────────────────────────────────
     const navBtn = document.createElement("button");
@@ -685,6 +799,13 @@ export function createSessions(options: {
     title.className = "sessionItemTitle";
     title.textContent = sessionTitle(item);
     titleRow.append(title);
+
+    if (markerBucket) {
+      const chip = document.createElement("span");
+      chip.className = `sessionMarkerChip marker-${markerBucket.color}`;
+      chip.textContent = markerBucket.label;
+      titleRow.append(chip);
+    }
 
     if (item.runtime?.isRunning) {
       const spinner = document.createElement("span");
@@ -731,20 +852,46 @@ export function createSessions(options: {
       openSessionActionsMenu(actionsBtn, item, cwd);
     });
 
-    row.append(pinBtn, navBtn, actionsBtn);
+    row.append(markerButton, navBtn, actionsBtn);
     return row;
   }
 
   function init() {
     new MutationObserver(updateEmptyCwdChooser).observe(elements.messagesEl, { childList: true });
     elements.emptyCwdButton.addEventListener("click", () => openFolderPicker(state.currentCwd));
-    currentSessionPinButton = document.createElement("button");
-    currentSessionPinButton.type = "button";
-    currentSessionPinButton.className = "iconButton statusBarButton statusPinButton";
-    setIcon(currentSessionPinButton, "pin");
-    currentSessionPinButton.addEventListener("click", toggleCurrentSessionPin);
-    elements.settingsButton.before(currentSessionPinButton);
-    updateCurrentSessionPinButton();
+    const headerTitle = elements.sessionDrawer.querySelector(".sessionDrawerHeader h2");
+    if (headerTitle) {
+      const filterWrap = document.createElement("div");
+      filterWrap.className = "sessionDrawerFilters";
+      sessionSearchInput = document.createElement("input");
+      sessionSearchInput.type = "search";
+      sessionSearchInput.className = "sessionDrawerSearch";
+      sessionSearchInput.placeholder = "Search sessions…";
+      sessionSearchInput.setAttribute("aria-label", "Search sessions");
+      sessionFilterSelect = document.createElement("select");
+      sessionFilterSelect.className = "sessionDrawerFilterSelect";
+      sessionFilterSelect.setAttribute("aria-label", "Session filter");
+      for (const [value, label] of [["all", "All"], ["marked", "Marked"], ["unmarked", "Unmarked"], ["running", "Running"]] as const) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        sessionFilterSelect.append(option);
+      }
+      for (const bucket of sessionMarkerBuckets) {
+        const option = document.createElement("option");
+        option.value = bucket.id;
+        option.textContent = bucket.label;
+        sessionFilterSelect.append(option);
+      }
+      sessionFilterSelect.value = sessionFilterMode;
+      sessionSearchInput.addEventListener("input", () => renderSessionList(cachedSessions));
+      sessionFilterSelect.addEventListener("change", () => {
+        sessionFilterMode = sessionFilterSelect?.value as typeof sessionFilterMode;
+        renderSessionList(cachedSessions);
+      });
+      filterWrap.append(sessionSearchInput, sessionFilterSelect);
+      headerTitle.replaceWith(filterWrap);
+    }
 
     const footer = document.createElement("div");
     footer.className = "sessionDrawerFooter";

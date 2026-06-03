@@ -78,8 +78,20 @@ export type AttachedImage = {
 };
 
 export type PinnedSession = { id: string; label: string };
+export type SessionMarkerBucketId = "later" | "review" | "waiting" | "important" | "green";
+export type SessionMarkerBucket = { id: SessionMarkerBucketId; label: string; color: string };
+export type SessionMarker = { sessionId: string; bucket: SessionMarkerBucketId; note?: string; updatedAt: string };
+
+export const sessionMarkerBuckets: SessionMarkerBucket[] = [
+  { id: "later", label: "Later", color: "blue" },
+  { id: "review", label: "Review", color: "purple" },
+  { id: "waiting", label: "Waiting", color: "yellow" },
+  { id: "important", label: "Important", color: "red" },
+  { id: "green", label: "Green", color: "green" },
+];
 
 const pinnedSessionsKey = "pi-web-pinned-sessions";
+const sessionMarkersKey = "pi-web-session-markers";
 
 export function readPinnedSessions(): PinnedSession[] {
   try {
@@ -91,6 +103,23 @@ export function readPinnedSessions(): PinnedSession[] {
 
 export function persistPinnedSessions(sessions: PinnedSession[]) {
   localStorage.setItem(pinnedSessionsKey, JSON.stringify(sessions));
+}
+
+export function readSessionMarkers(): SessionMarker[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(sessionMarkersKey) || "[]");
+    if (!Array.isArray(raw)) return [];
+    const bucketIds = new Set(sessionMarkerBuckets.map((bucket) => bucket.id));
+    return raw.filter((value): value is SessionMarker => (
+      typeof value?.sessionId === "string"
+      && bucketIds.has(value.bucket)
+      && typeof value?.updatedAt === "string"
+    ));
+  } catch { return []; }
+}
+
+export function persistSessionMarkers(markers: SessionMarker[]) {
+  localStorage.setItem(sessionMarkersKey, JSON.stringify(markers));
 }
 
 export type SessionInfo = {
@@ -129,6 +158,7 @@ export type AppState = {
   connectionLostTimer: number | undefined;
   reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
+  sessionMarkers: SessionMarker[];
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   queueMode: QueueMode;
@@ -197,6 +227,7 @@ export function createAppState(): AppState {
     connectionLostTimer: undefined,
     reconnectedClearTimer: undefined,
     pinnedSessions: readPinnedSessions(),
+    sessionMarkers: readSessionMarkers(),
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
     queueMode: "steer",

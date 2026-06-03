@@ -11,24 +11,23 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe("session quick bar", () => {
-  test("is hidden when no sessions are pinned", async ({ page }) => {
+  test("shows the current session as an unpinned tab when none are pinned", async ({ page }) => {
     await page.goto("/");
-    await expect(page.locator("#sessionBar")).toBeHidden();
+    await expect(page.locator("#sessionBar")).toBeVisible();
+    await expect(page.locator(".sessionBarTab.temporary")).toContainText("Current mock session");
   });
 
-  test("pinning a session from the drawer shows the bar with a tab", async ({ page }) => {
+  test("pinning the current session from the header makes the tab pinned", async ({ page }) => {
     await page.goto("/");
-    await expect(page.locator("#sessionBar")).toBeHidden();
 
-    await page.locator("#sessionButton").click();
-    await page.locator(".sessionItem").filter({ hasText: "Current mock session" }).locator(".sessionItemPinBtn").click();
+    await page.locator(".sessionBarTab.temporary .sessionBarTabAction").click();
 
     await expect(page.locator("#sessionBar")).toBeVisible();
-    await expect(page.locator(".sessionBarTab")).toHaveCount(1);
-    await expect(page.locator(".sessionBarTab").nth(0)).toContainText("Current mock session");
+    await expect(page.locator(".sessionBarTab.pinned")).toHaveCount(1);
+    await expect(page.locator(".sessionBarTab.pinned").nth(0)).toContainText("Current mock session");
   });
 
-  test("unpinning the last session hides the bar", async ({ page }) => {
+  test("unpinning the last pinned session leaves it as the current unpinned tab", async ({ page }) => {
     await page.addInitScript(
       ([key, value]) => localStorage.setItem(key, value),
       [pinnedKey, seedPinned({ id: "mock-current", label: "Current mock session" })],
@@ -37,10 +36,11 @@ test.describe("session quick bar", () => {
     await page.goto("/");
     await expect(page.locator("#sessionBar")).toBeVisible();
 
-    await page.locator("#sessionButton").click();
-    await page.locator(".sessionItem").filter({ hasText: "Current mock session" }).locator(".sessionItemPinBtn").click();
+    page.on("dialog", (dialog) => dialog.accept());
+    await page.locator(".sessionBarTab.pinned .sessionBarTabAction").click();
 
-    await expect(page.locator("#sessionBar")).toBeHidden();
+    await expect(page.locator("#sessionBar")).toBeVisible();
+    await expect(page.locator(".sessionBarTab.temporary")).toContainText("Current mock session");
   });
 
   test("bar is restored from localStorage on load without opening the drawer", async ({ page }) => {
@@ -94,25 +94,20 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
   });
 
-  test("pin button in drawer shows filled for pinned sessions and dimmed for others", async ({ page }) => {
+  test("session drawer marks sessions into default colored buckets", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();
 
-    const currentItem = page.locator(".sessionItem").filter({ hasText: "Current mock session" });
     const olderItem = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
+    await olderItem.locator(".sessionItemActionsBtn").click();
+    await page.locator(".sessionActionsMenuItem", { hasText: "Mark: Green" }).click();
 
-    // Neither pinned initially
-    await expect(currentItem.locator(".sessionItemPinBtn")).not.toHaveClass(/\bpinned\b/);
-    await expect(olderItem.locator(".sessionItemPinBtn")).not.toHaveClass(/\bpinned\b/);
+    await expect(olderItem.locator(".sessionMarkerChip")).toHaveText("Green");
+    await expect(olderItem).toHaveClass(/marker-green/);
 
-    // Pin one
-    await currentItem.locator(".sessionItemPinBtn").click();
-    await expect(currentItem.locator(".sessionItemPinBtn")).toHaveClass(/\bpinned\b/);
-    await expect(olderItem.locator(".sessionItemPinBtn")).not.toHaveClass(/\bpinned\b/);
-
-    // Unpinned sessions should be dimmed
-    await expect(olderItem).toHaveClass(/(?:^|\s)sessionItem(?:\s|$)/);
-    await expect(olderItem).not.toHaveClass(/\bpinned\b/);
+    await page.locator(".sessionDrawerFilterSelect").selectOption("green");
+    await expect(page.locator(".sessionItem")).toHaveCount(1);
+    await expect(page.locator(".sessionItem")).toContainText("Older mock session");
   });
 
   test("clicking a tab switches sessions without needing to open the drawer first", async ({ page }) => {

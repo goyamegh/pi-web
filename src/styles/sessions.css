@@ -46,6 +46,42 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sessionDrawerFilters {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sessionDrawerSearch,
+.sessionDrawerFilterSelect {
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 26px;
+}
+.sessionDrawerSearch {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 8px;
+}
+.sessionDrawerFilterSelect {
+  flex: 0 0 auto;
+  max-width: 96px;
+  padding: 0 6px;
+  appearance: none;
+}
+.sessionDrawerSearch:focus,
+.sessionDrawerFilterSelect:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .sessionDrawerHeader .iconButton {
   width: 24px;
   min-width: 24px;
@@ -262,48 +298,55 @@
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-/* Pin button — always visible, works on touch */
-.sessionItemPinBtn {
+.sessionItemMarkerBtn {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  min-width: 32px;
+  width: 28px;
+  min-width: 28px;
   height: 32px;
   min-height: 32px;
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 45%, transparent);
   padding: 0;
-  cursor: pointer;
-  opacity: 0.3;
-  transition: opacity 0.15s ease, color 0.15s ease;
 }
-.sessionItemPinBtn svg {
-  width: 13px;
-  height: 13px;
-  stroke-width: 2;
-}
-.sessionItemPinBtn:hover {
+.sessionItemMarkerBtn:hover,
+.sessionItemMarkerBtn:focus-visible {
   border: 0;
   background: transparent;
-  opacity: 0.8;
-  color: var(--accent);
-}
-.sessionItemPinBtn.pinned {
-  opacity: 1;
-  color: var(--accent);
-}
-.sessionItemPinBtn:disabled {
-  opacity: 0.15;
-  cursor: default;
-}
-.sessionItemPinBtn:disabled:hover {
-  border: 0;
   color: var(--muted);
 }
+.sessionItemMarkerBtn svg {
+  width: 14px;
+  height: 14px;
+}
+.sessionItem.marked .sessionItemMarkerBtn {
+  color: var(--session-marker-color);
+  opacity: 1;
+}
+.sessionItem.marked .sessionItemMarkerBtn svg {
+  fill: currentColor;
+  stroke: currentColor;
+}
+.sessionMarkerChip {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--session-marker-color) 44%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--session-marker-color) 13%, transparent);
+  color: color-mix(in srgb, var(--session-marker-color) 82%, var(--text));
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.marker-blue { --session-marker-color: #60a5fa; }
+.marker-purple { --session-marker-color: #c084fc; }
+.marker-yellow { --session-marker-color: #facc15; }
+.marker-red { --session-marker-color: #fb7185; }
+.marker-green { --session-marker-color: #4ade80; }
 
 .sessionItemActionsBtn {
   flex: 0 0 auto;
@@ -349,7 +392,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 0 12px 0 4px;
+  padding: 0 12px 0 0;
   text-align: left;
   cursor: pointer;
 }
@@ -407,13 +450,6 @@
   opacity: 0.45;
 }
 
-/* Dim sessions that aren't pinned or active */
-.sessionItem:not(.pinned):not(.current) .sessionItemNavBtn {
-  opacity: 0.45;
-}
-.sessionItem:not(.pinned):not(.current):hover .sessionItemNavBtn {
-  opacity: 1;
-}
 
 /* ── Session quick bar ── */
 .sessionBar {
@@ -437,24 +473,15 @@
 
 .sessionBarTab {
   flex: 1 1 0;
-  min-width: calc(8ch + 12px);
+  min-width: 76px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 3px;
   height: 28px;
-  border: 0;
   border-top: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
   color: var(--muted);
-  padding: 0 6px;
-  cursor: pointer;
   transition: color 0.12s ease, background-color 0.12s ease, border-color 0.12s ease;
 }
 .sessionBarTab:hover {
-  border-color: transparent;
   background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--muted);
 }
@@ -465,6 +492,66 @@
 }
 .sessionBarTab + .sessionBarTab {
   border-left: 1px solid var(--border);
+}
+.sessionBarTabOpen {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0 0 0 6px;
+}
+.sessionBarTabOpen:hover,
+.sessionBarTabOpen:focus-visible {
+  border: 0;
+  background: transparent;
+}
+.sessionBarTabAction {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  padding: 0;
+}
+.sessionBarTab:hover .sessionBarTabAction,
+.sessionBarTabAction:focus-visible {
+  opacity: 0.75;
+}
+.sessionBarTabAction:hover {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  opacity: 1;
+}
+.sessionBarTabAction svg {
+  width: 11px;
+  height: 11px;
+}
+.sessionBarSeparator {
+  flex: 0 0 1px;
+  width: 1px;
+  height: 18px;
+  align-self: center;
+  margin: 0 3px;
+  background: var(--border);
+}
+@media (hover: none), (pointer: coarse), (max-width: 700px) {
+  .sessionBarTabAction {
+    opacity: 0.75;
+    width: 20px;
+  }
 }
 .statusPinButton {
   color: var(--muted);
