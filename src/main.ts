@@ -88,8 +88,15 @@ async function refreshState() {
   updateMeta(data);
   state.isStreaming = Boolean(data.isStreaming);
   composer.updatePrimaryAction();
-  await Promise.all([settings.refreshSettings(), modelSettings.refreshModels(), refreshMessages()]);
-  state.initialSyncComplete = true;
+  const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
+    settings.refreshSettings(),
+    modelSettings.refreshModels(),
+    refreshMessages(),
+  ]);
+  for (const result of [settingsResult, modelsResult, messagesResult]) {
+    if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
+  }
+  state.initialSyncComplete = messagesResult.status === "fulfilled";
   composer.updatePrimaryAction();
 }
 
