@@ -100,11 +100,9 @@ export function createSessions(options: {
   let closeSessionActionsMenu: (() => void) | undefined;
   let currentSessionPinButton: HTMLButtonElement | undefined;
   let sessionSearchInput: HTMLInputElement | undefined;
-  let sessionFilterSelect: HTMLSelectElement | undefined;
   let sessionColorFilterButton: HTMLButtonElement | undefined;
   let markerPaletteEl: HTMLDivElement | undefined;
   let closeSessionColorFilterMenu: (() => void) | undefined;
-  let sessionFilterMode: "all" | "marked" | "unmarked" | "running" = "all";
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
 
   type SessionAction = {
@@ -959,12 +957,7 @@ export function createSessions(options: {
     const query = sessionSearchInput?.value.trim().toLowerCase() || "";
     const visibleSessions = sessions.filter((item) => {
       const marker = markerForSession(item.id);
-      const matchesFilter = sessionFilterMode === "all"
-        || (sessionFilterMode === "marked" && Boolean(marker))
-        || (sessionFilterMode === "unmarked" && !marker)
-        || (sessionFilterMode === "running" && item.runtime?.isRunning);
-      if (!matchesFilter) return false;
-      if (allowedMarkerColors.size > 0 && sessionFilterMode !== "unmarked" && !allowedMarkerColors.has(marker?.color as SessionMarkerColorId)) return false;
+      if (allowedMarkerColors.size > 0 && !allowedMarkerColors.has(marker?.color as SessionMarkerColorId)) return false;
       if (!query) return true;
       return [sessionTitle(item), item.cwd || "", item.firstMessage || ""]
         .some((value) => value.toLowerCase().includes(query));
@@ -972,7 +965,7 @@ export function createSessions(options: {
     if (visibleSessions.length === 0) {
       const empty = document.createElement("p");
       empty.className = "sessionEmpty";
-      empty.textContent = query ? "No matching sessions." : allowedMarkerColors.size > 0 ? "No sessions in the selected colors." : "No sessions for this filter.";
+      empty.textContent = query ? "No matching sessions." : allowedMarkerColors.size > 0 ? "No sessions in the selected colors." : "No saved sessions yet.";
       elements.sessionListEl.append(empty);
       return;
     }
@@ -1154,21 +1147,7 @@ export function createSessions(options: {
       sessionSearchInput.className = "sessionDrawerSearch";
       sessionSearchInput.placeholder = "Search sessions…";
       sessionSearchInput.setAttribute("aria-label", "Search sessions");
-      sessionFilterSelect = document.createElement("select");
-      sessionFilterSelect.className = "sessionDrawerFilterSelect";
-      sessionFilterSelect.setAttribute("aria-label", "Session filter");
-      for (const [value, label] of [["all", "All"], ["marked", "Marked"], ["unmarked", "Unmarked"], ["running", "Running"]] as const) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = label;
-        sessionFilterSelect.append(option);
-      }
-      sessionFilterSelect.value = sessionFilterMode;
       sessionSearchInput.addEventListener("input", () => renderSessionList(cachedSessions));
-      sessionFilterSelect.addEventListener("change", () => {
-        sessionFilterMode = (sessionFilterSelect?.value || "all") as typeof sessionFilterMode;
-        renderSessionList(cachedSessions);
-      });
       sessionColorFilterButton = document.createElement("button");
       sessionColorFilterButton.type = "button";
       sessionColorFilterButton.className = "sessionColorFilterButton";
@@ -1179,7 +1158,7 @@ export function createSessions(options: {
       markerPaletteEl.className = "sessionMarkerPalette";
       markerPaletteEl.setAttribute("role", "toolbar");
       renderMarkerPalette();
-      filterWrap.append(sessionSearchInput, sessionFilterSelect, sessionColorFilterButton, markerPaletteEl);
+      filterWrap.append(sessionSearchInput, sessionColorFilterButton, markerPaletteEl);
       headerTitle.replaceWith(filterWrap);
     }
 

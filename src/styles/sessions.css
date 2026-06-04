@@ -53,8 +53,7 @@
   align-items: center;
   gap: 6px;
 }
-.sessionDrawerSearch,
-.sessionDrawerFilterSelect {
+.sessionDrawerSearch {
   box-sizing: border-box;
   height: 28px;
   min-height: 28px;
@@ -70,12 +69,6 @@
   flex: 1 1 auto;
   min-width: 0;
   padding: 0 8px;
-}
-.sessionDrawerFilterSelect {
-  flex: 0 0 auto;
-  max-width: 82px;
-  padding: 0 6px;
-  appearance: none;
 }
 .sessionColorFilterButton {
   flex: 0 0 auto;
@@ -171,8 +164,7 @@
   font-weight: 700;
   line-height: 1;
 }
-.sessionDrawerSearch:focus,
-.sessionDrawerFilterSelect:focus {
+.sessionDrawerSearch:focus {
   outline: none;
   border-color: var(--accent);
 }
