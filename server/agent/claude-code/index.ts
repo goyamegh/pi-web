@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { dirname, isAbsolute, resolve } from "node:path";
 import type { PiWebSession, PiWebModel } from "../../types.js";
 import type { AgentAdapter, AgentCapabilities, AgentSlashCommand } from "../types.js";
 import { discoverCCSlashCommands } from "./commands.js";
@@ -151,6 +152,7 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
   // assistant / tool_execution events long after the user clicked Stop.
   let aborted = false;
   let lastUsage: { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined;
+  let activeCwd: string | undefined;
 
   const toolNamesById = new Map<string, string>();
 
@@ -180,6 +182,45 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
   };
 
   /**
+   * Infer the active working directory from a tool_use block's input. Supports:
+   * - Bash: `cd <path>`, `git -C <path>`, explicit `-C` flag
+   * - Edit/Write/Read/Glob/Grep: `file_path` or `path` argument
+   * Returns undefined if no signal found.
+   */
+  function inferCwdFromToolUse(name: string, input: Record<string, unknown>): string | undefined {
+    if (name === "Bash" || name === "bash") {
+      const cmd = typeof input.command === "string" ? input.command : "";
+      // `cd <path>` at the start or after && / ;
+      const cdMatch = cmd.match(/(?:^|&&|;)\s*cd\s+["']?([^\s;"'&]+)/);
+      if (cdMatch?.[1] && isAbsolute(cdMatch[1])) return cdMatch[1];
+      if (cdMatch?.[1]) return resolve(opts.cwd, cdMatch[1]);
+      // `git -C <path>` or `git --git-dir=... -C <path>`
+      const gitCMatch = cmd.match(/git\s[^|;]*?-C\s+["']?([^\s;"'&]+)/);
+      if (gitCMatch?.[1] && isAbsolute(gitCMatch[1])) return gitCMatch[1];
+      if (gitCMatch?.[1]) return resolve(opts.cwd, gitCMatch[1]);
+      return undefined;
+    }
+    // File-based tools: Extract directory from file_path or path
+    const filePath = typeof input.file_path === "string" ? input.file_path
+      : typeof input.path === "string" ? input.path
+      : undefined;
+    if (filePath && isAbsolute(filePath)) return dirname(filePath);
+    return undefined;
+  }
+
+  function updateActiveCwd(content: CCContentBlock[]) {
+    for (const block of content) {
+      if (block.type !== "tool_use") continue;
+      const tu = block as { name: string; input?: Record<string, unknown> };
+      const inferred = inferCwdFromToolUse(tu.name, tu.input || {});
+      if (inferred && inferred !== activeCwd) {
+        activeCwd = inferred;
+        emit({ type: "active_cwd_changed", activeCwd });
+      }
+    }
+  }
+
+  /**
    * Apply a single CC stream-json event to in-memory state and emit the
    * matching pi event(s). Returns true once a `result` event terminates the
    * turn so the caller can resolve the prompt promise.
@@ -189,9 +230,14 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
     if (event.type === "system") {
       // First emission of a turn carries session_id; surface as session_info_changed
       // when CC mints a fresh id (e.g. on the very first turn).
-      const sys = event as { session_id?: string };
+      const sys = event as { session_id?: string; cwd?: string };
       if (sys.session_id && sys.session_id !== sessionId) {
         emit({ type: "session_info_changed", sessionId: sys.session_id });
+      }
+      // CC reports its shell cwd on each system/init — use it as the active cwd.
+      if (sys.cwd && sys.cwd !== activeCwd) {
+        activeCwd = sys.cwd;
+        emit({ type: "active_cwd_changed", activeCwd });
       }
       return false;
     }
@@ -202,6 +248,7 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
       for (const m of piMessages) messages.push(m);
       // Emit tool_execution_start for any new tool_use blocks.
       const content = Array.isArray(ev.message.content) ? ev.message.content : [];
+      updateActiveCwd(content as CCContentBlock[]);
       for (const block of content) {
         const b = block as CCContentBlock;
         if (b.type === "tool_use") {
@@ -437,6 +484,7 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
     // the live closure value rather than a snapshot taken at construction.
     get isStreaming() { return isStreaming; },
     get pendingMessageCount() { return 0; },
+    get activeCwd() { return activeCwd; },
     get model() { return model; },
     get thinkingLevel() { return thinkingLevel; },
     get sessionName() { return sessionName; },

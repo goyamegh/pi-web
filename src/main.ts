@@ -90,6 +90,7 @@ function updateMeta(data: any) {
   state.currentThinkingLevel = data.thinkingLevel || "off";
   state.currentSessionId = data.sessionId || state.currentSessionId;
   state.currentCwd = data.cwd || state.currentCwd;
+  state.activeCwd = data.activeCwd || "";
   if (data.agent === "pi" || data.agent === "claude-code" || data.agent === "mock") {
     state.currentAgent = data.agent;
   }

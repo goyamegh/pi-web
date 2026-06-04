@@ -198,6 +198,131 @@ describe("Claude Code adapter runtime lifecycle (spinner contract)", () => {
   });
 });
 
+describe("Claude Code adapter activeCwd tracking", () => {
+  it("infers activeCwd from CC system event cwd field", async () => {
+    const adapter = await createClaudeCodeAdapter({ cwd: "/tmp/cc-cwd-test" });
+    const events = captureEvents(adapter);
+
+    const promptPromise = adapter.prompt("hello");
+    const child = spawnInvocations[0].child;
+
+    // CC emits a system/init event with the shell's cwd
+    child.stdout.emit("data", Buffer.from(JSON.stringify({
+      type: "system",
+      subtype: "init",
+      session_id: "sess-cwd",
+      cwd: "/workspace/my-project",
+    }) + "\n"));
+    await nextTick();
+
+    expect(events).toContainEqual({ type: "active_cwd_changed", activeCwd: "/workspace/my-project" });
+    expect((adapter as any).activeCwd).toBe("/workspace/my-project");
+
+    child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "result", subtype: "success", session_id: "sess-cwd" }) + "\n"));
+    child.emit("close", 0);
+    await promptPromise;
+  });
+
+  it("infers activeCwd from Bash tool_use with cd command", async () => {
+    const adapter = await createClaudeCodeAdapter({ cwd: "/tmp/cc-cwd-test" });
+    const events = captureEvents(adapter);
+
+    const promptPromise = adapter.prompt("hello");
+    const child = spawnInvocations[0].child;
+
+    child.stdout.emit("data", Buffer.from(JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "cd /workspace/other-project && ls" } }],
+      },
+    }) + "\n"));
+    await nextTick();
+
+    expect(events).toContainEqual({ type: "active_cwd_changed", activeCwd: "/workspace/other-project" });
+    expect((adapter as any).activeCwd).toBe("/workspace/other-project");
+
+    child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "result", subtype: "success", session_id: "x" }) + "\n"));
+    child.emit("close", 0);
+    await promptPromise;
+  });
+
+  it("infers activeCwd from Bash tool_use with git -C flag", async () => {
+    const adapter = await createClaudeCodeAdapter({ cwd: "/tmp/cc-cwd-test" });
+    const events = captureEvents(adapter);
+
+    const promptPromise = adapter.prompt("hello");
+    const child = spawnInvocations[0].child;
+
+    child.stdout.emit("data", Buffer.from(JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tu2", name: "Bash", input: { command: "git -C /local/home/user/workplace/agent-health/agent-health-pr-206 status" } }],
+      },
+    }) + "\n"));
+    await nextTick();
+
+    expect(events).toContainEqual({ type: "active_cwd_changed", activeCwd: "/local/home/user/workplace/agent-health/agent-health-pr-206" });
+
+    child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "result", subtype: "success", session_id: "x" }) + "\n"));
+    child.emit("close", 0);
+    await promptPromise;
+  });
+
+  it("infers activeCwd from Edit/Write/Read tool_use file_path", async () => {
+    const adapter = await createClaudeCodeAdapter({ cwd: "/tmp/cc-cwd-test" });
+    const events = captureEvents(adapter);
+
+    const promptPromise = adapter.prompt("hello");
+    const child = spawnInvocations[0].child;
+
+    child.stdout.emit("data", Buffer.from(JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tu3", name: "Edit", input: { file_path: "/workspace/project/src/main.ts", old_string: "a", new_string: "b" } }],
+      },
+    }) + "\n"));
+    await nextTick();
+
+    expect(events).toContainEqual({ type: "active_cwd_changed", activeCwd: "/workspace/project/src" });
+
+    child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "result", subtype: "success", session_id: "x" }) + "\n"));
+    child.emit("close", 0);
+    await promptPromise;
+  });
+
+  it("does not emit active_cwd_changed when cwd has not changed", async () => {
+    const adapter = await createClaudeCodeAdapter({ cwd: "/tmp/cc-cwd-test" });
+    const events = captureEvents(adapter);
+
+    const promptPromise = adapter.prompt("hello");
+    const child = spawnInvocations[0].child;
+
+    // First tool call sets activeCwd
+    child.stdout.emit("data", Buffer.from(JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "tool_use", id: "tu4", name: "Bash", input: { command: "cd /workspace/project && make" } }] },
+    }) + "\n"));
+    await nextTick();
+
+    // Second tool call with same dir — no new event
+    child.stdout.emit("data", Buffer.from(JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "tool_use", id: "tu5", name: "Edit", input: { file_path: "/workspace/project/foo.ts", old_string: "x", new_string: "y" } }] },
+    }) + "\n"));
+    await nextTick();
+
+    const cwdEvents = events.filter((e) => (e as any).type === "active_cwd_changed");
+    expect(cwdEvents).toHaveLength(1);
+
+    child.stdout.emit("data", Buffer.from(JSON.stringify({ type: "result", subtype: "success", session_id: "x" }) + "\n"));
+    child.emit("close", 0);
+    await promptPromise;
+  });
+});
+
 /**
  * `getAgentSlashCommands()` is the integration seam between the CC adapter
  * and pi-web's `/api/commands` endpoint. The composer's picker calls

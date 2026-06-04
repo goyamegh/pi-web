@@ -442,6 +442,30 @@ describe("git repo discovery API", () => {
     const invalid = await fetch(`${baseUrl}/api/git/status?repo=../repo-b`);
     expect(invalid.status).toBe(400);
   });
+
+  it("serves repo-info for an absolute cwd parameter", async () => {
+    const repoPath = join(workspace, "repo-a");
+    const res = await fetch(`${baseUrl}/api/repo-info?cwd=${encodeURIComponent(repoPath)}`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.isRepo).toBe(true);
+    expect(data.rootName).toBe("repo-a");
+  });
+
+  it("returns repo-info for current cwd when no param is given", async () => {
+    const res = await fetch(`${baseUrl}/api/repo-info`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    // workspace itself is not a git repo, but the endpoint should not crash
+    expect(typeof data.isRepo).toBe("boolean");
+  });
+
+  it("rejects non-existent absolute cwd with 400", async () => {
+    const res = await fetch(`${baseUrl}/api/repo-info?cwd=${encodeURIComponent("/nonexistent/path/xyz")}`);
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("artifact serving", () => {

@@ -13,6 +13,7 @@ export interface PiWebSession {
   isStreaming: boolean;
   isCompacting?: boolean;
   pendingMessageCount?: number;
+  activeCwd?: string;
   model: PiWebModel;
   thinkingLevel: string;
   messages: unknown[];

@@ -237,6 +237,7 @@ export type AppState = {
   currentThinkingLevel: string;
   currentSessionId: string;
   currentCwd: string;
+  activeCwd: string;
   currentSessionTitle: string;
   statusTitleEditing: boolean;
   isStreaming: boolean;
@@ -342,6 +343,7 @@ export function createAppState(): AppState {
     currentThinkingLevel: "off",
     currentSessionId: readActiveSessionIdFromUrl(),
     currentCwd: "",
+    activeCwd: "",
     currentSessionTitle: "New session",
     statusTitleEditing: false,
     isStreaming: false,
