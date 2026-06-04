@@ -920,6 +920,7 @@ function sessionStats(targetSession: PiWebSession) {
 function currentState() {
   return {
     cwd: piCwd,
+    activeCwd: (session as any).activeCwd || undefined,
     sessionFile: session.sessionFile,
     sessionId: session.sessionId,
     sessionName: sessionDisplayName(session),
@@ -1417,8 +1418,8 @@ function registerLiveSession(rawSession: any): AgentAdapter {
     // Track models that fail with model_not_supported and remove them from the list.
     const e = event as any;
 
-    // Broadcast state update when session name changes
-    if (e?.type === "session_info_changed") {
+    // Broadcast state update when session name or active cwd changes
+    if (e?.type === "session_info_changed" || e?.type === "active_cwd_changed") {
       broadcast({ type: "state_changed", ...currentState() });
     }
 
@@ -1651,7 +1652,9 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/repo-info") {
         try {
-          return sendJson(res, 200, await getRepoInfo(await gitCwdFromRepoParam(url.searchParams.get("repo"))));
+          const cwdParam = url.searchParams.get("cwd");
+          const target = cwdParam && isAbsolute(cwdParam) ? await assertDirectory(cwdParam) : await gitCwdFromRepoParam(url.searchParams.get("repo"));
+          return sendJson(res, 200, await getRepoInfo(target));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }

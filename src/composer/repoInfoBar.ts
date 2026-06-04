@@ -107,7 +107,9 @@ export function createRepoInfoBar(options: {
 
   async function fetchInfo(): Promise<RepoInfo | undefined> {
     try {
-      const res = await fetch("/api/repo-info", { headers: api.headers() });
+      const cwd = state.activeCwd || "";
+      const url = cwd ? `/api/repo-info?cwd=${encodeURIComponent(cwd)}` : "/api/repo-info";
+      const res = await fetch(url, { headers: api.headers() });
       if (!res.ok) return undefined;
       const data = (await res.json()) as RepoInfo;
       return data;
