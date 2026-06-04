@@ -285,7 +285,7 @@ export function createRealtime(options: {
         composer.updatePrimaryAction();
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
-        if (data.type === "state_changed" && !isReplay) {
+        if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
           refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
           if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
           scheduleSessionRefresh();

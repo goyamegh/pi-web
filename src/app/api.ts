@@ -3,12 +3,15 @@ import type { AppState } from "./types.js";
 export type ApiHeaders = () => Record<string, string>;
 
 export type ApiClient = {
+  clientId: string;
   headers: ApiHeaders;
   wsUrl: () => URL;
 };
 
 export function createApiClient(state: AppState): ApiClient {
+  const clientId = crypto.randomUUID?.() || `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return {
+    clientId,
     headers() {
       return {
         "content-type": "application/json",

@@ -1807,8 +1807,9 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && url.pathname === "/api/sessions/open") {
-        const body = await readBody(req) as { id?: unknown; sessionId?: unknown; cwd?: unknown };
+        const body = await readBody(req) as { id?: unknown; sessionId?: unknown; cwd?: unknown; clientId?: unknown };
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
+        const sourceClientId = typeof body.clientId === "string" ? body.clientId : undefined;
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
 
         try {
@@ -1818,7 +1819,7 @@ const server = createServer(async (req, res) => {
           return sendJson(res, 404, { ok: false, error: "Session not found" });
         }
         const state = currentStateWithThinkingLevels();
-        broadcast({ type: "state_changed", ...state });
+        broadcast({ type: "state_changed", sourceClientId, ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
 

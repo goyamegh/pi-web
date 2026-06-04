@@ -194,9 +194,15 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).toHaveClass(/\bactive\b/);
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
 
+    // The old session messages should not remain visible under the newly active tab
+    // while the new session is still loading.
+    await expect(page.locator("#messages")).not.toContainText("Can you add image attachments?");
+    await expect(page.locator("#messages .message, #messages .toolCard")).toHaveCount(0);
+
     // Release the gate and let the rest of the switch complete.
     resolveOpen();
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect(page.locator("#messages")).toContainText("Review the mobile composer layout");
   });
 
   test("running session tab gets the running class and loses it after the session ends", async ({ page }) => {

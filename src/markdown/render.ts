@@ -67,25 +67,22 @@ function sanitizeMarkdownHtml(html: string) {
   return template.innerHTML;
 }
 
-function highlightMarkdownCode(html: string) {
-  const template = document.createElement("template");
-  template.innerHTML = html;
+function requestIdle(callback: IdleRequestCallback) {
+  if ("requestIdleCallback" in window) return window.requestIdleCallback(callback, { timeout: 1500 });
+  return globalThis.setTimeout(() => callback({ didTimeout: true, timeRemaining: () => 0 }), 1);
+}
 
-  for (const code of Array.from(template.content.querySelectorAll("pre code"))) {
-    const languageClass = Array.from(code.classList).find((className) => className.startsWith("language-"));
-    const language = languageClass?.slice("language-".length);
-    const source = code.textContent || "";
+function highlightCodeBlock(code: HTMLElement) {
+  if (code.dataset.highlighted) return;
+  code.dataset.highlighted = "true";
+  code.classList.add("hljs");
 
-    const highlighted = language && hljs.getLanguage(language)
-      ? hljs.highlight(source, { language }).value
-      : hljs.highlightAuto(source).value;
+  const languageClass = Array.from(code.classList).find((className) => className.startsWith("language-"));
+  const language = languageClass?.slice("language-".length);
+  if (!language || !hljs.getLanguage(language)) return;
 
-    code.innerHTML = highlighted;
-    code.classList.add("hljs");
-    if (language) code.classList.add(`language-${language}`);
-  }
-
-  return template.innerHTML;
+  code.innerHTML = hljs.highlight(code.textContent || "", { language }).value;
+  code.classList.add(`language-${language}`);
 }
 
 function markdownHtml(text: string) {
@@ -96,7 +93,7 @@ function markdownHtml(text: string) {
     return cached;
   }
 
-  const html = highlightMarkdownCode(sanitizeMarkdownHtml(marked.parse(text) as string));
+  const html = sanitizeMarkdownHtml(marked.parse(text) as string);
   markdownCache.set(text, html);
   if (markdownCache.size > maxCachedMarkdown) markdownCache.delete(markdownCache.keys().next().value as string);
   return html;
@@ -126,6 +123,11 @@ function enhanceCodeBlocks(root: ParentNode) {
     });
     pre.style.position = "relative";
     pre.append(btn);
+
+    const code = pre.querySelector<HTMLElement>("code");
+    if (code) requestIdle(() => {
+      if (code.isConnected) highlightCodeBlock(code);
+    });
   }
 }
 

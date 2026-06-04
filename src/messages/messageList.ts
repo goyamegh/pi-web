@@ -103,6 +103,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   let refreshSerial = 0;
   let mutationSerial = 0;
   let applyingRefresh = false;
+  let bulkRendering = false;
   const bottomThreshold = 48;
   const resumeBottomThreshold = 4;
 
@@ -143,6 +144,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   }
 
   function scrollToBottom() {
+    if (bulkRendering) return;
     if (!shouldFollowStream) {
       setJumpButtonVisible(true);
       return;
@@ -534,6 +536,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
       clearInternal(false);
       clearActiveToolCards();
       const allMessages = data.messages || [];
+      bulkRendering = true;
       const completedToolResults = new Map<string, any>();
       const renderedToolResultIds = new Set<string>();
       for (const message of allMessages) {
@@ -561,6 +564,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
           addMessage(role, text, extraClass, rawImages);
         }
       }
+      bulkRendering = false;
       if (wasFollowing) scrollToBottom();
       else {
         programmaticScroll = true;
@@ -572,6 +576,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
       }
       updateEmptyCwdChooser?.();
     } finally {
+      bulkRendering = false;
       applyingRefresh = false;
     }
   }

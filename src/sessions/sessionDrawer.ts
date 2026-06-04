@@ -656,20 +656,23 @@ export function createSessions(options: {
 
   async function openSessionTab(sessionId: string, cwd: string) {
     const previousSessionId = state.currentSessionId;
-    if (state.currentSessionId !== sessionId) {
+    const switchingSessions = state.currentSessionId !== sessionId;
+    if (switchingSessions) {
       state.currentSessionId = sessionId;
       renderSessionBar();
+      clearMessages();
     }
     try {
       const openRes = await fetch("/api/sessions/open", {
         method: "POST",
         headers: api.headers(),
-        body: JSON.stringify({ sessionId, cwd }),
+        body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
       });
       if (!openRes.ok) throw new Error(await openRes.text());
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
       await refreshState();
+      if (switchingSessions) await refreshMessages();
     } catch (error) {
       state.currentSessionId = previousSessionId;
       renderSessionBar();
@@ -1101,19 +1104,31 @@ export function createSessions(options: {
 
     navBtn.append(titleRow, meta);
     navBtn.addEventListener("click", async () => {
+      const previousSessionId = state.currentSessionId;
+      const nextCwd = item.cwd || cwd;
+      const switchingSessions = state.currentSessionId !== item.id;
+      if (switchingSessions) {
+        state.currentSessionId = item.id;
+        renderSessionBar();
+        clearMessages();
+      }
       try {
         const openRes = await fetch("/api/sessions/open", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd }),
+          body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
         });
         if (!openRes.ok) throw new Error(await openRes.text());
-        const nextCwd = item.cwd || cwd;
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
         await refreshState();
+        if (switchingSessions) await refreshMessages();
       } catch (error) {
+        if (switchingSessions) {
+          state.currentSessionId = previousSessionId;
+          renderSessionBar();
+        }
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
         if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
       }
