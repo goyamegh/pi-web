@@ -120,6 +120,28 @@ test.describe("composer layout", () => {
     await expect(page.locator("#connectionStatus")).toBeHidden();
   });
 
+  test("restores unsent composer draft after page refresh", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("draft survives refresh");
+
+    await page.reload();
+
+    await expect(page.locator("#prompt")).toHaveValue("draft survives refresh");
+  });
+
+  test("persists composer controls after page refresh", async ({ page }) => {
+    await page.goto("/");
+
+    await page.locator("#queueToggle").click();
+    await page.locator("#expandButton").click();
+    await expect(page.locator("#promptForm")).toHaveClass(/expanded/);
+
+    await page.reload();
+
+    await expect(page.locator("#queueToggle")).toHaveAttribute("aria-pressed", "false");
+    await expect(page.locator("#promptForm")).toHaveClass(/expanded/);
+  });
+
   test("keeps send disabled until initial messages and websocket are ready", async ({ page }) => {
     let releaseMessages!: () => void;
     const messagesGate = new Promise<void>((resolve) => { releaseMessages = resolve; });

@@ -42,6 +42,7 @@ export function createComposer(options: {
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
+  const draftStorageKey = "pi-web-composer-draft";
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
   let slashCommandSelectedIndex = 0;
@@ -62,8 +63,31 @@ export function createComposer(options: {
     setIcon(elements.queueToggle, isSteer ? "route" : "corner-down-right");
   }
 
+  function persistDraft() {
+    try {
+      const value = elements.promptEl.value;
+      if (value) localStorage.setItem(draftStorageKey, value);
+      else localStorage.removeItem(draftStorageKey);
+    } catch { /* ignore */ }
+  }
+
+  async function persistComposerSettings(patch: { queueMode?: AppState["queueMode"]; expanded?: boolean }) {
+    try {
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: api.headers(),
+        body: JSON.stringify({ composer: patch }),
+      });
+    } catch { /* best effort; server settings refresh will reconcile */ }
+  }
+
+  function clearDraft() {
+    try { localStorage.removeItem(draftStorageKey); } catch { /* ignore */ }
+  }
+
   function setPromptText(text: string) {
     elements.promptEl.value = text;
+    persistDraft();
     updatePrimaryAction();
     renderSlashCommands();
     elements.promptEl.focus();
@@ -285,6 +309,7 @@ export function createComposer(options: {
 
         if (!commandInfo || commandInfo.source === "web") {
           elements.promptEl.value = "";
+          clearDraft();
           hideSlashCommands();
           updatePrimaryAction();
           addMessage("system", `› ${message}`);
@@ -300,6 +325,7 @@ export function createComposer(options: {
       }
 
       elements.promptEl.value = "";
+      clearDraft();
       hideSlashCommands();
       state.attachedImages = [];
       renderAttachments();
@@ -360,6 +386,7 @@ export function createComposer(options: {
     elements.promptEl.addEventListener("focus", () => { void maybeRefreshSlashCommands(); });
     elements.promptEl.addEventListener("blur", () => window.setTimeout(hideSlashCommands, 100));
     elements.promptEl.addEventListener("input", () => {
+      persistDraft();
       updatePrimaryAction();
       slashCommandSelectedIndex = 0;
       renderSlashCommands();
@@ -388,6 +415,7 @@ export function createComposer(options: {
     elements.queueToggle.addEventListener("click", () => {
       state.queueMode = state.queueMode === "steer" ? "followUp" : "steer";
       updateQueueToggle();
+      void persistComposerSettings({ queueMode: state.queueMode });
     });
 
     elements.tokenForm.addEventListener("submit", (e) => {
@@ -407,7 +435,16 @@ export function createComposer(options: {
       elements.expandButton.title = state.editorExpanded ? "Collapse editor" : "Expand editor";
       elements.expandButton.setAttribute("aria-label", elements.expandButton.title);
       elements.promptEl.focus();
+      void persistComposerSettings({ expanded: state.editorExpanded });
     });
+
+    try {
+      const draft = localStorage.getItem(draftStorageKey);
+      if (draft && !elements.promptEl.value) {
+        elements.promptEl.value = draft;
+        updatePrimaryAction();
+      }
+    } catch { /* ignore */ }
   }
 
   return {
