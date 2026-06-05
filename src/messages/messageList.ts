@@ -105,7 +105,8 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   let applyingRefresh = false;
   let bulkRendering = false;
   const bottomThreshold = 48;
-  const resumeBottomThreshold = 4;
+  const resumeBottomThreshold = bottomThreshold;
+  const jumpButtonGap = 16;
 
   const jumpButton = document.createElement("button");
   jumpButton.type = "button";
@@ -115,12 +116,27 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   jumpButton.hidden = true;
   document.querySelector(".app")?.append(jumpButton);
 
+  function updateJumpButtonOffset() {
+    const composerEl = document.querySelector<HTMLElement>(".composer");
+    if (!composerEl) return;
+    const composerRect = composerEl.getBoundingClientRect();
+    const bottom = Math.max(jumpButtonGap, window.innerHeight - composerRect.top + jumpButtonGap);
+    jumpButton.style.setProperty("--jump-to-latest-bottom", `${Math.ceil(bottom)}px`);
+  }
+
+  updateJumpButtonOffset();
+  window.addEventListener("resize", updateJumpButtonOffset);
+  const composerEl = document.querySelector<HTMLElement>(".composer");
+  if (composerEl && "ResizeObserver" in window) {
+    new ResizeObserver(updateJumpButtonOffset).observe(composerEl);
+  }
+
   function invalidatePendingRefreshes() {
     if (!applyingRefresh) mutationSerial++;
   }
 
   function distanceFromBottom() {
-    return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+    return Math.max(0, messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight);
   }
 
   function isNearBottom() {
@@ -135,6 +151,15 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     jumpButton.hidden = !visible;
   }
 
+  function showJumpButtonIfAwayFromBottom() {
+    if (isAtBottom()) {
+      setJumpButtonVisible(false);
+      return false;
+    }
+    setJumpButtonVisible(true);
+    return true;
+  }
+
   function forceScrollToBottom() {
     programmaticScroll = true;
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -146,7 +171,12 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   function scrollToBottom() {
     if (bulkRendering) return;
     if (!shouldFollowStream) {
-      setJumpButtonVisible(true);
+      if (isAtBottom() && !userScrollIntent) {
+        shouldFollowStream = true;
+        setJumpButtonVisible(false);
+      } else {
+        setJumpButtonVisible(true);
+      }
       return;
     }
     forceScrollToBottom();
@@ -164,12 +194,22 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
 
   function endStreamFollow() {
     isStreaming = false;
+    if (isAtBottom()) setJumpButtonVisible(false);
   }
 
-  function pauseStreamFollow() {
+  function isScrollIntentAwayFromBottom(event: Event) {
+    if (event instanceof WheelEvent) return event.deltaY < 0;
+    if (event instanceof KeyboardEvent) {
+      return event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey);
+    }
+    return false;
+  }
+
+  function pauseStreamFollow(event: Event) {
     if (programmaticScroll) return;
     userScrollIntent = true;
     if (!isStreaming) return;
+    if (isAtBottom() && !isScrollIntentAwayFromBottom(event)) return;
     shouldFollowStream = false;
     setJumpButtonVisible(true);
   }
@@ -178,13 +218,13 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   messagesEl.addEventListener("touchstart", pauseStreamFollow, { passive: true });
   messagesEl.addEventListener("pointerdown", pauseStreamFollow);
   messagesEl.addEventListener("keydown", (event) => {
-    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) pauseStreamFollow();
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) pauseStreamFollow(event);
   });
   messagesEl.addEventListener("scroll", () => {
     if (programmaticScroll) return;
     if (shouldFollowStream && !isNearBottom()) {
       shouldFollowStream = false;
-      setJumpButtonVisible(isStreaming);
+      setJumpButtonVisible(true);
       return;
     }
     if (!shouldFollowStream && isAtBottom()) {
@@ -572,7 +612,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
         window.setTimeout(() => {
           programmaticScroll = false;
         }, 0);
-        setJumpButtonVisible(true);
+        showJumpButtonIfAwayFromBottom();
       }
       updateEmptyCwdChooser?.();
     } finally {
