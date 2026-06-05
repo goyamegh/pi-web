@@ -850,8 +850,21 @@
   0%, 100% { border-top-color: color-mix(in srgb, var(--session-tab-accent) 25%, transparent); }
   50%       { border-top-color: var(--session-tab-accent); }
 }
+@keyframes sessionBarRunPulseDim {
+  0%, 100% { border-top-color: color-mix(in srgb, var(--session-tab-accent) 12%, transparent); }
+  50%       { border-top-color: color-mix(in srgb, var(--session-tab-accent) 45%, transparent); }
+}
 .sessionBarTab.running {
   animation: sessionBarRunPulse 1s ease-in-out infinite;
+}
+.sessionBarTab.running:not(.active) {
+  animation-name: sessionBarRunPulseDim;
+  color: color-mix(in srgb, var(--muted) 76%, transparent);
+  background: transparent;
+}
+.sessionBarTab.marked.running:not(.active) {
+  color: color-mix(in srgb, var(--session-tab-accent) 42%, var(--muted));
+  background: color-mix(in srgb, var(--session-tab-accent) 6%, transparent);
 }
 
 /* When the quick bar is visible, remove the composer's mobile safe-area margin
