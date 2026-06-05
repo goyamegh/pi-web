@@ -6,6 +6,7 @@ import { createApiClient } from "./app/api.js";
 import { getAppElements, initAppHeightSync } from "./app/elements.js";
 import { initSwAutoReload } from "./app/sw-update.js";
 import { setIcon } from "./app/icons.js";
+import { initKeyboardShortcuts } from "./app/shortcuts.js";
 import { createAppState } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
@@ -205,6 +206,40 @@ composer.init();
 conversationTree.init();
 modelSettings.init();
 settings.init();
+initKeyboardShortcuts([
+  {
+    id: "sessions.toggleDrawer",
+    key: "b",
+    scope: "global",
+    mod: true,
+    allowInEditable: true,
+    when: () => elements.tokenOverlay.hidden,
+    run: () => sessions.setSessionDrawerOpen(elements.sessionDrawer.hidden),
+  },
+  {
+    id: "session.stopFromPrompt",
+    key: "Escape",
+    scope: "composer",
+    allowInEditable: true,
+    when: () => elements.tokenOverlay.hidden
+      && elements.slashCommandsEl.hidden
+      && state.isStreaming,
+    run: () => composer.stopStreaming(),
+  },
+], {
+  getScopes: () => {
+    const scopes: string[] = [];
+    if (!elements.tokenOverlay.hidden) scopes.push("token");
+    if (!elements.settingsPanel.hidden) scopes.push("settings");
+    if (!elements.modelSettingsPopover.hidden) scopes.push("modelSettings");
+    if (conversationTree.isOpen()) scopes.push("conversationTree");
+    if (document.activeElement === elements.promptEl) scopes.push("composer");
+    if (!elements.sessionDrawer.hidden) scopes.push("sessions");
+    if (!elements.gitPanel.hidden) scopes.push("git");
+    return scopes;
+  },
+  onError: showSystemError,
+});
 composer.updateQueueToggle();
 initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, apiHeaders: api.headers });
 composer.updatePrimaryAction();

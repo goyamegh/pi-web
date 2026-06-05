@@ -8,6 +8,7 @@ export type ComposerController = {
   init: () => void;
   renderAttachments: () => void;
   setPromptText: (text: string) => void;
+  stopStreaming: () => Promise<void>;
   updatePrimaryAction: () => void;
   updateQueueToggle: () => void;
 };
@@ -61,6 +62,11 @@ export function createComposer(options: {
     elements.queueToggle.title = isSteer ? "Queue mode: steer while running" : "Queue mode: follow up after running";
     elements.queueToggle.setAttribute("aria-label", elements.queueToggle.title);
     setIcon(elements.queueToggle, isSteer ? "route" : "corner-down-right");
+  }
+
+  async function stopStreaming() {
+    if (!state.currentSessionId) return;
+    await fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId: state.currentSessionId }) });
   }
 
   function persistDraft() {
@@ -408,8 +414,8 @@ export function createComposer(options: {
       }
     });
 
-    elements.stopButton.addEventListener("click", async () => {
-      await fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId: state.currentSessionId }) });
+    elements.stopButton.addEventListener("click", () => {
+      void stopStreaming();
     });
 
     elements.queueToggle.addEventListener("click", () => {
@@ -451,6 +457,7 @@ export function createComposer(options: {
     init,
     renderAttachments,
     setPromptText,
+    stopStreaming,
     updatePrimaryAction,
     updateQueueToggle,
   };
