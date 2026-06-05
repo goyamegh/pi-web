@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-13
 
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +25,7 @@ jobs:
       - run: npm ci
       - name: Install Playwright Chromium
         run: npm exec playwright -- install --only-shell chromium
-        timeout-minutes: 5
+        timeout-minutes: 20
       - run: npm run test:all
       - run: npm run build
 
