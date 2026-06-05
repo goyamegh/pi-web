@@ -1,7 +1,18 @@
 import { Columns2, createElement, Rows2 } from "lucide";
 import { diffHunkLineCount, renderDiffHunks, setDiffLayout } from "./diff.js";
 
-function normalizeEditHunks(edits: unknown) {
+function normalizeEditHunks(args: Record<string, unknown>) {
+  let edits = args.edits;
+  if (typeof edits === "string") {
+    try {
+      edits = JSON.parse(edits) as unknown;
+    } catch {
+      edits = undefined;
+    }
+  }
+  if (!Array.isArray(edits) && ("oldText" in args || "newText" in args)) {
+    edits = [{ oldText: args.oldText, newText: args.newText }];
+  }
   if (!Array.isArray(edits)) return [];
   return edits
     .filter((hunk): hunk is Record<string, unknown> => !!hunk && typeof hunk === "object")
@@ -23,7 +34,7 @@ function updateCollapseToggle(button: HTMLButtonElement, collapsed: boolean) {
 }
 
 export function renderEditDiff(card: HTMLDivElement, args: Record<string, unknown>) {
-  const edits = normalizeEditHunks(args.edits);
+  const edits = normalizeEditHunks(args);
   if (edits.length === 0) return;
 
   const toolbar = document.createElement("div");

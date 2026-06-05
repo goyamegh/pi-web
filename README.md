@@ -35,6 +35,13 @@ For development:
 npm install
 ```
 
+From npm:
+
+```bash
+npm i -g @ashwin-pc/pi-web
+pi-web
+```
+
 From a GitHub release asset:
 
 ```bash

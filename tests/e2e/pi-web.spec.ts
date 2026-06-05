@@ -566,7 +566,8 @@ test.describe("sessions drawer", () => {
 
     if (isMobile) await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
-    await expect(page.locator("#sessionDrawer")).toBeHidden();
+    if (isMobile) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    else await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.locator(".emptyCwdChooser", { hasText: "Working directory" })).toBeVisible();
   });
 
@@ -736,6 +737,22 @@ test.describe("tool cards", () => {
     await card.locator(".diffLayoutToggle").click();
     await expect(card.locator(".diffContainer")).toHaveClass(/diffContainer--stacked/);
     await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", "Switch to side-by-side diff view");
+  });
+
+  test("renders edit diffs for flat oldText/newText args", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("flat edit");
+    await page.locator("#primaryButton").click();
+
+    const card = page.locator(".toolCard.toolCard--success", { hasText: "edit" }).last();
+    await expect(card).toBeVisible();
+    await expect(card.locator(".toolCardName")).toHaveText("edit");
+    await expect(card.locator(".toolCardSubtitle")).toHaveText("/some/file.ts");
+    await expect(card.locator(".diffContainer")).toBeVisible();
+    await expect(card.locator(".diffLine--changed")).toHaveCount(2);
+    await expect(card.locator(".diffWord--del", { hasText: "41" })).toBeVisible();
+    await expect(card.locator(".diffWord--add", { hasText: "42" })).toBeVisible();
+    await expect(card.locator(".toolCardBody")).toHaveCount(0);
   });
 
   test("does not crash when edit tool args omit oldText or newText", async ({ page }) => {

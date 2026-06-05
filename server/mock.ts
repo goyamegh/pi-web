@@ -313,8 +313,9 @@ export function createMockHarness(options: MockSessionOptions) {
         const withShowcase = /showcase/i.test(message);
         const withProviderError = /provider error|assistant error|usage limit/i.test(message);
         const withThinking = /thinking card/i.test(message);
+        const withFlatEditTool = /flat edit/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
-        const withEditTool = !withShowcase && !withMalformedEditTool && /edit diff/i.test(message);
+        const withEditTool = !withShowcase && !withFlatEditTool && !withMalformedEditTool && /edit diff/i.test(message);
         const withPendingToolRefresh = /pending tool refresh/i.test(message);
         const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && /tool|interleav/i.test(message);
         mockSession.isStreaming = true;
@@ -352,10 +353,12 @@ export function createMockHarness(options: MockSessionOptions) {
           ], timestamp: new Date().toISOString() });
           appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-read", toolName: "read", content: "session drawer CSS and responsive composer styles", timestamp: new Date().toISOString() });
           appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /Users/ashwin/projects/pi-web/src/style.css.", timestamp: new Date().toISOString() });
-        } else if (withEditTool || withMalformedEditTool) {
+        } else if (withEditTool || withFlatEditTool || withMalformedEditTool) {
           const editArgs = withMalformedEditTool
             ? { path: "/some/file.ts", edits: [{ newText: "const answer = 42;" }, { oldText: "console.log(answer);" }] }
-            : { path: "/some/file.ts", edits: [{ oldText: "const answer = 41;\nconsole.log(answer);", newText: "const answer = 42;\nconsole.info(answer);" }] };
+            : withFlatEditTool
+              ? { path: "/some/file.ts", oldText: "const answer = 41;\nconsole.log(answer);", newText: "const answer = 42;\nconsole.info(answer);" }
+              : { path: "/some/file.ts", edits: [{ oldText: "const answer = 41;\nconsole.log(answer);", newText: "const answer = 42;\nconsole.info(answer);" }] };
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_start", toolName: "edit", toolCallId: "call-edit", args: editArgs } });
           await new Promise((resolve) => setTimeout(resolve, 80));
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "edit", toolCallId: "call-edit", isError: false, result: "Successfully replaced 1 block(s) in /some/file.ts." } });

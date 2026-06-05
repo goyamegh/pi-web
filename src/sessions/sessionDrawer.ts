@@ -261,10 +261,15 @@ export function createSessions(options: {
     });
     if (!res.ok) throw new Error(await res.text());
     rememberSessionCwd(cwd || state.currentCwd);
-    setSessionDrawerOpen(false);
     clearMessages();
     await refreshState();
     updateEmptyCwdChooser();
+    if (shouldCloseDrawerAfterSessionSwitch()) {
+      setSessionDrawerOpen(false);
+    } else {
+      await setSessionDrawerOpen(true);
+      scrollCurrentSessionIntoView();
+    }
   }
 
   function setSessionDrawerOpen(open: boolean) {
@@ -276,7 +281,12 @@ export function createSessions(options: {
     elements.sessionDrawer.hidden = !open;
     elements.sessionBackdrop.hidden = !open;
     document.body.classList.toggle("sessionDrawerOpen", open);
-    if (open) refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+    if (open) return refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  }
+
+  function scrollCurrentSessionIntoView() {
+    elements.sessionListEl.querySelector<HTMLElement>(".sessionItem.current")
+      ?.scrollIntoView({ block: "nearest" });
   }
 
   async function refreshSessions() {
@@ -1122,23 +1132,17 @@ export function createSessions(options: {
     }
 
     const query = sessionSearchInput?.value.trim().toLowerCase() || "";
-    const visibleSessions = sessions.filter((item) => {
+    const matchesFilter = (item: SessionInfo) => {
       const marker = markerForSession(item.id);
       if (allowedMarkerColors.size > 0 && !allowedMarkerColors.has(marker?.color as SessionMarkerColorId)) return false;
       if (!query) return true;
       return [sessionTitle(item), item.cwd || "", item.firstMessage || ""]
         .some((value) => value.toLowerCase().includes(query));
-    });
-    if (visibleSessions.length === 0) {
-      const empty = document.createElement("p");
-      empty.className = "sessionEmpty";
-      empty.textContent = query ? "No matching sessions." : allowedMarkerColors.size > 0 ? "No sessions in the selected colors." : "No saved sessions yet.";
-      elements.sessionListEl.append(empty);
-      return;
-    }
+    };
+    const filterActive = Boolean(query || allowedMarkerColors.size > 0);
 
     const groups = new Map<string, SessionInfo[]>();
-    for (const item of visibleSessions) {
+    for (const item of sessions) {
       const cwd = item.cwd || state.currentCwd || "";
       groups.set(cwd, [...(groups.get(cwd) || []), item]);
     }
@@ -1195,20 +1199,28 @@ export function createSessions(options: {
         continue;
       }
 
+      const filteredItems = items.filter(matchesFilter);
       const folderExpanded = state.expandedSessionFolders.has(cwd);
-      const visibleItems = folderExpanded ? items : items.slice(0, sessionFolderPreviewLimit);
+      const visibleItems = folderExpanded ? filteredItems : filteredItems.slice(0, sessionFolderPreviewLimit);
+
+      if (filteredItems.length === 0 && filterActive) {
+        const empty = document.createElement("p");
+        empty.className = "sessionEmpty";
+        empty.textContent = query ? "No matching sessions in this folder." : "No sessions in the selected colors.";
+        group.append(empty);
+      }
 
       for (const item of visibleItems) {
         group.append(buildSessionItem(item, cwd));
       }
 
-      if (items.length > sessionFolderPreviewLimit) {
+      if (filteredItems.length > sessionFolderPreviewLimit) {
         const moreButton = document.createElement("button");
         moreButton.type = "button";
         moreButton.className = "sessionFolderMoreButton";
         moreButton.textContent = folderExpanded
           ? "Show fewer"
-          : `Show all ${items.length} sessions`;
+          : `Show all ${filteredItems.length} sessions`;
         moreButton.addEventListener("click", () => {
           if (folderExpanded) state.expandedSessionFolders.delete(cwd);
           else state.expandedSessionFolders.add(cwd);

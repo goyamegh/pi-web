@@ -182,6 +182,71 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#sessionDrawer")).toBeHidden();
   });
 
+  test("new session opens the drawer on wide viewports and preserves mobile close behavior", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
+
+    await page.locator("#newSessionHeaderButton").click();
+
+    await expect(page.locator("#statusTitle")).toHaveText("New session");
+    const width = page.viewportSize()?.width || 0;
+    if (width <= 700) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    else await expect(page.locator("#sessionDrawer")).toBeVisible();
+  });
+
+  test("session drawer keeps folder headers visible when filters hide their sessions", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.route("**/api/sessions**", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ sessions: [
+          {
+            id: "mock-current",
+            name: "Current mock session",
+            firstMessage: "Can you add image attachments?",
+            modified: "2026-05-07T10:00:00.000Z",
+            messageCount: 2,
+            cwd: "/workspace/folder-a",
+            isCurrent: true,
+          },
+          {
+            id: "mock-older",
+            name: "Older mock session",
+            firstMessage: "Review the mobile composer layout",
+            modified: "2026-05-06T09:00:00.000Z",
+            messageCount: 4,
+            cwd: "/workspace/folder-b",
+            isCurrent: false,
+          },
+          {
+            id: "mock-third",
+            name: "Unmarked third session",
+            firstMessage: "No selected marker here",
+            modified: "2026-05-05T09:00:00.000Z",
+            messageCount: 1,
+            cwd: "/workspace/folder-c",
+            isCurrent: false,
+          },
+        ] }),
+      });
+    });
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator(".sessionFolderGroup")).toHaveCount(3);
+
+    await page.locator(".sessionColorFilterButton").click();
+    await page.locator(".sessionColorFilterMenuItem.marker-green").click();
+
+    await expect(page.locator(".sessionFolderGroup")).toHaveCount(3);
+    await expect(page.locator(".sessionFolderName")).toContainText(["folder-a", "folder-b", "folder-c"]);
+    await expect(page.locator(".sessionItem")).toHaveCount(1);
+    await expect(page.locator(".sessionItem")).toContainText("Older mock session");
+    await expect(page.locator(".sessionFolderGroup .sessionEmpty")).toHaveCount(2);
+  });
+
   test("session drawer uses selected marker colors and one-line marker actions", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();
