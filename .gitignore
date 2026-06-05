@@ -29,3 +29,6 @@ playwright-report/
 .DS_Store
 .vscode/
 .idea/
+
+# Local-only dev scripts (e.g. Amazon Toolbox tunnel wrapper)
+scripts/dev-with-tunnel.mjs
