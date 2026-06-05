@@ -1,20 +1,31 @@
 # pi-web
 
-A small local/Tailscale web UI for [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent).
+A minimal, mobile-first local/Tailscale web UI for [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent).
+
+pi-web is designed to feel like the core pi agent in a browser: small, direct, self-aware about its environment, and focused on helping you work with code rather than becoming a heavyweight IDE. It runs locally, works comfortably from a phone over Tailscale, and gives pi the web-specific context it needs to render artifacts, images, sessions, diffs, and tool output clearly.
 
 ![pi-web showcase](tests/e2e/visual.spec.ts-snapshots/hero-showcase-desktop.png)
 
-The app is TypeScript end-to-end:
+## Why pi-web?
 
-- Git panel: inspect repo status, browse commit history, view per-file and per-commit diffs, and sync with `fetch` + rebase pull
-- Shared diff viewer: side-by-side or stacked layouts with intraline highlighting, used by both edit tool cards and Git diffs
-- `supervisor.ts` is a small stable dev supervisor that owns the public port and restarts the app server safely
-- `server.ts` is the restartable Pi API/WebSocket server, run directly with `tsx`
-- `src/main.ts` bootstraps the modular Vite frontend with HMR; see [docs/frontend-architecture.md](docs/frontend-architecture.md)
-- in dev, `server.ts` embeds Vite middleware while `supervisor.ts` proxies API, WebSocket, and HMR traffic
-- `contexts/web-ui.md` is always injected into agent sessions for web UI behavior like image/artifact rendering
-- bundled pi extensions add pi-web defaults, including automatic session naming from the first prompt
-- `AGENTS.md` provides normal project-specific pi instructions when the target cwd is this repo
+- Mobile-first: use pi from a phone, tablet, or desktop browser
+- Minimal by design: a focused agent UI, not a full IDE replacement
+- Local-first: run it on your machine and optionally expose it through Tailscale
+- Self-aware: pi-web injects web UI context so sessions understand artifacts, images, restarts, and browser-specific behavior
+- Code-review friendly: inspect tool output, edits, Git status, commits, and diffs
+- Session-oriented: manage ongoing work with tabs, drawers, pins, buckets, filters, and conversation navigation
+
+## What changed in 0.2.0?
+
+0.2.0 focuses on making pi-web feel like a persistent working environment rather than a single chat page:
+
+- Session drawer improvements: pinning workflow, color/bucket filters, current-session bucket menu, and deletion
+- Better continuity: composer state persists across refreshes, open tabs recover after updates, and startup reloads are more robust
+- Faster navigation: improved tab switching, scoped keyboard shortcuts, `/clear-tab`, and fixed jump-to-latest behavior
+- Cleaner message review: compact collapsed thinking cards and improved thinking/stop-reason rendering
+- More reliable development and releases: PR workflow, release workflow hardening, and package release fixes
+
+See the [0.2.0 release notes](docs/releases/0.2.0.md) for the fuller changelog.
 
 ## Install
 
@@ -65,18 +76,47 @@ By default, Pi operates in the directory where you start this server. To point P
 PI_WEB_CWD=/Users/ashwin/projects/comfy-lan-webapp npm run dev
 ```
 
+## Core features
+
+### Mobile-first sessions
+
+The session UI is built for small screens first, then scales up to desktop. Tabs, the session drawer, pinned sessions, bucket filters, and conversation navigation are designed to keep long-running pi work reachable from a phone without hiding the desktop workflow.
+
+### Diffs and tool review
+
+A shared diff viewer supports side-by-side or stacked layouts with intraline highlighting. It is used by both edit tool cards and Git diffs, so code review feels consistent across agent changes and repository history.
+
+### Git status, graph, and commit diffs
+
+The Git button in the header opens a responsive Git panel for repo status, commit history, per-file diffs, per-commit diffs, and sync with `fetch` + rebase pull.
+
+### Self-aware pi context
+
+`contexts/web-ui.md` is injected into agent sessions so pi understands pi-web behavior such as artifact links, image rendering, and supervised restarts. Bundled pi extensions add pi-web defaults, including automatic session naming from the first prompt.
+
 ## Screenshots
 
 The README references the same deterministic Playwright visual snapshots used by `tests/e2e/visual.spec.ts`. When visual snapshots are intentionally updated, these images update with them.
 
+### Diff review
+
 <picture>
-  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/hero-showcase-mobile.png">
+  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/diff-review-mobile.png">
   <img alt="pi-web diff review" src="tests/e2e/visual.spec.ts-snapshots/diff-review-desktop.png">
 </picture>
 
-### Git status, graph, and commit diffs
+### Session workspace
 
-The Git button in the header opens a responsive Git panel. Desktop uses a split master/detail layout; mobile switches between status, graph, diff, and commit detail views.
+Tabs, pinned sessions, bucket colors, running indicators, and the session drawer are designed to stay usable on mobile while expanding naturally on desktop.
+
+<picture>
+  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png">
+  <img alt="pi-web session workspace" src="tests/e2e/visual.spec.ts-snapshots/sessions-drawer-desktop.png">
+</picture>
+
+### Git panel
+
+Desktop uses a split master/detail layout; mobile switches between status, graph, diff, and commit detail views.
 
 <picture>
   <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/git-diff-viewer-mobile.png">
@@ -91,8 +131,6 @@ Navigate in-file pi session branches with a compact tree drawer. The default vie
   <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/conversation-tree-mobile.png">
   <img alt="pi-web conversation tree" src="tests/e2e/visual.spec.ts-snapshots/conversation-tree-desktop.png">
 </picture>
-
-![pi-web mobile sessions](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png)
 
 ## Production build
 
@@ -156,6 +194,16 @@ http://<machine-name>:8787
 - `PI_WEB_NO_SESSION=1` - use in-memory sessions only
 - `PI_WEB_CHILD_PORT` - supervised child port, default `8788`
 - `PI_WEB_RESTART_GRACE_MS` - delay between child stop/start, default `250`
+
+## Development architecture
+
+The app is TypeScript end-to-end:
+
+- `supervisor.ts` is a small stable dev supervisor that owns the public port and restarts the app server safely
+- `server.ts` is the restartable Pi API/WebSocket server, run directly with `tsx`
+- `src/main.ts` bootstraps the modular Vite frontend with HMR; see [docs/frontend-architecture.md](docs/frontend-architecture.md)
+- in dev, `server.ts` embeds Vite middleware while `supervisor.ts` proxies API, WebSocket, and HMR traffic
+- `AGENTS.md` provides normal project-specific pi instructions when the target cwd is this repo
 
 ## Security
 
