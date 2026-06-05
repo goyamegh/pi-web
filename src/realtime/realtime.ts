@@ -41,6 +41,20 @@ export function createRealtime(options: {
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
   const sessionRuntimeKeys = new Map<string, string>();
+  // Debounces refreshMessages() on mid-turn message_end / tool_execution_end
+  // events. Without this the UI shows nothing until the whole turn ends
+  // because some agents (notably Claude Code on tool-heavy turns) do not
+  // stream text_delta updates — the only signal is a complete assistant
+  // message landing in the adapter's message store. refreshMessages itself
+  // is idempotent and bails out when the rendered transcript already matches.
+  let liveRefreshTimer: number | undefined;
+  function scheduleLiveRefresh() {
+    if (liveRefreshTimer !== undefined) return;
+    liveRefreshTimer = window.setTimeout(() => {
+      liveRefreshTimer = undefined;
+      refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+    }, 100);
+  }
 
   function runtimeKey(runtime: any) {
     return [
@@ -224,6 +238,9 @@ export function createRealtime(options: {
         status.markActivityProgress(deltaEvent?.type?.startsWith("thinking") ? "thinking" : "responding");
         break;
       }
+      case "message_end":
+        if (!isReplay) scheduleLiveRefresh();
+        break;
       case "tool_execution_start":
         tools.startTool(event.toolCallId, event.toolName || "tool", event.args || {}, event.startedAt);
         status.markActivityProgress(`tool: ${event.toolName || "tool"}`);
@@ -235,6 +252,7 @@ export function createRealtime(options: {
       case "tool_execution_end":
         tools.endTool(event.toolCallId, event.toolName || "tool", Boolean(event.isError), event.result);
         status.markActivityProgress("waiting for assistant");
+        if (!isReplay) scheduleLiveRefresh();
         break;
       case "agent_end":
         state.isStreaming = false;
@@ -243,6 +261,10 @@ export function createRealtime(options: {
         messages.resetStreamingAssistant();
         messages.endStreamFollow();
         tools.clearActiveToolCards();
+        if (liveRefreshTimer !== undefined) {
+          window.clearTimeout(liveRefreshTimer);
+          liveRefreshTimer = undefined;
+        }
         if (!isReplay) refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
         if (!isReplay && conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
         status.refreshSessionTitle();
