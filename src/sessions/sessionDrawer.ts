@@ -1,6 +1,6 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
-import { setIcon, type IconName } from "../app/icons.js";
+import { iconElement, setIcon, type IconName } from "../app/icons.js";
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors } from "../app/types.js";
 
@@ -104,6 +104,8 @@ export function createSessions(options: {
   let markerPaletteEl: HTMLDivElement | undefined;
   let closeSessionColorFilterMenu: (() => void) | undefined;
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
+  type SessionRowTool = "pin" | SessionMarkerColorId;
+  let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
 
   type SessionAction = {
     id: string;
@@ -323,6 +325,7 @@ export function createSessions(options: {
     state.pinnedSessions = next.pinnedSessions;
     state.sessionMarkers = next.sessionMarkers;
     state.selectedMarkerColor = next.selectedMarkerColor;
+    if (selectedSessionRowTool !== "pin") selectedSessionRowTool = next.selectedMarkerColor;
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
     renderMarkerPalette();
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
@@ -426,11 +429,21 @@ export function createSessions(options: {
   }
 
   function setSelectedMarkerColor(color: SessionMarkerColorId) {
-    if (state.selectedMarkerColor === color) return;
+    const colorChanged = state.selectedMarkerColor !== color;
+    const toolChanged = selectedSessionRowTool !== color;
+    if (!colorChanged && !toolChanged) return;
     state.selectedMarkerColor = color;
+    selectedSessionRowTool = color;
     renderMarkerPalette();
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
-    persistSessionUiState({ selectedMarkerColor: color });
+    if (colorChanged) persistSessionUiState({ selectedMarkerColor: color });
+  }
+
+  function setSelectedPinTool() {
+    if (selectedSessionRowTool === "pin") return;
+    selectedSessionRowTool = "pin";
+    renderMarkerPalette();
+    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
   }
 
   function setSessionMarker(sessionId: string, color: SessionMarkerColorId) {
@@ -457,12 +470,34 @@ export function createSessions(options: {
       : `Mark session ${selected.label}. Current marker color: ${selected.label}.`;
   }
 
+  function sessionStatusButtonTitle(pinned: boolean, markerColor: { label: string } | undefined) {
+    if (selectedSessionRowTool !== "pin") return markerButtonTitle(markerColor);
+    const markerText = markerColor ? ` ${markerColor.label} marker.` : "";
+    return pinned
+      ? `Pinned to tab bar.${markerText} Click to unpin.`
+      : `Pin session to tab bar.${markerText}`;
+  }
+
   function renderMarkerPalette() {
     if (!markerPaletteEl) return;
     markerPaletteEl.textContent = "";
-    markerPaletteEl.setAttribute("aria-label", `Current marker color: ${selectedMarkerColor().label}`);
+    markerPaletteEl.setAttribute("aria-label", selectedSessionRowTool === "pin"
+      ? "Session row action: pin or unpin tabs"
+      : `Current marker color: ${selectedMarkerColor().label}`);
+
+    const pinSelected = selectedSessionRowTool === "pin";
+    const pinButton = document.createElement("button");
+    pinButton.type = "button";
+    pinButton.className = `sessionMarkerColorButton sessionMarkerPinTool${pinSelected ? " selected" : ""}`;
+    pinButton.title = pinSelected ? "Row action: pin or unpin tabs" : "Use row button to pin or unpin tabs";
+    pinButton.setAttribute("aria-label", pinButton.title);
+    pinButton.setAttribute("aria-pressed", String(pinSelected));
+    setIcon(pinButton, "pin");
+    pinButton.addEventListener("click", setSelectedPinTool);
+    markerPaletteEl.append(pinButton);
+
     for (const color of sessionMarkerColors) {
-      const selected = color.id === state.selectedMarkerColor;
+      const selected = color.id === selectedSessionRowTool;
       const button = document.createElement("button");
       button.type = "button";
       button.className = `sessionMarkerColorButton marker-${color.id}${selected ? " selected" : ""}`;
@@ -761,10 +796,7 @@ export function createSessions(options: {
         close.title = "Unpin tab";
         close.setAttribute("aria-label", `Unpin ${label}`);
         setIcon(close, "x");
-        close.addEventListener("click", () => {
-          if (!window.confirm(`Unpin “${label}”?`)) return;
-          unpinSession(sessionId);
-        });
+        close.addEventListener("click", () => unpinSession(sessionId));
         tab.append(close);
       } else {
         const pin = document.createElement("button");
@@ -846,7 +878,14 @@ export function createSessions(options: {
       : item.runtime?.isRunning
         ? "Wait for the session to finish before deleting it"
         : undefined;
+    const pinned = isPinned(item.id);
     return [
+      {
+        id: pinned ? "unpin" : "pin",
+        label: pinned ? "Unpin from tab bar" : "Pin to tab bar",
+        icon: "pin",
+        run: () => togglePin(item),
+      },
       {
         id: "delete",
         label: "Delete",
@@ -1061,19 +1100,37 @@ export function createSessions(options: {
     // Use a div so we can have sibling buttons (navigate + actions) without nesting buttons
     const marker = markerForSession(item.id);
     const markerColor = colorForMarker(marker?.color);
+    const pinned = isPinned(item.id);
+    const pinToolSelected = selectedSessionRowTool === "pin";
     const row = document.createElement("div");
-    row.className = `sessionItem${item.isCurrent ? " current" : ""}${isPinned(item.id) ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
+    row.className = `sessionItem${item.isCurrent ? " current" : ""}${pinned ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
     if (item.isCurrent) row.setAttribute("aria-current", "page");
 
     const markerButton = document.createElement("button");
     markerButton.type = "button";
-    markerButton.className = "sessionItemMarkerBtn";
-    markerButton.title = markerButtonTitle(markerColor);
+    markerButton.className = `sessionItemMarkerBtn ${pinToolSelected ? "toolPin" : "toolMarker"}${pinned ? " pinned" : ""}`;
+    markerButton.title = sessionStatusButtonTitle(pinned, markerColor);
     markerButton.setAttribute("aria-label", markerButton.title);
-    markerButton.setAttribute("aria-pressed", String(Boolean(markerColor)));
-    setIcon(markerButton, "flag");
+    markerButton.setAttribute("aria-pressed", String(pinToolSelected ? pinned : Boolean(markerColor)));
+    markerButton.append(iconElement(pinToolSelected ? "pin" : "flag"));
+    if (pinToolSelected && markerColor) {
+      const markerDot = document.createElement("span");
+      markerDot.className = "sessionItemMarkerDot";
+      markerDot.title = `${markerColor.label} marker`;
+      markerDot.setAttribute("aria-hidden", "true");
+      markerButton.append(markerDot);
+    }
+    if (!pinToolSelected && pinned) {
+      const pinBadge = document.createElement("span");
+      pinBadge.className = "sessionItemPinBadge";
+      pinBadge.title = "Pinned to tab bar";
+      pinBadge.setAttribute("aria-hidden", "true");
+      pinBadge.append(iconElement("pin"));
+      markerButton.append(pinBadge);
+    }
     markerButton.addEventListener("click", () => {
-      if (markerColor) clearSessionMarker(item.id);
+      if (pinToolSelected) togglePin(item);
+      else if (markerColor) clearSessionMarker(item.id);
       else setSessionMarker(item.id, state.selectedMarkerColor);
     });
 

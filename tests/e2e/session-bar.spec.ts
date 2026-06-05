@@ -144,6 +144,79 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionItem")).toContainText("Current mock session");
   });
 
+  test("session drawer Tabs tool pins and unpins rows with the single status button", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+
+    const olderItem = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
+    const statusButton = olderItem.locator(".sessionItemMarkerBtn");
+
+    await expect(page.locator(".sessionMarkerPinTool")).not.toHaveClass(/\bselected\b/);
+    await page.locator(".sessionMarkerPinTool").click();
+    await expect(page.locator(".sessionMarkerPinTool")).toHaveClass(/\bselected\b/);
+    await expect(statusButton).toHaveClass(/\btoolPin\b/);
+    await expect(statusButton).toHaveAttribute("aria-pressed", "false");
+
+    await statusButton.click();
+    await expect(olderItem).toHaveClass(/\bpinned\b/);
+    await expect(statusButton).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toBeVisible();
+
+    await statusButton.click();
+    await expect(olderItem).not.toHaveClass(/\bpinned\b/);
+    await expect(statusButton).toHaveAttribute("aria-pressed", "false");
+    await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(0);
+  });
+
+  test("session drawer row status shows both marker and pinned state", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+
+    const olderItem = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
+    const statusButton = olderItem.locator(".sessionItemMarkerBtn");
+
+    await page.locator(".sessionMarkerColorButton.marker-green").click();
+    await statusButton.click();
+    await expect(olderItem).toHaveClass(/\bmarked\b/);
+    await expect(olderItem).toHaveClass(/marker-green/);
+
+    await page.locator(".sessionMarkerPinTool").click();
+    await expect(statusButton).toHaveClass(/\btoolPin\b/);
+    await expect(statusButton.locator(".sessionItemMarkerDot")).toHaveCount(1);
+
+    await statusButton.click();
+    await expect(olderItem).toHaveClass(/\bpinned\b/);
+    await expect(statusButton).toHaveClass(/\bpinned\b/);
+    await expect(statusButton.locator(".sessionItemMarkerDot")).toHaveCount(1);
+
+    await page.locator(".sessionMarkerColorButton.marker-green").click();
+    await expect(statusButton).toHaveClass(/\btoolMarker\b/);
+    await expect(statusButton.locator(".sessionItemPinBadge")).toHaveCount(1);
+    await expect(olderItem).toHaveClass(/\bmarked\b/);
+    await expect(olderItem).toHaveClass(/\bpinned\b/);
+  });
+
+  test("session actions menu can pin and unpin a session", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+
+    const olderItem = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
+    await olderItem.locator(".sessionItemActionsBtn").click();
+    await page.locator(".sessionActionsMenuItem", { hasText: "Pin to tab bar" }).click();
+
+    await expect(olderItem).toHaveClass(/\bpinned\b/);
+    await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toBeVisible();
+
+    await olderItem.locator(".sessionItemActionsBtn").click();
+    await page.locator(".sessionActionsMenuItem", { hasText: "Unpin from tab bar" }).click();
+
+    await expect(olderItem).not.toHaveClass(/\bpinned\b/);
+    await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(0);
+  });
+
   test("clicking a tab switches sessions without needing to open the drawer first", async ({ page }) => {
     // Regression test: pinned session tabs must work even if the drawer was never opened.
     // Previously cachedSessions was empty until the drawer was opened, so click handlers

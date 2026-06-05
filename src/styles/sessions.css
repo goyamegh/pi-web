@@ -151,6 +151,23 @@
   border-color: color-mix(in srgb, var(--session-marker-color) 60%, transparent);
   background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
 }
+.sessionMarkerPinTool {
+  --session-marker-color: var(--accent);
+  color: var(--muted);
+}
+.sessionMarkerPinTool svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.25;
+}
+.sessionMarkerPinTool.selected {
+  width: 22px;
+  min-width: 22px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  padding: 0;
+}
 .sessionMarkerColorSwatch {
   flex: 0 0 auto;
   width: 9px;
@@ -163,6 +180,29 @@
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
+}
+@media (max-width: 420px) {
+  .sessionDrawerHeader {
+    padding-left: 10px;
+  }
+  .sessionColorFilterButton {
+    max-width: 58px;
+  }
+  .sessionMarkerColorButton,
+  .sessionMarkerColorButton.selected {
+    width: 24px;
+    min-width: 24px;
+    height: 26px;
+    min-height: 26px;
+    padding: 0;
+  }
+  .sessionMarkerPinTool.selected {
+    width: 24px;
+    min-width: 24px;
+  }
+  .sessionMarkerColorLabel {
+    display: none;
+  }
 }
 .sessionDrawerSearch:focus {
   outline: none;
@@ -385,6 +425,7 @@
 }
 
 .sessionItemMarkerBtn {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -412,11 +453,46 @@
   width: 14px;
   height: 14px;
 }
-.sessionItem.marked .sessionItemMarkerBtn {
+.sessionItem.marked .sessionItemMarkerBtn.toolMarker {
   color: var(--session-marker-color);
   opacity: 1;
 }
-.sessionItem.marked .sessionItemMarkerBtn svg {
+.sessionItem.marked .sessionItemMarkerBtn.toolMarker > svg {
+  fill: currentColor;
+  stroke: currentColor;
+}
+.sessionItemMarkerBtn.toolPin.pinned {
+  color: var(--accent);
+  opacity: 1;
+}
+.sessionItemMarkerDot,
+.sessionItemPinBadge {
+  position: absolute;
+  right: 3px;
+  bottom: 5px;
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  border: 1px solid color-mix(in srgb, var(--panel) 85%, black);
+  border-radius: 999px;
+  background: var(--panel);
+  pointer-events: none;
+}
+.sessionItemMarkerDot {
+  background: var(--session-marker-color);
+}
+.sessionItemPinBadge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  color: var(--accent);
+}
+.sessionItemPinBadge svg,
+.sessionItemMarkerBtn .sessionItemPinBadge svg {
+  width: 8px;
+  height: 8px;
   fill: currentColor;
   stroke: currentColor;
 }
@@ -649,6 +725,7 @@
 .sessionBar[hidden] { display: none; }
 
 .sessionBarTab {
+  --session-tab-accent: var(--accent);
   flex: 1 1 0;
   min-width: 76px;
   display: flex;
@@ -663,20 +740,25 @@
   color: var(--muted);
 }
 .sessionBarTab.active {
-  border-top-color: var(--accent);
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-top-color: var(--session-tab-accent);
+  color: color-mix(in srgb, var(--session-tab-accent) 88%, var(--text));
+  background: color-mix(in srgb, var(--session-tab-accent) 6%, transparent);
 }
 .sessionBarTab.marked {
-  border-top-color: color-mix(in srgb, var(--session-marker-color) 55%, transparent);
-  background: color-mix(in srgb, var(--session-marker-color) 11%, transparent);
+  --session-tab-accent: var(--session-marker-color);
+  border-top-color: color-mix(in srgb, var(--session-tab-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--session-tab-accent) 11%, transparent);
 }
 .sessionBarTab.marked:hover {
-  background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
+  background: color-mix(in srgb, var(--session-tab-accent) 16%, transparent);
+}
+.sessionBarTab.marked.active,
+.sessionBarTab.marked.running {
+  color: color-mix(in srgb, var(--session-tab-accent) 88%, var(--text));
 }
 .sessionBarTab.marked.active {
-  border-top-color: var(--session-marker-color);
-  background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
+  border-top-color: var(--session-tab-accent);
+  background: color-mix(in srgb, var(--session-tab-accent) 16%, transparent);
 }
 .sessionBarTab + .sessionBarTab {
   border-left: 1px solid var(--border);
@@ -765,8 +847,8 @@
 }
 /* Pulsing top border when session is running */
 @keyframes sessionBarRunPulse {
-  0%, 100% { border-top-color: color-mix(in srgb, var(--accent) 25%, transparent); }
-  50%       { border-top-color: var(--accent); }
+  0%, 100% { border-top-color: color-mix(in srgb, var(--session-tab-accent) 25%, transparent); }
+  50%       { border-top-color: var(--session-tab-accent); }
 }
 .sessionBarTab.running {
   animation: sessionBarRunPulse 1s ease-in-out infinite;
