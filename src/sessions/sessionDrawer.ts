@@ -47,6 +47,23 @@ function shouldCloseDrawerAfterSessionSwitch() {
 }
 
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
+const sessionDrawerOpenStorageKey = "pi-web-session-drawer-open";
+
+function readPersistedSessionDrawerOpen() {
+  try {
+    return localStorage.getItem(sessionDrawerOpenStorageKey) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function persistSessionDrawerOpen(open: boolean) {
+  try {
+    localStorage.setItem(sessionDrawerOpenStorageKey, open ? "true" : "false");
+  } catch {
+    // Ignore storage failures (private browsing, quota, etc.).
+  }
+}
 
 function readKnownSessionCwds() {
   try {
@@ -103,6 +120,7 @@ export function createSessions(options: {
   let sessionColorFilterButton: HTMLButtonElement | undefined;
   let markerPaletteEl: HTMLDivElement | undefined;
   let closeSessionColorFilterMenu: (() => void) | undefined;
+  let closeCurrentSessionBucketMenu: (() => void) | undefined;
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
   type SessionRowTool = "pin" | SessionMarkerColorId;
   let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
@@ -250,6 +268,7 @@ export function createSessions(options: {
   }
 
   function setSessionDrawerOpen(open: boolean) {
+    persistSessionDrawerOpen(open);
     if (!open) {
       closeOpenSessionActionsMenu();
       closeOpenSessionColorFilterMenu();
@@ -331,6 +350,7 @@ export function createSessions(options: {
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
     renderSessionBar();
     updateCurrentSessionPinButton();
+    renderCurrentSessionBucketButton();
     if (state.pinnedSessions.length > 0 && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
   }
 
@@ -451,6 +471,7 @@ export function createSessions(options: {
     state.sessionMarkers = [next, ...state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId)];
     renderSessionList(cachedSessions);
     renderSessionBar();
+    renderCurrentSessionBucketButton();
     persistSessionUiState({ sessionMarkers: state.sessionMarkers });
   }
 
@@ -460,6 +481,7 @@ export function createSessions(options: {
     if (state.sessionMarkers.length === count) return;
     renderSessionList(cachedSessions);
     renderSessionBar();
+    renderCurrentSessionBucketButton();
     persistSessionUiState({ sessionMarkers: state.sessionMarkers });
   }
 
@@ -523,6 +545,107 @@ export function createSessions(options: {
     closeSessionColorFilterMenu?.();
     closeSessionColorFilterMenu = undefined;
     renderSessionColorFilterButton();
+  }
+
+  function closeOpenCurrentSessionBucketMenu() {
+    closeCurrentSessionBucketMenu?.();
+    closeCurrentSessionBucketMenu = undefined;
+    renderCurrentSessionBucketButton();
+  }
+
+  function renderCurrentSessionBucketButton() {
+    const button = elements.currentSessionBucketButton;
+    const marker = state.currentSessionId ? markerForSession(state.currentSessionId) : undefined;
+    const color = colorForMarker(marker?.color);
+    button.textContent = "";
+    button.append(iconElement("flag"));
+    for (const item of sessionMarkerColors) button.classList.remove(`marker-${item.id}`);
+    button.classList.toggle("marked", Boolean(color));
+    if (color) button.classList.add(`marker-${color.id}`);
+    button.disabled = !state.currentSessionId;
+    button.title = !state.currentSessionId
+      ? "Open a session to set its bucket"
+      : color
+        ? `Current session bucket: ${color.label}. Click to change or unset.`
+        : "Set current session bucket";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-expanded", String(Boolean(closeCurrentSessionBucketMenu)));
+  }
+
+  function openCurrentSessionBucketMenu(anchor: HTMLButtonElement) {
+    if (!state.currentSessionId) return;
+    closeOpenSessionActionsMenu();
+    closeOpenSessionColorFilterMenu();
+    closeOpenCurrentSessionBucketMenu();
+
+    const sessionId = state.currentSessionId;
+    const marker = markerForSession(sessionId);
+    const menu = document.createElement("div");
+    menu.className = "sessionColorFilterMenu sessionBucketMenu";
+    menu.setAttribute("role", "menu");
+
+    const title = document.createElement("div");
+    title.className = "sessionColorFilterTitle";
+    title.textContent = "Session bucket";
+    menu.append(title);
+
+    const clearButton = document.createElement("button");
+    clearButton.type = "button";
+    clearButton.className = `sessionColorFilterMenuItem all${marker ? "" : " selected"}`;
+    clearButton.setAttribute("role", "menuitemradio");
+    clearButton.setAttribute("aria-checked", String(!marker));
+    const clearLabel = document.createElement("span");
+    clearLabel.textContent = "No bucket";
+    clearButton.append(clearLabel);
+    clearButton.addEventListener("click", () => {
+      clearSessionMarker(sessionId);
+      closeOpenCurrentSessionBucketMenu();
+    });
+    menu.append(clearButton);
+
+    for (const color of sessionMarkerColors) {
+      const selected = marker?.color === color.id;
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = `sessionColorFilterMenuItem marker-${color.id}${selected ? " selected" : ""}`;
+      item.setAttribute("role", "menuitemradio");
+      item.setAttribute("aria-checked", String(selected));
+      const swatch = document.createElement("span");
+      swatch.className = "sessionColorFilterMenuSwatch";
+      swatch.setAttribute("aria-hidden", "true");
+      const label = document.createElement("span");
+      label.textContent = color.label;
+      item.append(swatch, label);
+      item.addEventListener("click", () => {
+        setSessionMarker(sessionId, color.id);
+        closeOpenCurrentSessionBucketMenu();
+      });
+      menu.append(item);
+    }
+
+    document.body.append(menu);
+    positionSessionMenu(menu, anchor);
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (menu.contains(target) || anchor.contains(target))) return;
+      closeOpenCurrentSessionBucketMenu();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeOpenCurrentSessionBucketMenu();
+    };
+    const onResize = () => closeOpenCurrentSessionBucketMenu();
+    const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
+    closeCurrentSessionBucketMenu = () => {
+      window.clearTimeout(installPointerListener);
+      menu.remove();
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+    renderCurrentSessionBucketButton();
   }
 
   function positionSessionMenu(menu: HTMLElement, anchor: HTMLElement) {
@@ -695,6 +818,7 @@ export function createSessions(options: {
     if (switchingSessions) {
       state.currentSessionId = sessionId;
       renderSessionBar();
+      renderCurrentSessionBucketButton();
       clearMessages();
     }
     try {
@@ -711,6 +835,7 @@ export function createSessions(options: {
     } catch (error) {
       state.currentSessionId = previousSessionId;
       renderSessionBar();
+      renderCurrentSessionBucketButton();
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
     }
   }
@@ -1167,6 +1292,7 @@ export function createSessions(options: {
       if (switchingSessions) {
         state.currentSessionId = item.id;
         renderSessionBar();
+        renderCurrentSessionBucketButton();
         clearMessages();
       }
       try {
@@ -1185,6 +1311,7 @@ export function createSessions(options: {
         if (switchingSessions) {
           state.currentSessionId = previousSessionId;
           renderSessionBar();
+          renderCurrentSessionBucketButton();
         }
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
         if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
@@ -1245,6 +1372,8 @@ export function createSessions(options: {
     elements.sessionDrawer.append(footer);
 
     elements.sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
+    elements.currentSessionBucketButton.addEventListener("click", () => openCurrentSessionBucketMenu(elements.currentSessionBucketButton));
+    renderCurrentSessionBucketButton();
     elements.newSessionHeaderButton.addEventListener("click", async () => {
       try {
         await startNewSession();
@@ -1264,10 +1393,16 @@ export function createSessions(options: {
 
     // Render immediately from any legacy local pins, then replace with server state.
     renderSessionBar();
+    renderCurrentSessionBucketButton();
     refreshSessionUiState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+    // Restore the drawer state after wiring handlers and footer content.
+    if (readPersistedSessionDrawerOpen()) {
+      setSessionDrawerOpen(true);
+    }
+
     // Background-fetch session list so tab click handlers are always wired up,
     // even if the drawer has never been opened.
-    if (state.pinnedSessions.length > 0) {
+    if (state.pinnedSessions.length > 0 && !readPersistedSessionDrawerOpen()) {
       refreshSessions().catch(() => undefined);
     }
   }

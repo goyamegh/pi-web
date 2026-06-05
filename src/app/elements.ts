@@ -37,6 +37,7 @@ export type AppElements = {
   newSessionHeaderButton: HTMLButtonElement;
   conversationTreeButton: HTMLButtonElement;
   gitButton: HTMLButtonElement;
+  currentSessionBucketButton: HTMLButtonElement;
   settingsButton: HTMLButtonElement;
   settingsPanel: HTMLElement;
   settingsBackdrop: HTMLDivElement;
@@ -100,6 +101,7 @@ export function getAppElements(): AppElements {
     newSessionHeaderButton: requiredElement<HTMLButtonElement>("#newSessionHeaderButton"),
     conversationTreeButton: requiredElement<HTMLButtonElement>("#conversationTreeButton"),
     gitButton: requiredElement<HTMLButtonElement>("#gitButton"),
+    currentSessionBucketButton: requiredElement<HTMLButtonElement>("#currentSessionBucketButton"),
     settingsButton: requiredElement<HTMLButtonElement>("#settingsButton"),
     settingsPanel: requiredElement<HTMLElement>("#settingsPanel"),
     settingsBackdrop: requiredElement<HTMLDivElement>("#settingsBackdrop"),

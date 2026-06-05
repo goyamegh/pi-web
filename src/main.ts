@@ -108,6 +108,7 @@ function initStaticIcons() {
   setIcon(elements.primaryButton, "send-horizontal");
   setIcon(elements.expandButton, "maximize-2");
   setIcon(elements.gitButton, "git-branch");
+  setIcon(elements.currentSessionBucketButton, "flag");
   setIcon(elements.settingsButton, "settings");
   setIcon(elements.stopButton, "square");
 }

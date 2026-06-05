@@ -29,6 +29,15 @@
   width: 15px;
   height: 15px;
 }
+.sessionBucketButton.marked {
+  color: var(--session-marker-color);
+  background: color-mix(in srgb, var(--session-marker-color) 10%, transparent);
+}
+.sessionBucketButton.marked:hover,
+.sessionBucketButton.marked:focus-visible {
+  color: var(--session-marker-color);
+  background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
+}
 .statusTitle {
   flex: 0 0 auto;
   color: var(--text);

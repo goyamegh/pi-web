@@ -75,6 +75,38 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).not.toHaveClass(/\bactive\b/);
   });
 
+  test("current session bucket menu sets and unsets marker colors", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+
+    const bucketButton = page.locator("#currentSessionBucketButton");
+    await expect(bucketButton).toHaveAttribute("title", "Set current session bucket");
+
+    await bucketButton.click();
+    const menu = page.locator(".sessionBucketMenu");
+    await expect(menu).toBeVisible();
+    await expect(menu).toContainText("Session bucket");
+    await expect(menu.locator(".sessionColorFilterMenuItem")).toHaveCount(6);
+
+    await menu.locator(".sessionColorFilterMenuItem.marker-green").click();
+    await expect(bucketButton).toHaveClass(/\bmarked\b/);
+    await expect(bucketButton).toHaveClass(/marker-green/);
+    await expect(bucketButton).toHaveAttribute("title", /Green/);
+
+    let uiState = await (await page.request.get("/api/session-ui-state")).json();
+    expect(uiState.sessionUiState.sessionMarkers).toEqual([
+      expect.objectContaining({ sessionId: "mock-current", color: "green" }),
+    ]);
+
+    await bucketButton.click();
+    await page.locator(".sessionBucketMenu .sessionColorFilterMenuItem", { hasText: "No bucket" }).click();
+    await expect(bucketButton).not.toHaveClass(/\bmarked\b/);
+    await expect(bucketButton).toHaveAttribute("title", "Set current session bucket");
+
+    uiState = await (await page.request.get("/api/session-ui-state")).json();
+    expect(uiState.sessionUiState.sessionMarkers).toEqual([]);
+  });
+
   test("clicking a tab switches sessions and moves the active marker", async ({ page }) => {
     await seedServerPinned(
       page,
