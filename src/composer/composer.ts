@@ -41,7 +41,7 @@ export function createComposer(options: {
 }): ComposerController {
   const { state, elements, api, addMessage, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginStreamFollow, endStreamFollow } = options;
 
-  const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "compact", "abort", "stop", "logout"]);
+  const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
   const draftStorageKey = "pi-web-composer-draft";
   let slashCommands: SlashCommand[] = [];
@@ -290,7 +290,7 @@ export function createComposer(options: {
     }
     await refreshModels();
     if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);
-    if (name === "new") await refreshMessages();
+    if (name === "new" || name === "clear") await refreshMessages();
     if (data.message) addMessage("system", data.message);
   }
 

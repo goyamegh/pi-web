@@ -55,6 +55,7 @@ const webSlashCommands: WebSlashCommandInfo[] = [
   { name: "models", description: "List available models", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
   { name: "thinking", description: "Show or set reasoning level", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
   { name: "new", description: "Start a new session", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
+  { name: "clear", description: "Release this session to history and start fresh in the same tab", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
   { name: "compact", description: "Compact conversation context; optional instructions after the command", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
   { name: "abort", description: "Stop the current response", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
   { name: "stop", description: "Stop the current response", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
@@ -949,6 +950,16 @@ async function executeSlashCommand(input: string) {
       return { message: "New session.", state: currentStateWithThinkingLevels() };
     }
 
+    case "clear": {
+      if (session.isStreaming) throw new Error("Wait for the current response to finish before clearing.");
+      if (session.isCompacting) throw new Error("Wait for compaction to finish before clearing.");
+      const oldSessionId = session.sessionId;
+      session = await createNewLiveSession();
+      const state = currentStateWithThinkingLevels();
+      const sessionUiState = await transferCurrentTabUiState(oldSessionId, session.sessionId, state.sessionTitle || "New session", state.cwd);
+      return { message: "Cleared tab. Previous session remains in history.", state: { ...state, sessionUiState } };
+    }
+
     case "compact": {
       if (session.isStreaming) throw new Error("Wait for the current response to finish before compacting.");
       if (session.isCompacting) throw new Error("Compaction is already running.");
@@ -1382,6 +1393,28 @@ async function createNewLiveSession(cwd?: string) {
   }
   await applyDefaultSessionSettings(value);
   return registerLiveSession(value);
+}
+
+async function transferCurrentTabUiState(oldSessionId: string, newSessionId: string, newLabel: string, cwd: string) {
+  if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) return sessionUiStateStore.read();
+  const current = await sessionUiStateStore.read();
+  const oldPinnedIndex = current.pinnedSessions.findIndex((item) => item.id === oldSessionId);
+  const oldMarker = current.sessionMarkers.find((item) => item.sessionId === oldSessionId);
+  if (oldPinnedIndex === -1 && !oldMarker) return current;
+
+  const pinnedSessions = current.pinnedSessions.filter((item) => item.id !== oldSessionId && item.id !== newSessionId);
+  if (oldPinnedIndex !== -1) {
+    pinnedSessions.splice(Math.min(oldPinnedIndex, pinnedSessions.length), 0, { id: newSessionId, label: newLabel, cwd });
+  }
+
+  const sessionMarkers = current.sessionMarkers.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
+  if (oldMarker) {
+    sessionMarkers.unshift({ sessionId: newSessionId, color: oldMarker.color, updatedAt: new Date().toISOString() });
+  }
+
+  const next = await sessionUiStateStore.write({ ...current, pinnedSessions, sessionMarkers });
+  broadcast({ type: "session_ui_state_changed", sessionUiState: next });
+  return next;
 }
 
 async function switchEmptySessionCwd(cwd: string) {

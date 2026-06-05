@@ -75,6 +75,44 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).not.toHaveClass(/\bactive\b/);
   });
 
+  test("/clear reuses the current tab pin and marker while releasing the old session", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      pinnedSessions: [
+        { id: "mock-older", label: "Older mock session" },
+        { id: "mock-current", label: "Current mock session" },
+      ],
+      sessionMarkers: [{ sessionId: "mock-current", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+
+    await page.goto("/");
+    const activeBefore = page.locator(".sessionBarTab.active");
+    await expect(activeBefore).toContainText("Current mock session");
+    await expect(activeBefore).toHaveClass(/\bpinned\b/);
+    await expect(activeBefore).toHaveClass(/marker-green/);
+
+    await page.locator("#prompt").fill("/clear");
+    await page.locator("#primaryButton").click();
+
+    await expect(page.locator("#statusTitle")).toHaveText("New session");
+    await expect(page.getByText("Cleared tab. Previous session remains in history.")).toBeVisible();
+
+    const activeAfter = page.locator(".sessionBarTab.active");
+    await expect(activeAfter).toContainText("New session");
+    await expect(activeAfter).toHaveClass(/\bpinned\b/);
+    await expect(activeAfter).toHaveClass(/marker-green/);
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).toHaveCount(0);
+
+    const uiState = await (await page.request.get("/api/session-ui-state")).json();
+    expect(uiState.sessionUiState.pinnedSessions).toEqual([
+      expect.objectContaining({ id: "mock-older", label: "Older mock session" }),
+      expect.objectContaining({ label: "New session" }),
+    ]);
+    expect(uiState.sessionUiState.pinnedSessions[1].id).not.toBe("mock-current");
+    expect(uiState.sessionUiState.sessionMarkers).toEqual([
+      expect.objectContaining({ sessionId: uiState.sessionUiState.pinnedSessions[1].id, color: "green" }),
+    ]);
+  });
+
   test("current session bucket menu sets and unsets marker colors", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
@@ -125,6 +163,23 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).toHaveClass(/\bactive\b/);
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
+  });
+
+  test("session drawer open state persists across refreshes", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
+
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+
+    await page.reload();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+
+    await page.locator("#sessionCloseButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
+
+    await page.reload();
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
   });
 
   test("session drawer uses selected marker colors and one-line marker actions", async ({ page }) => {

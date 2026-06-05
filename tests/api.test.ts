@@ -657,7 +657,7 @@ describe("additional API coverage", () => {
     const names = data.commands.map((command: any) => command.name);
     expect(names).toContain("reload");
     expect(names).toContain("compact");
-    expect(names).not.toContain("clear");
+    expect(names).toContain("clear");
     expect(names).not.toContain("new-chat");
     expect(names).toContain("mock-extension");
     expect(names).toContain("mock-prompt");
