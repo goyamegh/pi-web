@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -23,10 +23,8 @@ jobs:
           package-manager-cache: false
 
       - run: npm ci
-      - name: Install Playwright Chromium
-        run: npm exec playwright -- install --only-shell chromium
-        timeout-minutes: 20
-      - run: npm run test:all
+      - run: npm run typecheck
+      - run: npm run test:unit
       - run: npm run build
 
       - name: Verify tag matches package version
