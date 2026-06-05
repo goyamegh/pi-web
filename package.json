@@ -44,6 +44,7 @@
     "highlight.js": "^11.11.1",
     "lucide": "^1.14.0",
     "marked": "^15.0.12",
+    "mermaid": "^11.15.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vite": "^7.2.7",

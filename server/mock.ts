@@ -393,6 +393,8 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: "Here is a video artifact:\n\n[e2e-video-artifact.webm](/api/artifacts/e2e-video-artifact.webm)", timestamp: new Date().toISOString() });
         } else if (/artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a screenshot:\n\n![e2e-test](/api/artifacts/e2e-test.png)", timestamp: new Date().toISOString() });
+        } else if (/mermaid/i.test(message)) {
+          appendMockMessage({ role: "assistant", content: "Here is a Mermaid diagram:\n\n```mermaid\ngraph TD\n  A[Start] --> B[Rendered diagram]\n```", timestamp: new Date().toISOString() });
         } else if (/markdown/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is **bold** markdown.\n\n- one\n- two\n\n```ts\nconst answer = 42;\n```", timestamp: new Date().toISOString() });
         } else {

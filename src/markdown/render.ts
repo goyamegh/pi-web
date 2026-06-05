@@ -11,6 +11,11 @@ marked.setOptions({
 
 const markdownCache = new Map<string, string>();
 const maxCachedMarkdown = 160;
+const mermaidSvgCache = new Map<string, string>();
+const maxCachedMermaid = 32;
+const maxMermaidSourceLength = 20_000;
+let mermaidImportPromise: Promise<typeof import("mermaid")> | null = null;
+let mermaidRenderCounter = 0;
 const allowedMarkdownTags = new Set([
   "a", "blockquote", "br", "code", "del", "div", "em", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "img",
   "li", "ol", "p", "pre", "span", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
@@ -97,6 +102,84 @@ function markdownHtml(text: string) {
   markdownCache.set(text, html);
   if (markdownCache.size > maxCachedMarkdown) markdownCache.delete(markdownCache.keys().next().value as string);
   return html;
+}
+
+function mermaidCachedSvg(source: string) {
+  const cached = mermaidSvgCache.get(source);
+  if (cached === undefined) return undefined;
+  mermaidSvgCache.delete(source);
+  mermaidSvgCache.set(source, cached);
+  return cached;
+}
+
+function cacheMermaidSvg(source: string, svg: string) {
+  mermaidSvgCache.set(source, svg);
+  if (mermaidSvgCache.size > maxCachedMermaid) mermaidSvgCache.delete(mermaidSvgCache.keys().next().value as string);
+}
+
+async function loadMermaid() {
+  mermaidImportPromise ??= import("mermaid").then((mod) => {
+    mod.default.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      flowchart: { htmlLabels: false },
+    });
+    return mod;
+  });
+  return mermaidImportPromise;
+}
+
+function scheduleMermaidRender(container: HTMLElement, render: () => void) {
+  if (!("IntersectionObserver" in window)) {
+    requestIdle(render as IdleRequestCallback);
+    return;
+  }
+
+  const observer = new IntersectionObserver((entries) => {
+    if (!entries.some((entry) => entry.isIntersecting)) return;
+    observer.disconnect();
+    requestIdle(render as IdleRequestCallback);
+  }, { rootMargin: "600px 0px" });
+  observer.observe(container);
+}
+
+function enhanceMermaid(root: ParentNode) {
+  for (const code of Array.from(root.querySelectorAll<HTMLElement>("pre > code.language-mermaid, pre > code.mermaid"))) {
+    const pre = code.closest("pre");
+    if (!pre || pre.dataset.mermaidEnhanced) continue;
+
+    const source = (code.textContent || "").trim();
+    if (!source || source.length > maxMermaidSourceLength) continue;
+
+    pre.dataset.mermaidEnhanced = "true";
+    const container = document.createElement("div");
+    container.className = "mermaidDiagram";
+    container.textContent = "Rendering diagram…";
+    pre.replaceWith(container);
+
+    const render = async () => {
+      if (!container.isConnected) return;
+      try {
+        const cached = mermaidCachedSvg(source);
+        if (cached !== undefined) {
+          container.innerHTML = cached;
+          return;
+        }
+
+        const mermaid = await loadMermaid();
+        const id = `mermaid-${++mermaidRenderCounter}`;
+        const { svg } = await mermaid.default.render(id, source);
+        cacheMermaidSvg(source, svg);
+        if (container.isConnected) container.innerHTML = svg;
+      } catch {
+        if (!container.isConnected) return;
+        container.replaceWith(pre);
+        enhanceCodeBlocks(pre.parentNode || pre);
+      }
+    };
+
+    scheduleMermaidRender(container, render);
+  }
 }
 
 function enhanceCodeBlocks(root: ParentNode) {
@@ -220,6 +303,7 @@ function enhanceArtifactLinks(root: ParentNode) {
         if (!card.isConnected) return;
         content.classList.add("markdownBody");
         content.innerHTML = markdownHtml(text);
+        enhanceMermaid(content);
         enhanceCodeBlocks(content);
         enhanceImages(content);
         enhanceArtifactLinks(content);
@@ -234,6 +318,7 @@ function enhanceArtifactLinks(root: ParentNode) {
 function renderAssistantMarkdown(body: HTMLElement, text: string) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
+  enhanceMermaid(body);
   enhanceCodeBlocks(body);
   enhanceImages(body);
   enhanceArtifactLinks(body);

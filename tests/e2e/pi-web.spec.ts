@@ -766,6 +766,16 @@ test.describe("assistant markdown rendering", () => {
     await expect(latestAssistant.locator(".body")).not.toContainText("**bold**");
   });
 
+  test("renders Mermaid code fences as diagrams", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return mermaid");
+    await page.locator("#primaryButton").click();
+
+    const latestAssistant = page.locator(".message.assistant", { hasText: "Here is a Mermaid diagram" }).last();
+    await expect(latestAssistant.locator(".mermaidDiagram svg")).toBeVisible({ timeout: 10_000 });
+    await expect(latestAssistant.locator("pre > code.language-mermaid")).toHaveCount(0);
+  });
+
   test("renders collapsed long assistant messages as markdown before and after show more", async ({ page }) => {
     await page.goto("/");
     const longMessage = page.locator(".message.assistant.collapsible").first();

@@ -25,7 +25,7 @@ export default defineConfig({
         // Network-first: always try server, fall back to cache
         // Only precache the app shell assets
         navigateFallback: "/index.html",
-        globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
+        globPatterns: ["index.html", "assets/index-*.{js,css}", "*.{svg,png,webmanifest}"],
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.mode === "navigate",

@@ -88,6 +88,21 @@
   background: transparent;
   padding: 0;
 }
+.mermaidDiagram {
+  margin: 0 0 .8em;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 12px;
+  color: var(--muted);
+}
+.mermaidDiagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
 .markdownBody table {
   display: block;
   overflow: auto;
