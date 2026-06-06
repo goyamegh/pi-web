@@ -68,6 +68,7 @@ export type PiWebSettings = {
   defaults: {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
+    sessionBucketColor?: SessionMarkerColorId;
   };
 };
 

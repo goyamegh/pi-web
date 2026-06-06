@@ -230,12 +230,12 @@ describe("pi-web mock API", () => {
     expect(current.sessionUiState.selectedMarkerColor).toBe("green");
   });
 
-  it("applies saved model defaults to new sessions", async () => {
+  it("applies saved defaults to new sessions", async () => {
     try {
       await fetch(`${baseUrl}/api/settings`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "high" } }),
+        body: JSON.stringify({ defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "high", sessionBucketColor: "red" } }),
       });
 
       const newRes = await fetch(`${baseUrl}/api/sessions/new`, { method: "POST" });
@@ -243,7 +243,17 @@ describe("pi-web mock API", () => {
       const data = await newRes.json();
       expect(data.model.provider).toBe("mock");
       expect(data.thinkingLevel).toBe("high");
+
+      const uiState = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
+      expect(uiState.sessionUiState.sessionMarkers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sessionId: data.sessionId, color: "red" }),
+      ]));
     } finally {
+      await fetch(`${baseUrl}/api/settings`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ defaults: { sessionBucketColor: null } }),
+      });
       await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     }
   });

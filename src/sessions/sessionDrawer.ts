@@ -12,6 +12,7 @@ export type SessionsController = {
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
   updateEmptyCwdChooser: () => void;
   renderSessionBar: () => void;
+  renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
 };
 
@@ -495,14 +496,15 @@ export function createSessions(options: {
     persistSessionUiState({ sessionMarkers: state.sessionMarkers });
   }
 
-  function markerButtonTitle(markerColor: { label: string } | undefined) {
+  function markerButtonTitle(markerColor: { id?: string; label: string } | undefined) {
     const selected = selectedMarkerColor();
-    return markerColor
+    if (!markerColor) return `Mark session ${selected.label}. Current marker color: ${selected.label}.`;
+    return markerColor.id === selected.id
       ? `Marked ${markerColor.label}. Click to clear.`
-      : `Mark session ${selected.label}. Current marker color: ${selected.label}.`;
+      : `Marked ${markerColor.label}. Click to change to ${selected.label}.`;
   }
 
-  function sessionStatusButtonTitle(pinned: boolean, markerColor: { label: string } | undefined) {
+  function sessionStatusButtonTitle(pinned: boolean, markerColor: { id?: string; label: string } | undefined) {
     if (selectedSessionRowTool !== "pin") return markerButtonTitle(markerColor);
     const markerText = markerColor ? ` ${markerColor.label} marker.` : "";
     return pinned
@@ -1267,7 +1269,7 @@ export function createSessions(options: {
     }
     markerButton.addEventListener("click", () => {
       if (pinToolSelected) togglePin(item);
-      else if (markerColor) clearSessionMarker(item.id);
+      else if (markerColor?.id === state.selectedMarkerColor) clearSessionMarker(item.id);
       else setSessionMarker(item.id, state.selectedMarkerColor);
     });
 
@@ -1427,6 +1429,7 @@ export function createSessions(options: {
     updateEmptyCwdChooser,
     updateSessionRuntime,
     renderSessionBar,
+    renderCurrentSessionBucketButton,
     applySessionUiState,
   };
 }

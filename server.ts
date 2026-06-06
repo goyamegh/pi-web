@@ -1381,6 +1381,19 @@ async function applyDefaultSessionSettings(value: any) {
   }
 }
 
+async function applyDefaultSessionBucket(sessionId: string) {
+  const color = (await settingsStore.read()).defaults.sessionBucketColor;
+  if (!sessionId || !color) return undefined;
+  const current = await sessionUiStateStore.read();
+  if (current.sessionMarkers.some((marker) => marker.sessionId === sessionId)) return current;
+  const sessionUiState = await sessionUiStateStore.write({
+    ...current,
+    sessionMarkers: [{ sessionId, color, updatedAt: new Date().toISOString() }, ...current.sessionMarkers],
+  });
+  broadcast({ type: "session_ui_state_changed", sessionUiState });
+  return sessionUiState;
+}
+
 async function createNewLiveSession(cwd?: string) {
   if (cwd) await setPiCwd(cwd);
   const previousSessionFile = session?.sessionFile;
@@ -1392,7 +1405,9 @@ async function createNewLiveSession(cwd?: string) {
     value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
   }
   await applyDefaultSessionSettings(value);
-  return registerLiveSession(value);
+  const liveSession = registerLiveSession(value);
+  await applyDefaultSessionBucket(liveSession.sessionId);
+  return liveSession;
 }
 
 async function transferCurrentTabUiState(oldSessionId: string, newSessionId: string, newLabel: string, cwd: string) {

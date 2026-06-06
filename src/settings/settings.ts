@@ -1,7 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
-import { defaultPiWebSettings, type AppState, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
+import { defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
 
 export type SettingsController = {
   init: () => void;
@@ -34,6 +34,8 @@ function normalizeSettings(value: unknown): PiWebSettings {
   const id = typeof model?.id === "string" ? model.id.trim() : "";
   if (provider && id) settings.defaults.model = { provider, id };
   if (typeof defaults?.thinkingLevel === "string" && defaults.thinkingLevel.trim()) settings.defaults.thinkingLevel = defaults.thinkingLevel.trim();
+  const sessionBucketColor = normalizeMarkerColor(defaults?.sessionBucketColor);
+  if (sessionBucketColor) settings.defaults.sessionBucketColor = sessionBucketColor;
 
   return settings;
 }
@@ -53,6 +55,12 @@ function splitModelKey(key: string): PiWebModelSetting | undefined {
   const provider = key.slice(0, slashIndex);
   const id = key.slice(slashIndex + 1);
   return provider && id ? { provider, id } : undefined;
+}
+
+function populateBucketColorSelect(select: HTMLSelectElement) {
+  if (select.options.length > 0) return;
+  select.append(new Option("No default bucket", ""));
+  for (const color of sessionMarkerColors) select.append(new Option(color.label, color.id));
 }
 
 export function createSettings(options: {
@@ -88,6 +96,7 @@ export function createSettings(options: {
     elements.settingDensitySelect.value = settings.appearance.density;
     elements.settingQueueModeSelect.value = settings.composer.queueMode;
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
+    elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
     elements.settingModelDefaultsValue.textContent = settingsLabel(settings);
 
     updateQueueToggle();
@@ -134,6 +143,7 @@ export function createSettings(options: {
   }
 
   function init() {
+    populateBucketColorSelect(elements.settingDefaultBucketColorSelect);
     applySettings(state.settings);
 
     elements.settingsButton.addEventListener("click", openSettings);
@@ -159,6 +169,13 @@ export function createSettings(options: {
 
     elements.settingComposerExpandedCheckbox.addEventListener("change", () => {
       patchSettings({ composer: { expanded: elements.settingComposerExpandedCheckbox.checked } }).catch((error) => {
+        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      });
+    });
+
+    elements.settingDefaultBucketColorSelect.addEventListener("change", () => {
+      patchSettings({ defaults: { sessionBucketColor: elements.settingDefaultBucketColorSelect.value || null } }).catch((error) => {
         setSettingsStatus(error instanceof Error ? error.message : String(error), true);
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       });

@@ -6,6 +6,10 @@ export type PiWebModelSetting = {
   id: string;
 };
 
+export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
+
+const sessionMarkerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green"]);
+
 export type PiWebSettings = {
   version: 1;
   appearance: {
@@ -18,6 +22,7 @@ export type PiWebSettings = {
   defaults: {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
+    sessionBucketColor?: SessionMarkerColorId;
   };
 };
 
@@ -32,6 +37,7 @@ export type PiWebSettingsPatch = Partial<{
   defaults: Partial<{
     model: unknown;
     thinkingLevel: unknown;
+    sessionBucketColor: unknown;
   }>;
 }>;
 
@@ -62,6 +68,12 @@ function normalizeModel(value: unknown) {
   return provider && id ? { provider, id } : undefined;
 }
 
+export function normalizeSessionBucketColor(value: unknown): SessionMarkerColorId | undefined {
+  return typeof value === "string" && sessionMarkerColors.has(value as SessionMarkerColorId)
+    ? value as SessionMarkerColorId
+    : undefined;
+}
+
 export function normalizeSettings(value: unknown): PiWebSettings {
   const settings = cloneSettings(defaultPiWebSettings);
   if (!isRecord(value)) return settings;
@@ -83,6 +95,8 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   if (typeof defaults?.thinkingLevel === "string" && defaults.thinkingLevel.trim()) {
     settings.defaults.thinkingLevel = defaults.thinkingLevel.trim();
   }
+  const sessionBucketColor = normalizeSessionBucketColor(defaults?.sessionBucketColor);
+  if (sessionBucketColor) settings.defaults.sessionBucketColor = sessionBucketColor;
 
   return settings;
 }
@@ -116,6 +130,11 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
       } else {
         delete next.defaults.thinkingLevel;
       }
+    }
+    if ("sessionBucketColor" in patch.defaults) {
+      const sessionBucketColor = normalizeSessionBucketColor(patch.defaults.sessionBucketColor);
+      if (sessionBucketColor) next.defaults.sessionBucketColor = sessionBucketColor;
+      else delete next.defaults.sessionBucketColor;
     }
   }
 

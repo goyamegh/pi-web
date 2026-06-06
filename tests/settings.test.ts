@@ -23,7 +23,7 @@ describe("pi-web settings", () => {
       version: 999,
       appearance: { density: "tiny" },
       composer: { queueMode: "bad", expanded: "yes" },
-      defaults: { model: { provider: "", id: "model" }, thinkingLevel: "" },
+      defaults: { model: { provider: "", id: "model" }, thinkingLevel: "", sessionBucketColor: "orange" },
     })).toEqual({
       version: 1,
       appearance: { density: "comfortable" },
@@ -36,7 +36,7 @@ describe("pi-web settings", () => {
     const next = applySettingsPatch(normalizeSettings(undefined), {
       appearance: { density: "compact" },
       composer: { queueMode: "followUp", expanded: true },
-      defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low" },
+      defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low", sessionBucketColor: "purple" },
       unknown: true,
     });
 
@@ -44,7 +44,7 @@ describe("pi-web settings", () => {
       version: 1,
       appearance: { density: "compact" },
       composer: { queueMode: "followUp", expanded: true },
-      defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low" },
+      defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low", sessionBucketColor: "purple" },
     });
   });
 

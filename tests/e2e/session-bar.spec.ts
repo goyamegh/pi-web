@@ -296,6 +296,43 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionItem")).toContainText("Current mock session");
   });
 
+  test("session drawer recolors marked rows directly while color filters are active", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      sessionMarkers: [
+        { sessionId: "mock-current", color: "blue", updatedAt: "2026-01-01T00:00:00.000Z" },
+        { sessionId: "mock-older", color: "red", updatedAt: "2026-01-01T00:00:00.000Z" },
+      ],
+    });
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+
+    const currentItem = page.locator(".sessionItem").filter({ hasText: "Current mock session" });
+    const olderItem = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
+    await expect(currentItem).toHaveClass(/marker-blue/);
+    await expect(olderItem).toHaveClass(/marker-red/);
+
+    await page.locator(".sessionColorFilterButton").click();
+    const filterMenu = page.locator(".sessionColorFilterMenu");
+    await filterMenu.locator(".sessionColorFilterMenuItem.marker-red").click();
+    await filterMenu.locator(".sessionColorFilterMenuItem.marker-blue").click();
+    await expect(page.locator(".sessionItem")).toHaveCount(2);
+
+    await page.locator(".sessionMarkerColorButton.marker-blue").click();
+    await olderItem.locator(".sessionItemMarkerBtn").click();
+
+    await expect(page.locator(".sessionItem")).toHaveCount(2);
+    await expect(olderItem).toBeVisible();
+    await expect(olderItem).toHaveClass(/marker-blue/);
+    await expect(olderItem).not.toHaveClass(/marker-red/);
+
+    const uiState = await (await page.request.get("/api/session-ui-state")).json();
+    expect(uiState.sessionUiState.sessionMarkers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: "mock-older", color: "blue" }),
+    ]));
+  });
+
   test("session drawer Tabs tool pins and unpins rows with the single status button", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();

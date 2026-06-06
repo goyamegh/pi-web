@@ -56,7 +56,10 @@ function updateMeta(data: any) {
   modelSettings.updateSummary();
   if (sessions) {
     if (data.sessionUiState) sessions.applySessionUiState(data.sessionUiState);
-    else sessions.renderSessionBar();
+    else {
+      sessions.renderSessionBar();
+      sessions.renderCurrentSessionBucketButton();
+    }
   }
 }
 
