@@ -78,7 +78,8 @@ export function createModelSettings(options: {
   }
 
   async function refreshModels() {
-    const res = await fetch("/api/models", { headers: api.headers() });
+    const query = state.currentSessionId ? `?sessionId=${encodeURIComponent(state.currentSessionId)}` : "";
+    const res = await fetch(`/api/models${query}`, { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     updateMeta({ cwd: data.cwd || "", model: data.current, thinkingLevel: data.thinkingLevel });
@@ -98,7 +99,7 @@ export function createModelSettings(options: {
       const res = await fetch("/api/model", {
         method: "POST",
         headers: api.headers(),
-        body: JSON.stringify({ provider, id, thinkingLevel: elements.thinkingSelectEl.value }),
+        body: JSON.stringify({ sessionId: state.currentSessionId, provider, id, thinkingLevel: elements.thinkingSelectEl.value }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();

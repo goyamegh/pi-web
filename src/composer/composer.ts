@@ -1,6 +1,6 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
-import { clearToken, saveToken } from "../app/types.js";
+import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ImageAttachment, SlashCommand } from "../app/types.js";
 import { setIcon } from "../app/icons.js";
 
@@ -277,13 +277,14 @@ export function createComposer(options: {
     const res = await fetch("/api/command", {
       method: "POST",
       headers: api.headers(),
-      body: JSON.stringify({ command }),
+      body: JSON.stringify({ sessionId: state.currentSessionId, command }),
     });
     const text = await res.text();
     const data = text ? JSON.parse(text) : {};
     if (!res.ok || data.ok === false) throw new Error(data.error || text);
     if (data.state) {
       updateMeta(data.state);
+      if ((name === "new" || name === "clear") && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
       state.isStreaming = Boolean(data.state.isStreaming);
       updatePrimaryAction();
       if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);

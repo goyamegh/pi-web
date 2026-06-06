@@ -91,19 +91,11 @@ describe("pi-web mock API", () => {
 
     const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
     expect(sessions.sessions).toHaveLength(2);
-    expect(sessions.sessions[0].isCurrent).toBe(true);
+    expect(sessions.sessions.every((item: any) => item.isCurrent === false)).toBe(true);
   });
 
-  it("deletes a non-current session and rejects deleting the current session", async () => {
+  it("deletes a requested session", async () => {
     try {
-      const currentRes = await fetch(`${baseUrl}/api/sessions/delete`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId: "mock-current" }),
-      });
-      expect(currentRes.status).toBe(409);
-      expect((await currentRes.json()).error).toContain("current session");
-
       const deleteRes = await fetch(`${baseUrl}/api/sessions/delete`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -339,11 +331,16 @@ describe("pi-web mock API", () => {
     const current = sessions.sessions.find((item: any) => item.id === "mock-current");
     const older = sessions.sessions.find((item: any) => item.id === "mock-older");
     expect(current.runtime.isRunning).toBe(true);
-    expect(older.isCurrent).toBe(true);
+    expect(older.isCurrent).toBe(false);
     expect(older.runtime.isRunning).toBe(false);
+
+    const defaultState = await (await fetch(`${baseUrl}/api/state`)).json();
+    expect(defaultState.sessionId).toBe("mock-current");
+    const olderState = await (await fetch(`${baseUrl}/api/state?sessionId=mock-older`)).json();
+    expect(olderState.sessionId).toBe("mock-older");
   });
 
-  it("routes prompts to the requested session id even when another session is active", async () => {
+  it("routes prompts to the requested session id without relying on a server-active session", async () => {
     const openRes = await fetch(`${baseUrl}/api/sessions/open`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -364,7 +361,7 @@ describe("pi-web mock API", () => {
     const older = sessions.sessions.find((item: any) => item.id === "mock-older");
     expect(current.runtime.isRunning).toBe(true);
     expect(current.isCurrent).toBe(false);
-    expect(older.isCurrent).toBe(true);
+    expect(older.isCurrent).toBe(false);
   });
 
   it("creates and opens sessions through validated session APIs", async () => {

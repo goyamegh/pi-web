@@ -17,7 +17,7 @@ function imageFileName(path: string) {
   return path.split("/").filter(Boolean).at(-1) || path;
 }
 
-function gitImageUrl(file: GitFileStatus, repo: string | undefined, version: "before" | "after") {
+function gitImageUrl(file: GitFileStatus, repo: string | undefined, version: "before" | "after", sessionId?: string) {
   const query = new URLSearchParams({
     path: file.path,
     version,
@@ -25,6 +25,7 @@ function gitImageUrl(file: GitFileStatus, repo: string | undefined, version: "be
   });
   if (file.oldPath) query.set("oldPath", file.oldPath);
   if (repo) query.set("repo", repo);
+  if (sessionId) query.set("sessionId", sessionId);
   return `/api/git/image?${query}`;
 }
 
@@ -45,8 +46,8 @@ async function loadPreviewImage(container: HTMLElement, url: string, headers: He
   }
 }
 
-function renderImageDiff(options: { file: GitFileStatus; repo?: string; apiHeaders: () => HeadersInit }) {
-  const { file, repo, apiHeaders } = options;
+function renderImageDiff(options: { file: GitFileStatus; repo?: string; apiHeaders: () => HeadersInit; sessionId?: string }) {
+  const { file, repo, apiHeaders, sessionId } = options;
   const wrapper = document.createElement("div");
   wrapper.className = "gitImageDiff";
 
@@ -54,8 +55,8 @@ function renderImageDiff(options: { file: GitFileStatus; repo?: string; apiHeade
   const after = createImagePane("After", imageFileName(file.path));
   wrapper.append(before.pane, after.pane);
 
-  void loadPreviewImage(before.preview, gitImageUrl(file, repo, "before"), apiHeaders(), `Before ${file.path}`);
-  void loadPreviewImage(after.preview, gitImageUrl(file, repo, "after"), apiHeaders(), `After ${file.path}`);
+  void loadPreviewImage(before.preview, gitImageUrl(file, repo, "before", sessionId), apiHeaders(), `Before ${file.path}`);
+  void loadPreviewImage(after.preview, gitImageUrl(file, repo, "after", sessionId), apiHeaders(), `After ${file.path}`);
   return wrapper;
 }
 
@@ -111,9 +112,10 @@ export function renderDiffView(options: {
   diff?: string;
   loading?: boolean;
   apiHeaders: () => HeadersInit;
+  sessionId?: string;
   onBack?: () => void;
 }) {
-  const { container, file, repo, diff, loading, apiHeaders, onBack } = options;
+  const { container, file, repo, diff, loading, apiHeaders, sessionId, onBack } = options;
   container.textContent = "";
   const header = document.createElement("div");
   header.className = "gitDetailHeader";
@@ -146,7 +148,7 @@ export function renderDiffView(options: {
   }
 
   if (isImagePath(file.path) || Boolean(file.oldPath && isImagePath(file.oldPath))) {
-    container.append(renderImageDiff({ file, repo, apiHeaders }));
+    container.append(renderImageDiff({ file, repo, apiHeaders, sessionId }));
     return;
   }
 

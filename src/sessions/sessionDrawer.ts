@@ -2,7 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { iconElement, setIcon, type IconName } from "../app/icons.js";
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
-import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors } from "../app/types.js";
+import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 
 export type SessionsController = {
   init: () => void;
@@ -145,11 +145,12 @@ export function createSessions(options: {
     const res = await fetch("/api/session/cwd", {
       method: "POST",
       headers: api.headers(),
-      body: JSON.stringify({ cwd }),
+      body: JSON.stringify({ cwd, sessionId: state.currentSessionId }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
     rememberSessionCwd(cwd);
+    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
     updateMeta(data);
     if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
     await refreshModels();
@@ -258,11 +259,14 @@ export function createSessions(options: {
     const res = await fetch("/api/sessions/new", {
       method: "POST",
       headers: api.headers(),
-      body: cwd ? JSON.stringify({ cwd }) : undefined,
+      body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: state.currentSessionId }),
     });
     if (!res.ok) throw new Error(await res.text());
-    rememberSessionCwd(cwd || state.currentCwd);
+    const data = await res.json();
+    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
+    rememberSessionCwd(cwd || data.cwd || state.currentCwd);
     clearMessages();
+    updateMeta(data);
     await refreshState();
     updateEmptyCwdChooser();
     if (shouldCloseDrawerAfterSessionSwitch()) {
@@ -298,7 +302,7 @@ export function createSessions(options: {
     const res = await fetch(url, { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    cachedSessions = data.sessions || [];
+    cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
     // Freshen labels for any pinned sessions we now have data for
     let labelsChanged = false;
     state.pinnedSessions = state.pinnedSessions.map((pinned) => {
@@ -840,6 +844,7 @@ export function createSessions(options: {
         body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
       });
       if (!openRes.ok) throw new Error(await openRes.text());
+      writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
       await refreshState();
@@ -995,7 +1000,7 @@ export function createSessions(options: {
     const res = await fetch("/api/sessions/delete", {
       method: "POST",
       headers: api.headers(),
-      body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd }),
+      body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd, activeSessionId: state.currentSessionId }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
@@ -1316,6 +1321,7 @@ export function createSessions(options: {
           body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
         });
         if (!openRes.ok) throw new Error(await openRes.text());
+        writeActiveSessionIdToUrl(item.id);
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);

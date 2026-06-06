@@ -240,6 +240,23 @@ test.describe("composer layout", () => {
     await expect(page.locator("#statusTitle")).toHaveText("New session");
   });
 
+  test("uses the URL session id as the active tab session", async ({ page, context }) => {
+    await page.goto("/?sessionId=mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+
+    const other = await context.newPage();
+    await other.goto("/?sessionId=mock-current");
+    await expect(other.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+
+    await page.locator("#sessionButton").click();
+    await page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionItemNavBtn").click();
+    await expect(page).toHaveURL(/sessionId=mock-current/);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect(other.locator("#statusTitle")).toHaveText("Current mock session");
+    await other.close();
+  });
+
   test("switching sessions ignores stale drawer list refreshes", async ({ page }) => {
     let releaseStaleSessionsResponse!: () => void;
     const staleSessionsResponseReleased = new Promise<void>((resolve) => {

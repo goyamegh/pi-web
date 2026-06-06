@@ -280,6 +280,7 @@ export function createRealtime(options: {
       }
       const isReplay = data.replay === true;
       if (data.type === "hello" || data.type === "state_changed") {
+        if (data.sessionId && state.currentSessionId && data.sessionId !== state.currentSessionId) return;
         updateMeta(data);
         state.isStreaming = Boolean(data.isStreaming);
         composer.updatePrimaryAction();
@@ -306,7 +307,7 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "models_updated") {
-        models.populateModelSelect(data.models || [], state.currentModelKey);
+        if (!data.sessionId || data.sessionId === state.currentSessionId) models.populateModelSelect(data.models || [], state.currentModelKey);
         return;
       }
       if (data.type === "session_stats_changed") {

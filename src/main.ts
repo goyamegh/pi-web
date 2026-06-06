@@ -7,7 +7,7 @@ import { getAppElements, initAppHeightSync } from "./app/elements.js";
 import { initSwAutoReload } from "./app/sw-update.js";
 import { setIcon } from "./app/icons.js";
 import { initKeyboardShortcuts } from "./app/shortcuts.js";
-import { createAppState } from "./app/types.js";
+import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { initGitPanel } from "./git/panel.js";
@@ -81,7 +81,8 @@ async function refreshMessages() {
 }
 
 async function refreshState() {
-  const res = await fetch("/api/state", { headers: api.headers() });
+  const query = state.currentSessionId ? `?sessionId=${encodeURIComponent(state.currentSessionId)}` : "";
+  const res = await fetch(`/api/state${query}`, { headers: api.headers() });
   if (res.status === 401) {
     elements.tokenOverlay.hidden = false;
     elements.tokenInput.focus();
@@ -244,7 +245,16 @@ initKeyboardShortcuts([
   onError: showSystemError,
 });
 composer.updateQueueToggle();
-initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, apiHeaders: api.headers });
+initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
+window.addEventListener("popstate", () => {
+  const nextSessionId = readActiveSessionIdFromUrl();
+  if (nextSessionId === state.currentSessionId) return;
+  state.currentSessionId = nextSessionId;
+  messages.clear();
+  sessions.renderSessionBar();
+  sessions.refreshSessions().catch(() => undefined);
+  refreshState().catch(showSystemError);
+});
 composer.updatePrimaryAction();
 refreshState().catch(showSystemError);
 realtime.connect();

@@ -22,7 +22,7 @@ test("git panel opens, switches views, and commit rows do not overlap", async ({
 });
 
 test("git status repo accordions switch the selected file", async ({ page }) => {
-  await page.route("**/api/git/repos", (route) => route.fulfill({ json: {
+  await page.route("**/api/git/repos**", (route) => route.fulfill({ json: {
     ok: true,
     cwd: "/workspace",
     depth: 1,

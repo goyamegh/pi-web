@@ -184,6 +184,7 @@ export function createMockHarness(options: MockSessionOptions) {
         resetMockEntries(path);
       },
       buildSessionContext() { return { messages: mockMessages }; },
+      getCwd() { return piCwd; },
       getSessionDir() { return join(piCwd, ".mock-sessions"); },
       getLeafId() { return mockLeafId; },
       getEntry(id: string) { return entryById(id); },

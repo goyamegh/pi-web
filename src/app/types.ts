@@ -239,6 +239,7 @@ export const defaultPiWebSettings: PiWebSettings = {
 
 const tokenStorageKey = "pi-web-token";
 const collapsedFoldersStorageKey = "pi-web-collapsed-session-folders";
+const sessionIdUrlParam = "sessionId";
 
 function consumeUrlToken() {
   const urlToken = new URLSearchParams(location.search).get("token");
@@ -248,6 +249,18 @@ function consumeUrlToken() {
   const url = new URL(location.href);
   url.searchParams.delete("token");
   history.replaceState(null, "", url.toString());
+}
+
+export function readActiveSessionIdFromUrl() {
+  return new URLSearchParams(location.search).get(sessionIdUrlParam) || "";
+}
+
+export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "replace" = "push") {
+  const url = new URL(location.href);
+  if (sessionId) url.searchParams.set(sessionIdUrlParam, sessionId);
+  else url.searchParams.delete(sessionIdUrlParam);
+  if (url.href === location.href) return;
+  history[mode === "replace" ? "replaceState" : "pushState"](null, "", url.toString());
 }
 
 function readCollapsedSessionFolders() {
@@ -271,7 +284,7 @@ export function createAppState(): AppState {
     currentModelKey: "",
     currentModelDisplay: "No model",
     currentThinkingLevel: "off",
-    currentSessionId: "",
+    currentSessionId: readActiveSessionIdFromUrl(),
     currentCwd: "",
     currentSessionTitle: "New session",
     statusTitleEditing: false,

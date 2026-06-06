@@ -175,7 +175,8 @@ export function createStatusBar(options: {
 
   async function refreshSessionTitle(sessionId = state.currentSessionId) {
     try {
-      const res = await fetch("/api/state", { headers: api.headers() });
+      const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+      const res = await fetch(`/api/state${query}`, { headers: api.headers() });
       if (!res.ok || sessionId !== state.currentSessionId) return;
       const data = await res.json();
       if (sessionId !== state.currentSessionId || data.sessionId !== sessionId) return;

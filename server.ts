@@ -118,13 +118,22 @@ function serveArtifact(req: IncomingMessage, res: ServerResponse) {
   const name = safeArtifactName(rawName);
   if (!name || rawName.includes("..") || rawName.includes("/") || name !== rawName) return sendJson(res, 400, { ok: false, error: "Invalid artifact name" });
 
-  const file = resolve(artifactDir, name);
-  const legacyFile = resolve(legacyArtifactDir, name);
-  const resolvedFile = file.startsWith(artifactDir) && existsSync(file)
-    ? file
-    : legacyFile.startsWith(legacyArtifactDir) && existsSync(legacyFile)
-      ? legacyFile
-      : "";
+  let resolvedFile = "";
+  const artifactRoots = Array.from(new Set([piCwd, ...knownCwds]));
+  for (const cwd of artifactRoots) {
+    const currentArtifactDir = join(cwd, ".pi", "web", "artifacts");
+    const currentLegacyArtifactDir = join(cwd, ".pi-web-uploads", "artifacts");
+    const file = resolve(currentArtifactDir, name);
+    const legacyFile = resolve(currentLegacyArtifactDir, name);
+    if (file.startsWith(currentArtifactDir) && existsSync(file)) {
+      resolvedFile = file;
+      break;
+    }
+    if (legacyFile.startsWith(currentLegacyArtifactDir) && existsSync(legacyFile)) {
+      resolvedFile = legacyFile;
+      break;
+    }
+  }
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
   res.writeHead(200, {
@@ -340,11 +349,11 @@ async function sendGitImage(res: ServerResponse, options: { cwd: string; path: s
   createReadStream(resolved).pipe(res);
 }
 
-async function gitCwdFromRepoParam(repo: string | null) {
-  if (!repo || repo === ".") return piCwd;
+async function gitCwdFromRepoParam(repo: string | null, baseCwd = piCwd) {
+  if (!repo || repo === ".") return baseCwd;
   if (repo.includes("\0") || isAbsolute(repo)) throw new Error("Invalid repository path");
-  const resolved = resolve(piCwd, repo);
-  const rel = relative(piCwd, resolved);
+  const resolved = resolve(baseCwd, repo);
+  const rel = relative(baseCwd, resolved);
   if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Repository path is outside the workspace");
   const info = await stat(resolved);
   if (!info.isDirectory()) throw new Error("Repository path is not a directory");
@@ -367,7 +376,7 @@ async function gitRepoSummary(path: string, cwd: string) {
   };
 }
 
-async function listGitRepos() {
+async function listGitRepos(cwd = piCwd) {
   const repos: Array<Awaited<ReturnType<typeof gitRepoSummary>>> = [];
   const seenRoots = new Set<string>();
   async function addRepo(path: string, cwd: string) {
@@ -379,20 +388,27 @@ async function listGitRepos() {
     repos.push(await gitRepoSummary(path, cwd));
   }
 
-  await addRepo(".", piCwd);
-  const entries = await readdir(piCwd, { withFileTypes: true });
+  await addRepo(".", cwd);
+  const entries = await readdir(cwd, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory() || ignoredGitRepoDirs.has(entry.name)) continue;
-    const cwd = join(piCwd, entry.name);
-    if (!existsSync(join(cwd, ".git"))) continue;
-    await addRepo(entry.name, cwd);
+    const repoCwd = join(cwd, entry.name);
+    if (!existsSync(join(repoCwd, ".git"))) continue;
+    await addRepo(entry.name, repoCwd);
   }
-  return { ok: true, cwd: piCwd, depth: 1, repos };
+  return { ok: true, cwd, depth: 1, repos };
 }
 
 function parseCommit(entry: string) {
   const [hash = "", shortHash = "", parents = "", author = "", date = "", refs = "", subject = ""] = entry.split("\x1f");
   return { hash, shortHash, parents: parents ? parents.split(" ").filter(Boolean) : [], author, date, refs: refs ? refs.split(", ").filter(Boolean) : [], subject };
+}
+
+async function requestCwdFromSessionId(sessionId: string | null) {
+  if (!sessionId) return piCwd;
+  const targetSession = await getOrCreateLiveSessionById(sessionId);
+  if (!targetSession) throw new Error("Session not found");
+  return sessionCwd(targetSession);
 }
 
 async function gitLog(cwd = piCwd) {
@@ -430,8 +446,8 @@ const blockedModelIds = new Set<string>();
 
 // Parse allowed model IDs from Copilot's model_not_available_for_integrator error.
 // Returns null if no such error has been seen yet.
-function copilotAllowedIdsFromSession(): Set<string> | null {
-  const entries = session.messages;
+function copilotAllowedIdsFromSession(targetSession: PiWebSession = session): Set<string> | null {
+  const entries = targetSession.messages;
   for (let i = entries.length - 1; i >= 0; i--) {
     const msg = entries[i] as any;
     const err: string = msg?.errorMessage || msg?.message?.errorMessage || "";
@@ -443,9 +459,9 @@ function copilotAllowedIdsFromSession(): Set<string> | null {
   return null;
 }
 
-function getAvailableModels() {
-  const all = session.modelRegistry.getAvailable();
-  const allowed = copilotAllowedIdsFromSession();
+function getAvailableModels(targetSession: PiWebSession = session) {
+  const all = targetSession.modelRegistry.getAvailable();
+  const allowed = copilotAllowedIdsFromSession(targetSession);
   return all.filter((m: any) => {
     if (blockedModelIds.has(m.id)) return false;
     if (allowed && !allowed.has(m.id)) return false;
@@ -460,10 +476,10 @@ const imageExtensions: Record<string, string> = {
   "image/webp": ".webp",
 };
 
-async function persistPromptImages(images: Array<{ data: string; mimeType: string; name?: string }>) {
+async function persistPromptImages(images: Array<{ data: string; mimeType: string; name?: string }>, cwd = piCwd) {
   if (!images.length) return "";
-  await ensurePiWebStorage();
-  const uploadDir = join(piCwd, ".pi", "web", "uploads");
+  await ensurePiWebStorage(cwd);
+  const uploadDir = join(cwd, ".pi", "web", "uploads");
   await mkdir(uploadDir, { recursive: true });
 
   const lines: string[] = [];
@@ -690,6 +706,10 @@ function conversationTreeForSession(targetSession: PiWebSession) {
   };
 }
 
+function sessionCwd(targetSession: PiWebSession | any = session) {
+  return String(targetSession?.sessionManager?.getCwd?.() || targetSession?.cwd || piCwd);
+}
+
 function runtimeForPath(path: string) {
   const live = liveSessions.get(path)?.session;
   const isStreaming = Boolean(live?.isStreaming);
@@ -712,8 +732,8 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     created: info.created.toISOString(),
     modified: info.modified.toISOString(),
     messageCount: info.messageCount,
-    cwd,
-    isCurrent: cwd === piCwd && info.id === session.sessionId,
+    cwd: info.cwd || cwd,
+    isCurrent: false,
     runtime: runtimeForPath(info.path),
   };
 }
@@ -808,24 +828,24 @@ function sessionStats(targetSession: PiWebSession) {
   };
 }
 
-function currentState() {
+function currentState(targetSession: PiWebSession = session) {
   return {
-    cwd: piCwd,
-    sessionFile: session.sessionFile,
-    sessionId: session.sessionId,
-    sessionName: sessionDisplayName(session),
-    sessionTitle: liveSessionTitle(session),
-    isStreaming: session.isStreaming,
-    model: simplifyModel(session.model),
-    thinkingLevel: session.thinkingLevel,
-    stats: sessionStats(session),
+    cwd: sessionCwd(targetSession),
+    sessionFile: targetSession.sessionFile,
+    sessionId: targetSession.sessionId,
+    sessionName: sessionDisplayName(targetSession),
+    sessionTitle: liveSessionTitle(targetSession),
+    isStreaming: targetSession.isStreaming,
+    model: simplifyModel(targetSession.model),
+    thinkingLevel: targetSession.thinkingLevel,
+    stats: sessionStats(targetSession),
   };
 }
 
-function currentStateWithThinkingLevels() {
+function currentStateWithThinkingLevels(targetSession: PiWebSession = session) {
   return {
-    ...currentState(),
-    thinkingLevels: session.getAvailableThinkingLevels(),
+    ...currentState(targetSession),
+    thinkingLevels: targetSession.getAvailableThinkingLevels(),
   };
 }
 
@@ -880,23 +900,23 @@ function formatSlashCommandList(commands: WebSlashCommandInfo[]) {
   return lines.join("\n");
 }
 
-function slashHelp() {
+function slashHelp(targetSession: PiWebSession = session) {
   return [
     "Type / in the composer to browse available commands.",
     "",
     "Web commands run in pi-web; extension, prompt, and skill commands are discovered from pi's extension/resource system.",
     "",
-    formatSlashCommandList(getSlashCommands()),
+    formatSlashCommandList(getSlashCommands(targetSession)),
   ].join("\n");
 }
 
-function formatModelList() {
-  return getAvailableModels()
+function formatModelList(targetSession: PiWebSession = session) {
+  return getAvailableModels(targetSession)
     .map((model: any) => `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` (${model.name})` : ""}`)
     .join("\n");
 }
 
-async function executeSlashCommand(input: string) {
+async function executeSlashCommand(input: string, targetSession: PiWebSession = session) {
   const trimmed = input.trim();
   const [rawName = "", ...rest] = trimmed.replace(/^\/+/, "").split(/\s+/);
   const name = rawName.toLowerCase();
@@ -905,88 +925,105 @@ async function executeSlashCommand(input: string) {
   switch (name) {
     case "help":
     case "?":
-      return { message: slashHelp(), state: currentStateWithThinkingLevels() };
+      return { message: slashHelp(targetSession), state: currentStateWithThinkingLevels(targetSession) };
 
     case "commands":
-      return { message: formatSlashCommandList(getSlashCommands()), state: currentStateWithThinkingLevels() };
+      return { message: formatSlashCommandList(getSlashCommands(targetSession)), state: currentStateWithThinkingLevels(targetSession) };
 
     case "reload": {
-      if (session.isStreaming) throw new Error("Wait for the current response to finish before reloading.");
-      if (session.isCompacting) throw new Error("Wait for compaction to finish before reloading.");
-      if (typeof session.reload !== "function") throw new Error("Reload is not available in this session.");
-      await session.reload();
-      return { message: "Reloaded pi resources, extensions, and models.", state: currentStateWithThinkingLevels() };
+      if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before reloading.");
+      if (targetSession.isCompacting) throw new Error("Wait for compaction to finish before reloading.");
+      if (typeof targetSession.reload !== "function") throw new Error("Reload is not available in this session.");
+      await targetSession.reload();
+      return { message: "Reloaded pi resources, extensions, and models.", state: currentStateWithThinkingLevels(targetSession) };
     }
 
     case "model": {
       if (!args) {
-        return { message: formatModelList() || "No models available.", state: currentStateWithThinkingLevels() };
+        return { message: formatModelList(targetSession) || "No models available.", state: currentStateWithThinkingLevels(targetSession) };
       }
       const slashIndex = args.indexOf("/");
       if (slashIndex <= 0) throw new Error("Usage: /model <provider/model-id>");
       const provider = args.slice(0, slashIndex);
       const id = args.slice(slashIndex + 1);
-      const model = session.modelRegistry.find(provider, id);
+      const model = targetSession.modelRegistry.find(provider, id);
       if (!model) throw new Error(`Model not found: ${args}`);
-      await session.setModel(model);
-      return { message: `Model set to ${provider}/${id}.`, state: currentStateWithThinkingLevels() };
+      await targetSession.setModel(model);
+      return { message: `Model set to ${provider}/${id}.`, state: currentStateWithThinkingLevels(targetSession) };
     }
 
     case "models":
-      return { message: formatModelList() || "No models available.", state: currentStateWithThinkingLevels() };
+      return { message: formatModelList(targetSession) || "No models available.", state: currentStateWithThinkingLevels(targetSession) };
 
     case "thinking": {
       if (!args) {
-        return { message: `Thinking level: ${session.thinkingLevel}\nAvailable: ${session.getAvailableThinkingLevels().join(", ")}`, state: currentStateWithThinkingLevels() };
+        return { message: `Thinking level: ${targetSession.thinkingLevel}\nAvailable: ${targetSession.getAvailableThinkingLevels().join(", ")}`, state: currentStateWithThinkingLevels(targetSession) };
       }
-      const levels = session.getAvailableThinkingLevels();
+      const levels = targetSession.getAvailableThinkingLevels();
       if (!levels.includes(args as any)) throw new Error(`Unknown thinking level: ${args}. Available: ${levels.join(", ")}`);
-      session.setThinkingLevel(args as any);
-      return { message: `Thinking level set to ${session.thinkingLevel}.`, state: currentStateWithThinkingLevels() };
+      targetSession.setThinkingLevel(args as any);
+      return { message: `Thinking level set to ${targetSession.thinkingLevel}.`, state: currentStateWithThinkingLevels(targetSession) };
     }
 
     case "new": {
-      session = await createNewLiveSession();
-      return { message: "New session.", state: currentStateWithThinkingLevels() };
+      const newSession = await createNewLiveSession(sessionCwd(targetSession), targetSession.sessionFile);
+      return { message: "New session.", state: currentStateWithThinkingLevels(newSession) };
     }
 
     case "clear": {
-      if (session.isStreaming) throw new Error("Wait for the current response to finish before clearing.");
-      if (session.isCompacting) throw new Error("Wait for compaction to finish before clearing.");
-      const oldSessionId = session.sessionId;
-      session = await createNewLiveSession();
-      const state = currentStateWithThinkingLevels();
-      const sessionUiState = await transferCurrentTabUiState(oldSessionId, session.sessionId, state.sessionTitle || "New session", state.cwd);
+      if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before clearing.");
+      if (targetSession.isCompacting) throw new Error("Wait for compaction to finish before clearing.");
+      const oldSessionId = targetSession.sessionId;
+      const newSession = await createNewLiveSession(sessionCwd(targetSession), targetSession.sessionFile);
+      const state = currentStateWithThinkingLevels(newSession);
+      const sessionUiState = await transferCurrentTabUiState(oldSessionId, newSession.sessionId, state.sessionTitle || "New session", state.cwd);
       return { message: "Cleared tab. Previous session remains in history.", state: { ...state, sessionUiState } };
     }
 
     case "compact": {
-      if (session.isStreaming) throw new Error("Wait for the current response to finish before compacting.");
-      if (session.isCompacting) throw new Error("Compaction is already running.");
-      if (typeof session.compact !== "function") throw new Error("Compaction is not available in this session.");
-      void session.compact(args || undefined).catch((error: unknown) => broadcast({
+      if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before compacting.");
+      if (targetSession.isCompacting) throw new Error("Compaction is already running.");
+      if (typeof targetSession.compact !== "function") throw new Error("Compaction is not available in this session.");
+      void targetSession.compact(args || undefined).catch((error: unknown) => broadcast({
         type: "server_error",
-        sessionId: session.sessionId,
-        sessionFile: session.sessionFile,
+        sessionId: targetSession.sessionId,
+        sessionFile: targetSession.sessionFile,
         error: error instanceof Error ? error.message : String(error),
       }));
-      return { message: "Compaction started.", state: currentStateWithThinkingLevels() };
+      return { message: "Compaction started.", state: currentStateWithThinkingLevels(targetSession) };
     }
 
     case "abort":
     case "stop":
-      await session.abort();
-      return { message: "Aborted.", state: currentStateWithThinkingLevels() };
+      await targetSession.abort();
+      return { message: "Aborted.", state: currentStateWithThinkingLevels(targetSession) };
 
     default:
       throw new Error(`Unknown slash command: /${name}. Try /help.`);
   }
 }
 
-async function findSessionInfoById(id: string, cwd = piCwd) {
+async function findSessionInfoById(id: string, cwd?: string) {
   if (!id) return undefined;
-  const sessions = noSession ? [] : mockMode ? mockSessions : await SessionManager.list(cwd);
-  return sessions.find((info) => info.id === id);
+  if (noSession) return undefined;
+  if (mockMode) return mockSessions.find((info) => info.id === id);
+
+  if (cwd && cwd.trim()) {
+    const resolvedCwd = resolve(cwd);
+    const sessionInfo = (await SessionManager.list(resolvedCwd)).find((info) => info.id === id);
+    if (sessionInfo?.cwd) knownCwds.add(sessionInfo.cwd);
+    if (sessionInfo) return sessionInfo;
+  }
+
+  for (const knownCwd of knownCwds) {
+    const sessionInfo = (await SessionManager.list(knownCwd)).find((info) => info.id === id);
+    if (sessionInfo?.cwd) knownCwds.add(sessionInfo.cwd);
+    if (sessionInfo) return sessionInfo;
+  }
+
+  const sessionInfo = (await SessionManager.listAll()).find((info) => info.id === id);
+  if (sessionInfo?.cwd) knownCwds.add(sessionInfo.cwd);
+  return sessionInfo;
 }
 
 async function trashOrRemoveSessionFile(path: string) {
@@ -1000,13 +1037,8 @@ async function trashOrRemoveSessionFile(path: string) {
   }
 }
 
-async function deleteSessionById(id: string, cwd = piCwd) {
+async function deleteSessionById(id: string, cwd?: string) {
   if (noSession) throw new Error("Sessions are disabled.");
-  if (id === session.sessionId) {
-    const error = new Error("Switch to another session before deleting the current session.");
-    (error as any).status = 409;
-    throw error;
-  }
 
   const info = await findSessionInfoById(id, cwd);
   if (!info) {
@@ -1034,19 +1066,19 @@ async function deleteSessionById(id: string, cwd = piCwd) {
   return { id, disposition: await trashOrRemoveSessionFile(info.path) };
 }
 
-async function getOrCreateLiveSessionById(id: string) {
+async function getOrCreateLiveSessionById(id: string, cwd?: string) {
   if (id === session.sessionId) return session;
   for (const entry of liveSessions.values()) {
     if (entry.session.sessionId === id) return entry.session;
   }
-  const info = await findSessionInfoById(id);
+  const info = await findSessionInfoById(id, cwd);
   return info ? getOrCreateLiveSession(info.path) : undefined;
 }
 
-async function switchToSessionId(id: string) {
-  const target = await getOrCreateLiveSessionById(id);
+async function switchToSessionId(id: string, cwd?: string) {
+  const target = await getOrCreateLiveSessionById(id, cwd);
   if (!target) throw new Error("Session not found");
-  session = target;
+  return target;
 }
 
 const authStorage = AuthStorage.create();
@@ -1241,8 +1273,8 @@ async function bindWebExtensions(value: any) {
     commandContextActions: {
       waitForIdle: () => value.agent.waitForIdle(),
       newSession: async () => {
-        session = await createNewLiveSession();
-        const state = currentStateWithThinkingLevels();
+        const newSession = await createNewLiveSession(sessionCwd(value), value.sessionFile);
+        const state = currentStateWithThinkingLevels(newSession);
         broadcast({ type: "state_changed", ...state });
         return { cancelled: false };
       },
@@ -1301,7 +1333,7 @@ function registerLiveSession(value: any) {
 
     // Broadcast state update when session name changes
     if (e?.type === "session_info_changed") {
-      broadcast({ type: "state_changed", ...currentState() });
+      broadcast({ type: "state_changed", ...currentState(value) });
     }
 
     if (e?.type === "message_end" || e?.type === "agent_end" || e?.type === "compaction_end") {
@@ -1315,7 +1347,7 @@ function registerLiveSession(value: any) {
       if (modelId && (err.includes("model_not_supported") || err.includes("model_not_available"))) {
         if (!blockedModelIds.has(modelId)) {
           blockedModelIds.add(modelId);
-          broadcast({ type: "models_updated", models: getAvailableModels().map(simplifyModel) });
+          broadcast({ type: "models_updated", sessionId: eventSessionId, models: getAvailableModels(value).map(simplifyModel) });
         }
       }
     }
@@ -1324,23 +1356,31 @@ function registerLiveSession(value: any) {
   return value;
 }
 
-function bundledExtensionPaths() {
-  return resolveBundledExtensionPaths({ piCwd, appDir, bundledExtensionsDir });
+function bundledExtensionPaths(cwd = piCwd) {
+  return resolveBundledExtensionPaths({ piCwd: cwd, appDir, bundledExtensionsDir });
 }
 
-async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent) {
+async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent, cwd = piCwd) {
   if (mockMode) return { session: createMockSession(path), modelFallbackMessage: undefined };
 
-  const sessionManager = noSession ? SessionManager.inMemory() : SessionManager.create(piCwd);
-  if (path && !noSession) sessionManager.setSessionFile(path);
+  const targetCwd = await assertDirectory(cwd);
+  const sessionManager = noSession
+    ? SessionManager.inMemory(targetCwd)
+    : path
+      ? SessionManager.open(path)
+      : SessionManager.create(targetCwd);
   if (!path && !noSession && sessionStartEvent?.reason === "new") sessionManager.newSession();
+
+  const resolvedCwd = sessionCwd({ sessionManager });
+  knownCwds.add(resolvedCwd);
+  await ensurePiWebStorage(resolvedCwd);
 
   const webUiContext = existsSync(webUiContextFile) ? readFileSync(webUiContextFile, "utf-8") : "";
 
   const loader = new DefaultResourceLoader({
-    cwd: piCwd,
+    cwd: resolvedCwd,
     agentDir: getAgentDir(),
-    additionalExtensionPaths: bundledExtensionPaths(),
+    additionalExtensionPaths: bundledExtensionPaths(resolvedCwd),
     appendSystemPromptOverride: (base) => [
       ...base,
       webUiContext,
@@ -1349,7 +1389,7 @@ async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartE
   await loader.reload();
 
   const result = await createAgentSession({
-    cwd: piCwd,
+    cwd: resolvedCwd,
     sessionManager,
     authStorage,
     modelRegistry,
@@ -1394,10 +1434,11 @@ async function applyDefaultSessionBucket(sessionId: string) {
   return sessionUiState;
 }
 
-async function createNewLiveSession(cwd?: string) {
-  if (cwd) await setPiCwd(cwd);
-  const previousSessionFile = session?.sessionFile;
-  const created = await makeAgentSession(undefined, { type: "session_start", reason: "new", previousSessionFile });
+async function createNewLiveSession(cwd?: string, previousSessionFile?: string) {
+  const targetCwd = cwd ? await assertDirectory(cwd) : piCwd;
+  knownCwds.add(targetCwd);
+  await ensurePiWebStorage(targetCwd);
+  const created = await makeAgentSession(undefined, { type: "session_start", reason: "new", previousSessionFile }, targetCwd);
   if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
   const value = created.session;
   if (mockMode) {
@@ -1432,12 +1473,12 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
   return next;
 }
 
-async function switchEmptySessionCwd(cwd: string) {
-  if (session.isStreaming) throw new Error("Wait for the current response to finish before changing the working directory.");
-  if (session.isCompacting) throw new Error("Wait for compaction to finish before changing the working directory.");
-  if (hasUserMessages(session)) throw new Error("Working directory can only be changed before the first message.");
-  session = await createNewLiveSession(cwd);
-  return currentStateWithThinkingLevels();
+async function switchEmptySessionCwd(targetSession: PiWebSession, cwd: string) {
+  if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before changing the working directory.");
+  if (targetSession.isCompacting) throw new Error("Wait for compaction to finish before changing the working directory.");
+  if (hasUserMessages(targetSession)) throw new Error("Working directory can only be changed before the first message.");
+  const newSession = await createNewLiveSession(cwd, targetSession.sessionFile);
+  return currentStateWithThinkingLevels(newSession);
 }
 
 await ensurePiWebStorage();
@@ -1493,12 +1534,13 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/git/repos") {
-        return sendJson(res, 200, await listGitRepos());
+        return sendJson(res, 200, await listGitRepos(await requestCwdFromSessionId(url.searchParams.get("sessionId"))));
       }
 
       if (method === "GET" && url.pathname === "/api/git/status") {
         try {
-          return sendJson(res, 200, await gitStatus(await gitCwdFromRepoParam(url.searchParams.get("repo")), url.searchParams.get("fetch") === "1"));
+          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          return sendJson(res, 200, await gitStatus(await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd), url.searchParams.get("fetch") === "1"));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -1506,7 +1548,8 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/git/log") {
         try {
-          return sendJson(res, 200, await gitLog(await gitCwdFromRepoParam(url.searchParams.get("repo"))));
+          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          return sendJson(res, 200, await gitLog(await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd)));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -1514,7 +1557,8 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/git/commit") {
         try {
-          return sendJson(res, 200, await gitCommitDetails(url.searchParams.get("hash") || "", await gitCwdFromRepoParam(url.searchParams.get("repo"))));
+          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          return sendJson(res, 200, await gitCommitDetails(url.searchParams.get("hash") || "", await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd)));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -1522,7 +1566,8 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/git/diff") {
         try {
-          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"));
+          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
           const filePath = safeGitPath(url.searchParams.get("path") || "");
           const staged = url.searchParams.get("staged") === "1";
@@ -1541,7 +1586,8 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/git/image") {
         try {
-          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"));
+          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
           await sendGitImage(res, {
             cwd,
@@ -1558,7 +1604,8 @@ const server = createServer(async (req, res) => {
 
       if (method === "POST" && url.pathname === "/api/git/sync") {
         try {
-          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"));
+          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
           const status = await gitStatus(cwd) as any;
           const branch = status.branch;
@@ -1572,9 +1619,12 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/state") {
+        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         return sendJson(res, 200, {
           ok: true,
-          ...currentStateWithThinkingLevels(),
+          ...currentStateWithThinkingLevels(targetSession),
           sessionUiState: await sessionUiStateStore.read(),
           tokenRequired: Boolean(token),
         });
@@ -1603,7 +1653,6 @@ const server = createServer(async (req, res) => {
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
         const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
         if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (targetSession !== session) return sendJson(res, 400, { ok: false, error: "Open the session before navigating its tree" });
         if (targetSession.isStreaming) return sendJson(res, 409, { ok: false, error: "Wait for the current response to finish before navigating the tree" });
         if (targetSession.isCompacting) return sendJson(res, 409, { ok: false, error: "Wait for the current compaction to finish before navigating the tree" });
         if (typeof targetSession.navigateTree !== "function") return sendJson(res, 400, { ok: false, error: "Tree navigation is not available" });
@@ -1620,7 +1669,7 @@ const server = createServer(async (req, res) => {
           });
           broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
           const result = await navigation;
-          const state = currentStateWithThinkingLevels();
+          const state = currentStateWithThinkingLevels(targetSession);
           broadcast({ type: "state_changed", ...state });
           return sendJson(res, 200, { ok: true, ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state });
         } catch (error) {
@@ -1675,11 +1724,13 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && url.pathname === "/api/sessions/delete") {
-        const body = await readBody(req) as { sessionId?: unknown; id?: unknown; cwd?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; id?: unknown; cwd?: unknown; activeSessionId?: unknown };
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
+        const activeSessionId = typeof body.activeSessionId === "string" ? body.activeSessionId : "";
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
+        if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before deleting the current session." });
         try {
-          const result = await deleteSessionById(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : piCwd);
+          const result = await deleteSessionById(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
           const sessionUiState = await sessionUiStateStore.removeSession(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
           broadcast({ type: "session_ui_state_changed", sessionUiState });
@@ -1708,46 +1759,48 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/models") {
+        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         return sendJson(res, 200, {
           ok: true,
-          cwd: piCwd,
-          current: simplifyModel(session.model),
-          thinkingLevel: session.thinkingLevel,
-          thinkingLevels: session.getAvailableThinkingLevels(),
-          models: getAvailableModels().map(simplifyModel),
+          cwd: sessionCwd(targetSession),
+          current: simplifyModel(targetSession.model),
+          thinkingLevel: targetSession.thinkingLevel,
+          thinkingLevels: targetSession.getAvailableThinkingLevels(),
+          models: getAvailableModels(targetSession).map(simplifyModel),
         });
       }
 
       if (method === "POST" && url.pathname === "/api/model") {
-        const body = await readBody(req) as { provider?: unknown; id?: unknown; thinkingLevel?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; provider?: unknown; id?: unknown; thinkingLevel?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const provider = String(body.provider || "").trim();
         const id = String(body.id || "").trim();
         if (!provider || !id) return sendJson(res, 400, { ok: false, error: "provider and id are required" });
 
-        const model = session.modelRegistry.find(provider, id);
+        const model = targetSession.modelRegistry.find(provider, id);
         if (!model) return sendJson(res, 404, { ok: false, error: "Model not found" });
 
-        await session.setModel(model);
-        if (typeof body.thinkingLevel === "string") session.setThinkingLevel(body.thinkingLevel as any);
+        await targetSession.setModel(model);
+        if (typeof body.thinkingLevel === "string") targetSession.setThinkingLevel(body.thinkingLevel as any);
 
-        const state = {
-          cwd: piCwd,
-          sessionFile: session.sessionFile,
-          sessionId: session.sessionId,
-          model: simplifyModel(session.model),
-          thinkingLevel: session.thinkingLevel,
-          thinkingLevels: session.getAvailableThinkingLevels(),
-        };
+        const state = currentStateWithThinkingLevels(targetSession);
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
 
       if (method === "POST" && url.pathname === "/api/command") {
-        const body = await readBody(req) as { command?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; command?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const command = String(body.command || "").trim();
         if (!command.startsWith("/")) return sendJson(res, 400, { ok: false, error: "Slash command is required" });
 
-        const result = await executeSlashCommand(command);
+        const result = await executeSlashCommand(command, targetSession);
         return sendJson(res, 200, { ok: true, ...result });
       }
 
@@ -1776,12 +1829,12 @@ const server = createServer(async (req, res) => {
           : [];
         if (!message && images.length === 0) return sendJson(res, 400, { ok: false, error: "message or image is required" });
 
-        const imageFileNote = await persistPromptImages(images);
-        const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
         const mode = body.mode === "followUp" ? "followUp" : "steer";
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
         const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
         if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const imageFileNote = await persistPromptImages(images, sessionCwd(targetSession));
+        const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
         void targetSession.prompt(promptText, {
           ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
           ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
@@ -1829,24 +1882,29 @@ const server = createServer(async (req, res) => {
 
         const name = String(body.name || "").trim();
         targetSession.setSessionName(name);
-        const state = targetSession === session ? currentStateWithThinkingLevels() : { sessionId: targetSession.sessionId, sessionName: sessionDisplayName(targetSession) };
+        const state = currentStateWithThinkingLevels(targetSession);
         return sendJson(res, 200, { ok: true, ...state });
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
-        const body = await readBody(req) as { cwd?: unknown };
-        session = await createNewLiveSession(typeof body.cwd === "string" ? body.cwd : undefined);
-        const state = currentStateWithThinkingLevels();
+        const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown };
+        const previousSession = typeof body.sessionId === "string" ? await getOrCreateLiveSessionById(body.sessionId) : session;
+        const targetCwd = typeof body.cwd === "string" ? body.cwd : previousSession ? sessionCwd(previousSession) : undefined;
+        const newSession = await createNewLiveSession(targetCwd, previousSession?.sessionFile);
+        const state = currentStateWithThinkingLevels(newSession);
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
 
       if (method === "POST" && url.pathname === "/api/session/cwd") {
-        const body = await readBody(req) as { cwd?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; cwd?: unknown };
         const cwd = String(body.cwd || "").trim();
         if (!cwd) return sendJson(res, 400, { ok: false, error: "cwd is required" });
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         try {
-          const state = await switchEmptySessionCwd(cwd);
+          const state = await switchEmptySessionCwd(targetSession, cwd);
           broadcast({ type: "state_changed", ...state });
           return sendJson(res, 200, { ok: true, ...state });
         } catch (error) {
@@ -1857,17 +1915,15 @@ const server = createServer(async (req, res) => {
       if (method === "POST" && url.pathname === "/api/sessions/open") {
         const body = await readBody(req) as { id?: unknown; sessionId?: unknown; cwd?: unknown; clientId?: unknown };
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
-        const sourceClientId = typeof body.clientId === "string" ? body.clientId : undefined;
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
 
+        let targetSession: PiWebSession | undefined;
         try {
-          if (typeof body.cwd === "string" && body.cwd.trim()) await setPiCwd(body.cwd);
-          await switchToSessionId(requestedId);
+          targetSession = await switchToSessionId(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
         } catch {
           return sendJson(res, 404, { ok: false, error: "Session not found" });
         }
-        const state = currentStateWithThinkingLevels();
-        broadcast({ type: "state_changed", sourceClientId, ...state });
+        const state = currentStateWithThinkingLevels(targetSession);
         return sendJson(res, 200, { ok: true, ...state });
       }
 
@@ -1901,7 +1957,7 @@ server.on("upgrade", (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
 });
 
-wss.on("connection", (ws, req) => {
+wss.on("connection", async (ws, req) => {
   clients.add(ws);
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
@@ -1918,15 +1974,13 @@ wss.on("connection", (ws, req) => {
     }
   }
 
+  const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+  const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+  const helloState = targetSession ? currentState(targetSession) : currentState();
   ws.send(JSON.stringify({
     type: "hello",
     seq: latestSeq,
-    cwd: piCwd,
-    sessionFile: session.sessionFile,
-    sessionId: session.sessionId,
-    model: simplifyModel(session.model),
-    thinkingLevel: session.thinkingLevel,
-    isStreaming: session.isStreaming,
+    ...helloState,
   }));
   ws.on("close", () => clients.delete(ws));
 });
