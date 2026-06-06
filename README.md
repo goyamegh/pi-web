@@ -15,17 +15,17 @@ pi-web is designed to feel like the core pi agent in a browser: small, direct, s
 - Code-review friendly: inspect tool output, edits, Git status, commits, and diffs
 - Session-oriented: manage ongoing work with tabs, drawers, pins, buckets, filters, and conversation navigation
 
-## What changed in 0.2.0?
+## What changed in 0.3.0?
 
-0.2.0 focuses on making pi-web feel like a persistent working environment rather than a single chat page:
+0.3.0 focuses on continuity and richer session review:
 
-- Session drawer improvements: pinning workflow, color/bucket filters, current-session bucket menu, and deletion
-- Better continuity: composer state persists across refreshes, open tabs recover after updates, and startup reloads are more robust
-- Faster navigation: improved tab switching, scoped keyboard shortcuts, `/clear-tab`, and fixed jump-to-latest behavior
-- Cleaner message review: compact collapsed thinking cards and improved thinking/stop-reason rendering
-- More reliable development and releases: PR workflow, release workflow hardening, and package release fixes
+- Active sessions are reflected in the URL, so refreshes, browser history, and copied links preserve the selected workspace
+- Session buckets now have default colors, and inactive running tabs are dimmed for easier scanning
+- Drawer filtering and flat edit diffs are more reliable
+- Markdown messages can render Mermaid diagrams inline
+- README showcase content and screenshots were refreshed for the current UI
 
-See the [0.2.0 release notes](docs/releases/0.2.0.md) for the fuller changelog.
+See the [0.3.0 release notes](docs/releases/0.3.0.md) for the fuller changelog.
 
 ## Install
 
