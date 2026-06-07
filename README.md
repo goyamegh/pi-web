@@ -4,7 +4,9 @@ A minimal, mobile-first local/Tailscale web UI for [`@mariozechner/pi-coding-age
 
 pi-web is designed to feel like the core pi agent in a browser: small, direct, self-aware about its environment, and focused on helping you work with code rather than becoming a heavyweight IDE. It runs locally, works comfortably from a phone over Tailscale, and gives pi the web-specific context it needs to render artifacts, images, sessions, diffs, and tool output clearly.
 
-![pi-web showcase](tests/e2e/visual.spec.ts-snapshots/hero-showcase-desktop.png)
+| Desktop | Mobile |
+| --- | --- |
+| ![pi-web desktop showcase](tests/e2e/visual.spec.ts-snapshots/hero-showcase-desktop.png) | ![pi-web mobile showcase](tests/e2e/visual.spec.ts-snapshots/hero-showcase-mobile.png) |
 
 ## Why pi-web?
 
@@ -103,41 +105,37 @@ The Git button in the header opens a responsive Git panel for repo status, commi
 
 ## Screenshots
 
-The README references the same deterministic Playwright visual snapshots used by `tests/e2e/visual.spec.ts`. When visual snapshots are intentionally updated, these images update with them.
+The README references the same deterministic Playwright visual snapshots used by `tests/e2e/visual.spec.ts`. Desktop and mobile captures are shown side by side, and when visual snapshots are intentionally updated, these images update with them.
 
 ### Diff review
 
-<picture>
-  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/diff-review-mobile.png">
-  <img alt="pi-web diff review" src="tests/e2e/visual.spec.ts-snapshots/diff-review-desktop.png">
-</picture>
+| Desktop | Mobile |
+| --- | --- |
+| ![pi-web diff review desktop](tests/e2e/visual.spec.ts-snapshots/diff-review-desktop.png) | ![pi-web diff review mobile](tests/e2e/visual.spec.ts-snapshots/diff-review-mobile.png) |
 
 ### Session workspace
 
 Tabs, pinned sessions, bucket colors, running indicators, and the session drawer are designed to stay usable on mobile while expanding naturally on desktop.
 
-<picture>
-  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png">
-  <img alt="pi-web session workspace" src="tests/e2e/visual.spec.ts-snapshots/sessions-drawer-desktop.png">
-</picture>
+| Desktop | Mobile |
+| --- | --- |
+| ![pi-web session workspace desktop](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-desktop.png) | ![pi-web session workspace mobile](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png) |
 
 ### Git panel
 
 Desktop uses a split master/detail layout; mobile switches between status, graph, diff, and commit detail views.
 
-<picture>
-  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/git-diff-viewer-mobile.png">
-  <img alt="pi-web Git commit diff viewer" src="tests/e2e/visual.spec.ts-snapshots/git-diff-viewer-desktop.png">
-</picture>
+| Desktop | Mobile |
+| --- | --- |
+| ![pi-web Git commit diff viewer desktop](tests/e2e/visual.spec.ts-snapshots/git-diff-viewer-desktop.png) | ![pi-web Git commit diff viewer mobile](tests/e2e/visual.spec.ts-snapshots/git-diff-viewer-mobile.png) |
 
 ### Conversation tree
 
 Navigate in-file pi session branches with a compact tree drawer. The default view keeps tool noise hidden, while the full session structure remains available from the filter.
 
-<picture>
-  <source media="(max-width: 700px)" srcset="tests/e2e/visual.spec.ts-snapshots/conversation-tree-mobile.png">
-  <img alt="pi-web conversation tree" src="tests/e2e/visual.spec.ts-snapshots/conversation-tree-desktop.png">
-</picture>
+| Desktop | Mobile |
+| --- | --- |
+| ![pi-web conversation tree desktop](tests/e2e/visual.spec.ts-snapshots/conversation-tree-desktop.png) | ![pi-web conversation tree mobile](tests/e2e/visual.spec.ts-snapshots/conversation-tree-mobile.png) |
 
 ## Production build
 
