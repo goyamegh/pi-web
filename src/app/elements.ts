@@ -129,6 +129,14 @@ export function getAppElements(): AppElements {
 export function syncAppHeight() {
   const height = window.visualViewport?.height || window.innerHeight;
   document.documentElement.style.setProperty("--app-height", `${height}px`);
+  // iOS Safari can scroll the document body when focusing an input near the
+  // bottom of the viewport (keyboard appearance). With our fixed-height,
+  // overflow:hidden layout that just leaves part of the UI — e.g. the
+  // composer footer or send button — visually clipped at the edges of the
+  // visual viewport. Snap any stray scroll back to the top.
+  if (window.scrollY !== 0 || window.scrollX !== 0) {
+    window.scrollTo(0, 0);
+  }
 }
 
 export function initAppHeightSync() {

@@ -14,12 +14,19 @@
   --app-height: 100vh;
 }
 
+@supports (height: 100dvh) {
+  :root { --app-height: 100dvh; }
+}
+
 * { box-sizing: border-box; }
 html, body {
   width: 100%;
   max-width: 100%;
   height: var(--app-height);
   overflow: hidden;
+  /* iOS Safari sometimes scrolls the html element when an input is focused
+     even with body { overflow: hidden }. Lock scroll position explicitly. */
+  overscroll-behavior: none;
 }
 body {
   margin: 0;
