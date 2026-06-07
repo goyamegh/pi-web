@@ -233,6 +233,32 @@ export function createComposer(options: {
     return slashCommands.find((command) => command.name.toLowerCase() === name);
   }
 
+  async function attachImageFiles(files: File[]) {
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    if (files.length > 0 && imageFiles.length === 0) {
+      addMessage("system", "Only image attachments are supported.", "error");
+      return;
+    }
+    if (imageFiles.length !== files.length) addMessage("system", "Some dropped files were skipped because only image attachments are supported.");
+    try {
+      const images = await Promise.all(imageFiles.map(fileToImageAttachment));
+      state.attachedImages.push(...images);
+      renderAttachments();
+      updatePrimaryAction();
+      hideSlashCommands();
+    } catch (error) {
+      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  function hasDraggedFiles(event: DragEvent) {
+    return Array.from(event.dataTransfer?.types || []).some((type) => type.toLowerCase() === "files");
+  }
+
+  function setDragOver(active: boolean) {
+    elements.formEl.classList.toggle("dragOver", active);
+  }
+
   function renderAttachments() {
     elements.attachmentsEl.textContent = "";
     elements.attachmentsEl.hidden = state.attachedImages.length === 0;
@@ -402,17 +428,36 @@ export function createComposer(options: {
 
     elements.attachButton.addEventListener("click", () => elements.imageInput.click());
 
-    elements.imageInput.addEventListener("change", async () => {
-      const files = Array.from(elements.imageInput.files || []).filter((file) => file.type.startsWith("image/"));
+    elements.imageInput.addEventListener("change", () => {
+      const files = Array.from(elements.imageInput.files || []);
       elements.imageInput.value = "";
-      try {
-        const images = await Promise.all(files.map(fileToImageAttachment));
-        state.attachedImages.push(...images);
-        renderAttachments();
-        updatePrimaryAction();
-      } catch (error) {
-        addMessage("system", error instanceof Error ? error.message : String(error), "error");
-      }
+      void attachImageFiles(files);
+    });
+
+    let dragDepth = 0;
+    elements.formEl.addEventListener("dragenter", (event) => {
+      if (!hasDraggedFiles(event)) return;
+      event.preventDefault();
+      dragDepth += 1;
+      setDragOver(true);
+    });
+    elements.formEl.addEventListener("dragover", (event) => {
+      if (!hasDraggedFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+      setDragOver(true);
+    });
+    elements.formEl.addEventListener("dragleave", (event) => {
+      if (!hasDraggedFiles(event)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) setDragOver(false);
+    });
+    elements.formEl.addEventListener("drop", (event) => {
+      if (!hasDraggedFiles(event)) return;
+      event.preventDefault();
+      dragDepth = 0;
+      setDragOver(false);
+      void attachImageFiles(Array.from(event.dataTransfer?.files || []));
     });
 
     elements.stopButton.addEventListener("click", () => {

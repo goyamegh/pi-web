@@ -650,6 +650,21 @@ test.describe("attachments and prompt", () => {
     expect(attachmentBg).toBe(composerBg);
   });
 
+  test("supports dragging and dropping image attachments", async ({ page }) => {
+    const dataTransfer = await page.evaluateHandle((bytes) => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([new Uint8Array(bytes)], "dropped.png", { type: "image/png" }));
+      return transfer;
+    }, Array.from(VALID_PNG));
+
+    await page.locator("#promptForm").dispatchEvent("dragenter", { dataTransfer });
+    await expect(page.locator("#promptForm")).toHaveClass(/dragOver/);
+    await page.locator("#promptForm").dispatchEvent("drop", { dataTransfer });
+
+    await expect(page.locator(".attachmentChip")).toContainText("dropped.png");
+    await expect(page.locator("#primaryButton")).toBeEnabled();
+  });
+
   test("supports image-only prompt and attachment removal", async ({ page }) => {
     const file = {
       name: "tiny.png",
