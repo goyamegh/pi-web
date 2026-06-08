@@ -107,7 +107,7 @@ The Git button in the header opens a responsive Git panel for repo status, commi
 
 pi-web supports browser-specific extensions in `.pi/web/extensions` and `~/.pi/web/extensions`. These use pi's extension runtime with a typed pi-web UI API, including `ctx.ui.web.setFooter(...)` for rendering text or trusted HTML between the composer and pinned session tabs.
 
-See [pi-web extensions](docs/pi-web-extensions.md) for locations, types, and examples.
+See [pi-web extensions](docs/pi-web-extensions.md) for locations, types, and examples, including the live git footer in [`examples/pi-web-extensions/git-footer.ts`](examples/pi-web-extensions/git-footer.ts).
 
 ## Screenshots
 

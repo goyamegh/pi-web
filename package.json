@@ -23,6 +23,7 @@
     "contexts/",
     "dist/",
     "docs/",
+    "examples/",
     "server/",
     "server.ts",
     "supervisor.ts",

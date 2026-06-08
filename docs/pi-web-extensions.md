@@ -99,47 +99,22 @@ ctx.ui.web.setFooter("git", {
 
 HTML is rendered as trusted extension-provided markup. pi-web extensions run with the same local trust model as regular pi extensions, so only install extensions from sources you trust.
 
-## Example: local git branch footer
+## Example: live git footer
 
-Create `.pi/web/extensions/git-footer.ts`:
+The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch and live dirty/clean state, refreshes periodically, and also refreshes around turns, bash commands, and compaction events.
 
-```ts
-import { execFileSync } from "node:child_process";
-import type { PiWebExtensionAPI } from "@ashwin-pc/pi-web/extensions";
+Install it for one project:
 
-function git(args: string[], cwd: string) {
-  try {
-    return execFileSync("git", ["--no-optional-locks", ...args], {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return "";
-  }
-}
-
-function escapeHtml(value: string) {
-  return value.replace(/[&<>\"]/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-  }[char]!));
-}
-
-export default function (pi: PiWebExtensionAPI) {
-  pi.on("session_start", (_event, ctx) => {
-    const branch = git(["branch", "--show-current"], ctx.cwd)
-      || git(["rev-parse", "--short", "HEAD"], ctx.cwd)
-      || "no git";
-
-    ctx.ui.web.setFooter("git", {
-      kind: "html",
-      html: `<span>🌿 <strong>${escapeHtml(branch)}</strong></span>`,
-    });
-  });
-}
+```sh
+mkdir -p .pi/web/extensions
+cp examples/pi-web-extensions/git-footer.ts .pi/web/extensions/git-footer.ts
 ```
 
-Reload pi-web resources with `/reload`, or restart pi-web if you are testing server-side loader changes.
+Or install it for all pi-web projects:
+
+```sh
+mkdir -p ~/.pi/web/extensions
+cp examples/pi-web-extensions/git-footer.ts ~/.pi/web/extensions/git-footer.ts
+```
+
+Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
