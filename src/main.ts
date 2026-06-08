@@ -10,6 +10,7 @@ import { initKeyboardShortcuts } from "./app/shortcuts.js";
 import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
+import { renderWebFooters } from "./extensions/webFooter.js";
 import { initGitPanel } from "./git/panel.js";
 import { createMarkdownRenderer } from "./markdown/render.js";
 import { createMessageList } from "./messages/messageList.js";
@@ -50,6 +51,7 @@ function updateMeta(data: any) {
   state.currentSessionId = data.sessionId || state.currentSessionId;
   state.currentCwd = data.cwd || state.currentCwd;
   if ("stats" in data) contextMeter.update(data.stats);
+  if ("webFooters" in data) renderWebFooters(elements.extensionFooterEl, data.webFooters);
   if ("sessionTitle" in data) statusBar.setStatusTitle(data.sessionTitle?.trim() || "New session");
   else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;

@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 type BundledExtensionPathOptions = {
@@ -106,6 +107,13 @@ export function discoverExtensionEntryPaths(dir: string, seenDirs = new Set<stri
   }
 
   return dedupePaths(discovered);
+}
+
+export function resolvePiWebExtensionPaths(cwd: string) {
+  return dedupePaths([
+    ...discoverExtensionEntryPaths(join(cwd, ".pi", "web", "extensions")),
+    ...discoverExtensionEntryPaths(join(homedir(), ".pi", "web", "extensions")),
+  ]);
 }
 
 export function resolveBundledExtensionPaths(options: BundledExtensionPathOptions) {

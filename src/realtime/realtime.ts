@@ -10,6 +10,7 @@ import type { SettingsController } from "../settings/settings.js";
 import type { StatusBar } from "../status/statusBar.js";
 import type { ToolCards } from "../tools/toolCards.js";
 import type { ConversationTreeController } from "../tree/conversationTree.js";
+import { renderWebFooters } from "../extensions/webFooter.js";
 
 export type RealtimeController = {
   connect: () => void;
@@ -324,6 +325,10 @@ export function createRealtime(options: {
       }
       if (data.type === "extension_ui_request") {
         handleExtensionUiRequest(data);
+        return;
+      }
+      if (data.type === "web_footer_changed") {
+        if (!data.sessionId || data.sessionId === state.currentSessionId) renderWebFooters(elements.extensionFooterEl, data.webFooters);
         return;
       }
       if (data.type === "pi_event") {

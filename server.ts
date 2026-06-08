@@ -21,9 +21,10 @@ import {
   type SlashCommandInfo,
 } from "@mariozechner/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
-import { resolveBundledExtensionPaths } from "./server/extensions.js";
+import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { createSettingsStore } from "./server/settings.js";
+import type { PiWebFooter, PiWebUi } from "./src/extensions.js";
 import type { PiWebSession } from "./server/types.js";
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -839,6 +840,7 @@ function currentState(targetSession: PiWebSession = session) {
     model: simplifyModel(targetSession.model),
     thinkingLevel: targetSession.thinkingLevel,
     stats: sessionStats(targetSession),
+    webFooters: webFooterEntries(targetSession),
   };
 }
 
@@ -1131,6 +1133,81 @@ type PendingExtensionUiRequest = {
 };
 const pendingExtensionUiRequests = new Map<string, PendingExtensionUiRequest>();
 
+type WebFooterState = {
+  footers: Map<string, PiWebFooter>;
+};
+
+const webFooterStates = new WeakMap<object, WebFooterState>();
+
+function getWebFooterState(value: any): WebFooterState {
+  const key = value as object;
+  let state = webFooterStates.get(key);
+  if (!state) {
+    state = { footers: new Map() };
+    webFooterStates.set(key, state);
+  }
+  return state;
+}
+
+function cleanFooterKey(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.trim().slice(0, 80).replace(/[^a-zA-Z0-9_.:-]/g, "-");
+  return cleaned || undefined;
+}
+
+function cleanFooterText(value: unknown, maxLength = 2_000) {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trimEnd();
+  return cleaned ? cleaned.slice(0, maxLength) : undefined;
+}
+
+function normalizeTextLines(value: unknown) {
+  const rawLines = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  const lines = rawLines.slice(0, 8).map((line) => cleanFooterText(line)).filter((line): line is string => Boolean(line));
+  return lines.length ? { kind: "text" as const, lines } : undefined;
+}
+
+function normalizePiWebFooter(value: unknown): PiWebFooter | undefined {
+  if (typeof value === "string" || Array.isArray(value)) return normalizeTextLines(value);
+  if (!value || typeof value !== "object") return undefined;
+  const footer = value as Record<string, unknown>;
+  if (footer.kind === "text") return normalizeTextLines(footer.lines);
+  if (footer.kind === "html") {
+    const html = cleanFooterText(footer.html, 20_000);
+    return html ? { kind: "html", html } : undefined;
+  }
+  return undefined;
+}
+
+function webFooterEntries(value: any) {
+  return Array.from(getWebFooterState(value).footers.entries()).map(([key, footer]) => ({ key, footer }));
+}
+
+function broadcastWebFooters(value: any) {
+  const webFooters = webFooterEntries(value);
+  broadcast({
+    type: "web_footer_changed",
+    sessionId: value.sessionId,
+    sessionFile: value.sessionFile,
+    webFooters,
+  });
+  return webFooters;
+}
+
+function createPiWebUi(value: any): PiWebUi {
+  return {
+    setFooter(key, footer) {
+      const footerKey = cleanFooterKey(key);
+      if (!footerKey) return;
+      const footerState = getWebFooterState(value);
+      const normalized = normalizePiWebFooter(footer);
+      if (normalized) footerState.footers.set(footerKey, normalized);
+      else footerState.footers.delete(footerKey);
+      broadcastWebFooters(value);
+    },
+  };
+}
+
 function broadcastExtensionUiRequest(value: any, method: string, payload: Record<string, unknown>) {
   const id = randomUUID();
   broadcast({
@@ -1189,8 +1266,9 @@ function requestExtensionUi<T>(
   });
 }
 
-function createWebExtensionUiContext(value: any): ExtensionUIContext {
+function createWebExtensionUiContext(value: any): ExtensionUIContext & { web: PiWebUi } {
   return {
+    web: createPiWebUi(value),
     select: (title, options, opts) => requestExtensionUi(
       value,
       "select",
@@ -1356,8 +1434,11 @@ function registerLiveSession(value: any) {
   return value;
 }
 
-function bundledExtensionPaths(cwd = piCwd) {
-  return resolveBundledExtensionPaths({ piCwd: cwd, appDir, bundledExtensionsDir });
+function additionalExtensionPaths(cwd = piCwd) {
+  return [
+    ...resolveBundledExtensionPaths({ piCwd: cwd, appDir, bundledExtensionsDir }),
+    ...resolvePiWebExtensionPaths(cwd),
+  ];
 }
 
 async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent, cwd = piCwd) {
@@ -1380,7 +1461,7 @@ async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartE
   const loader = new DefaultResourceLoader({
     cwd: resolvedCwd,
     agentDir: getAgentDir(),
-    additionalExtensionPaths: bundledExtensionPaths(resolvedCwd),
+    additionalExtensionPaths: additionalExtensionPaths(resolvedCwd),
     appendSystemPromptOverride: (base) => [
       ...base,
       webUiContext,

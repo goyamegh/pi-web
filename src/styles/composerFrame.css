@@ -10,4 +10,21 @@
   margin: 8px 16px 0;
 }
 
+.extensionFooter {
+  grid-row: 4;
+  min-width: 0;
+  margin: 6px 16px 0;
+  color: var(--muted);
+  overflow: hidden;
+  font-size: 12px;
+}
+.extensionFooter[hidden] { display: none; }
+.extensionFooterEntry + .extensionFooterEntry { margin-top: 4px; }
+.extensionFooterEntry.text {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  white-space: pre;
+  text-overflow: ellipsis;
+}
+
 p { margin: 0; }

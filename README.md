@@ -103,6 +103,12 @@ The Git button in the header opens a responsive Git panel for repo status, commi
 
 `contexts/web-ui.md` is injected into agent sessions so pi understands pi-web behavior such as artifact links, image rendering, and supervised restarts. Bundled pi extensions add pi-web defaults, including automatic session naming from the first prompt.
 
+### pi-web extensions
+
+pi-web supports browser-specific extensions in `.pi/web/extensions` and `~/.pi/web/extensions`. These use pi's extension runtime with a typed pi-web UI API, including `ctx.ui.web.setFooter(...)` for rendering text or trusted HTML between the composer and pinned session tabs.
+
+See [pi-web extensions](docs/pi-web-extensions.md) for locations, types, and examples.
+
 ## Screenshots
 
 The README references the same deterministic Playwright visual snapshots used by `tests/e2e/visual.spec.ts`. Desktop and mobile captures are shown side by side, and when visual snapshots are intentionally updated, these images update with them.

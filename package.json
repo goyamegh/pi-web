@@ -11,6 +11,12 @@
   "bin": {
     "pi-web": "bin/pi-web.js"
   },
+  "exports": {
+    "./extensions": {
+      "types": "./dist/extensions.d.ts",
+      "import": "./dist/extensions.js"
+    }
+  },
   "files": [
     ".pi/extensions/",
     "bin/",
@@ -25,7 +31,7 @@
   "scripts": {
     "dev": "PI_WEB_DEV=1 node --import tsx supervisor.ts",
     "dev:server": "PI_WEB_DEV=1 node --import tsx --watch server.ts",
-    "build": "vite build",
+    "build": "vite build && tsc -p tsconfig.extensions.json",
     "start": "node --import tsx server.ts",
     "start:supervised": "node --import tsx supervisor.ts",
     "typecheck": "tsc --noEmit",
