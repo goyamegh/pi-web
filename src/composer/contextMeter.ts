@@ -122,13 +122,16 @@ export function createContextMeter(options: { state: AppState; elements: AppElem
     const percent = contextPercent(stats);
     const clamped = Math.max(0, Math.min(100, percent ?? 0));
     const tone = contextTone(percent);
-    const title = contextTitle(stats);
+    const title = state.isCompacting ? "Compacting context…" : contextTitle(stats);
+    const compactingClass = state.isCompacting ? " compacting" : "";
 
-    elements.contextMeterEl.className = `contextMeter ${tone}`;
+    elements.contextMeterEl.className = `contextMeter ${tone}${compactingClass}`;
     elements.contextMeterEl.style.setProperty("--context-percent", `${clamped}%`);
     elements.contextMeterEl.title = title;
     elements.contextMeterEl.setAttribute("aria-label", title.replace(/\n/g, ". "));
-    elements.contextMeterLabelEl.textContent = percent !== undefined && percent >= 80 ? `ctx ${Math.round(percent)}%` : "";
+    elements.contextMeterLabelEl.textContent = state.isCompacting
+      ? "compacting"
+      : percent !== undefined && percent >= 80 ? `ctx ${Math.round(percent)}%` : "";
     renderPopover(stats);
   }
 

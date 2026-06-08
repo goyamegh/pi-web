@@ -38,10 +38,12 @@
   background: color-mix(in srgb, var(--muted) 6%, transparent);
 }
 .contextMeterFill {
+  position: relative;
   display: block;
   width: var(--context-percent);
   max-width: 100%;
   height: 100%;
+  overflow: hidden;
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 64%, var(--muted));
   transition: width 180ms ease, background-color 180ms ease;
@@ -65,9 +67,37 @@
   pointer-events: none;
 }
 .contextMeter.warning .contextMeterLabel,
-.contextMeter.danger .contextMeterLabel { display: block; }
+.contextMeter.danger .contextMeterLabel,
+.contextMeter.compacting .contextMeterLabel { display: block; }
 .contextMeter.warning .contextMeterLabel { color: #fbbf24; }
 .contextMeter.danger .contextMeterLabel { color: var(--danger); }
+.contextMeter.compacting .contextMeterLabel { color: var(--accent); }
+.contextMeter.compacting .contextMeterFill {
+  background: linear-gradient(90deg, #38bdf8, #fbbf24, #38bdf8);
+  background-size: 220% 100%;
+  animation: contextMeterPulse 1.25s ease-in-out infinite;
+}
+.contextMeter.compacting .contextMeterFill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .65), transparent);
+  transform: translateX(-100%);
+  animation: contextMeterSweep 1.25s ease-in-out infinite;
+}
+@keyframes contextMeterPulse {
+  0%, 100% { background-position: 0% 50%; filter: brightness(1); }
+  50% { background-position: 100% 50%; filter: brightness(1.18); }
+}
+@keyframes contextMeterSweep {
+  0% { transform: translateX(-100%); opacity: 0; }
+  20%, 80% { opacity: 1; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .contextMeter.compacting .contextMeterFill,
+  .contextMeter.compacting .contextMeterFill::after { animation: none; }
+}
 .contextMeterPopover {
   position: absolute;
   right: 0;
@@ -162,59 +192,66 @@ textarea:focus { border-bottom-color: var(--accent); }
   position: absolute;
   left: 0;
   right: 0;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + 6px);
   z-index: 30;
   display: grid;
-  max-height: min(360px, 50vh);
+  gap: 1px;
+  max-height: min(280px, 42vh);
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--panel);
-  box-shadow: 0 18px 45px rgba(0, 0, 0, .35);
-  padding: 6px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .32);
+  padding: 4px;
 }
 .slashCommandsPopover[hidden] { display: none; }
 .slashCommandItem {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 10px;
+  gap: 2px 8px;
   width: 100%;
-  min-height: 0;
+  min-height: 30px;
   height: auto;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
-  padding: 8px 10px;
+  padding: 5px 8px;
   text-align: left;
   color: var(--text);
 }
 .slashCommandItem:hover,
 .slashCommandItem.active {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
 }
 .slashCommandName {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
   font-weight: 750;
 }
 .slashCommandDescription {
+  display: none;
   grid-column: 1 / -1;
   overflow: hidden;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.slashCommandItem.active .slashCommandDescription,
+.slashCommandItem:hover .slashCommandDescription { display: block; }
 .slashCommandSource {
   align-self: center;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
   border-radius: 999px;
   color: var(--muted);
-  padding: 1px 6px;
-  font-size: 10px;
+  padding: 0 5px;
+  font-size: 9px;
   font-weight: 800;
+  line-height: 16px;
   text-transform: uppercase;
 }
 .slashCommandsEmpty {

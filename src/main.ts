@@ -94,6 +94,8 @@ async function refreshState() {
   const data = await res.json();
   updateMeta(data);
   state.isStreaming = Boolean(data.isStreaming);
+  state.isCompacting = Boolean(data.isCompacting);
+  contextMeter.update(state.stats);
   composer.updatePrimaryAction();
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),

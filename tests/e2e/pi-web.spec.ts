@@ -905,7 +905,7 @@ const VALID_PNG = Buffer.from(
 );
 
 test.describe("context compaction", () => {
-  test("shows cancellable compaction progress and handles cancellation", async ({ page }) => {
+  test("shows context meter compaction progress and handles cancellation", async ({ page }) => {
     let abortRequested = false;
     await page.route("**/api/compaction/abort", async (route) => {
       abortRequested = true;
@@ -952,15 +952,15 @@ test.describe("context compaction", () => {
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "pi_event", event: { type: "compaction_start", reason: "manual" } }));
 
-    const compaction = page.locator(".message.system.compaction").last();
-    await expect(compaction).toContainText("Compacting context…");
-    await expect(compaction.locator(".compactionCancel")).toBeVisible();
+    await expect(page.locator("#contextMeter")).toHaveClass(/compacting/);
+    await expect(page.locator("#contextMeterLabel")).toHaveText("compacting");
+    await expect(page.locator(".message.system.compaction")).toHaveCount(0);
 
-    await compaction.locator(".compactionCancel").click();
-    await expect.poll(() => abortRequested).toBe(true);
+    expect(abortRequested).toBe(false);
     await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "pi_event", event: { type: "compaction_end", reason: "manual", aborted: true } }));
+    const compaction = page.locator(".message.system.compaction").last();
     await expect(compaction).toContainText("Compaction cancelled.");
-    await expect(compaction.locator(".compactionCancel")).toHaveCount(0);
+    await expect(page.locator("#contextMeter")).not.toHaveClass(/compacting/);
   });
 
   test("renders completed compaction summaries", async ({ page }) => {

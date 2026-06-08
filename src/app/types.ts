@@ -206,6 +206,7 @@ export type AppState = {
   currentSessionTitle: string;
   statusTitleEditing: boolean;
   isStreaming: boolean;
+  isCompacting: boolean;
   wsHasOpened: boolean;
   wsDisconnected: boolean;
   initialSyncComplete: boolean;
@@ -289,6 +290,7 @@ export function createAppState(): AppState {
     currentSessionTitle: "New session",
     statusTitleEditing: false,
     isStreaming: false,
+    isCompacting: false,
     wsHasOpened: false,
     wsDisconnected: false,
     initialSyncComplete: false,

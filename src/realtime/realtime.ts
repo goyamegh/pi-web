@@ -239,9 +239,12 @@ export function createRealtime(options: {
         status.refreshSessionTitle();
         break;
       case "compaction_start":
-        setCompactionMessage(compactionStartText(event), "compaction", true);
+        state.isCompacting = true;
+        updateSessionStats(state.stats);
         break;
       case "compaction_end": {
+        state.isCompacting = false;
+        updateSessionStats(state.stats);
         const extraClass = event.errorMessage && !event.aborted ? "compaction error" : "compaction";
         setCompactionMessage(compactionEndText(event), extraClass);
         compactionMessage = null;
@@ -284,6 +287,8 @@ export function createRealtime(options: {
         if (data.sessionId && state.currentSessionId && data.sessionId !== state.currentSessionId) return;
         updateMeta(data);
         state.isStreaming = Boolean(data.isStreaming);
+        state.isCompacting = Boolean(data.isCompacting);
+        updateSessionStats(state.stats);
         composer.updatePrimaryAction();
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
