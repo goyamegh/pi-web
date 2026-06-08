@@ -192,6 +192,7 @@ export type SessionInfo = {
     isRunning: boolean;
     isStreaming: boolean;
     isCompacting: boolean;
+    startedAt?: string;
     pendingMessageCount: number;
   };
 };

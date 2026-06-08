@@ -142,16 +142,21 @@ export function createMockHarness(options: MockSessionOptions) {
     syncMessagesToLeaf();
     let mockSession: PiWebSession;
     let compactionAbortRequested = false;
+    let runtimeStartedAt: string | undefined;
 
     async function runMockCompaction(customInstructions?: string, slow = false) {
       mockSession.isCompacting = true;
+      runtimeStartedAt = new Date().toISOString();
+      (mockSession as any).runtimeStartedAt = runtimeStartedAt;
       compactionAbortRequested = false;
       broadcastRuntimeChanged();
-      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_start", reason: "manual" } });
+      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_start", reason: "manual", startedAt: runtimeStartedAt } });
       if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       const deadline = Date.now() + (slow ? 5_000 : 1_000);
       while (!compactionAbortRequested && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
       mockSession.isCompacting = false;
+      runtimeStartedAt = undefined;
+      delete (mockSession as any).runtimeStartedAt;
       if (compactionAbortRequested) {
         broadcastRuntimeChanged();
         broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", aborted: true } });
@@ -217,6 +222,7 @@ export function createMockHarness(options: MockSessionOptions) {
           isRunning: Boolean(mockSession.isStreaming) || Boolean(mockSession.isCompacting),
           isStreaming: Boolean(mockSession.isStreaming),
           isCompacting: Boolean(mockSession.isCompacting),
+          startedAt: runtimeStartedAt,
           pendingMessageCount: 0,
         },
       });
@@ -317,11 +323,14 @@ export function createMockHarness(options: MockSessionOptions) {
         const withFlatEditTool = /flat edit/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
         const withEditTool = !withShowcase && !withFlatEditTool && !withMalformedEditTool && /edit diff/i.test(message);
-        const withPendingToolRefresh = /pending tool refresh/i.test(message);
-        const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && /tool|interleav/i.test(message);
+        const withProgressDemo = /progress demo|stuck progress/i.test(message);
+        const withPendingToolRefresh = /pending tool refresh/i.test(message) || withProgressDemo;
+        const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && (/tool|interleav/i.test(message) || withProgressDemo);
         mockSession.isStreaming = true;
+        runtimeStartedAt = new Date().toISOString();
+        (mockSession as any).runtimeStartedAt = runtimeStartedAt;
         broadcastRuntimeChanged();
-        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_start" } });
+        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_start", startedAt: runtimeStartedAt } });
         if (slow) await new Promise((resolve) => setTimeout(resolve, 750));
         if (withProviderError) {
           appendMockMessage({
@@ -369,22 +378,24 @@ export function createMockHarness(options: MockSessionOptions) {
           const toolCallId = withPendingToolRefresh ? `call-pending-${Date.now()}` : "call-1";
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Let me check that for you. " } } });
           await new Promise((resolve) => setTimeout(resolve, 80));
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_start", toolName: "read", toolCallId, args: { path: "/some/file" } } });
+          const toolStartedAt = new Date().toISOString();
+          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_start", toolName: "read", toolCallId, args: { path: "/some/file" }, startedAt: toolStartedAt } });
           if (withPendingToolRefresh) {
             appendMockMessage({ role: "assistant", content: [
               { type: "text", text: "Let me check that for you. " },
-              { type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/some/file" } },
+              { type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/some/file" }, startedAt: toolStartedAt },
             ], timestamp: new Date().toISOString() });
+            broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_update", toolName: "read", toolCallId, args: { path: "/some/file" }, startedAt: toolStartedAt, partialResult: { content: [{ type: "text", text: "Opening /some/file…\nRead header block.\nWaiting for more output…" }] } } });
           }
-          await new Promise((resolve) => setTimeout(resolve, withPendingToolRefresh ? 3_000 : 150));
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "read", toolCallId, isError: false, result: "file contents here" } });
+          await new Promise((resolve) => setTimeout(resolve, withProgressDemo ? 6_000 : withPendingToolRefresh ? 3_000 : 150));
+          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "read", toolCallId, startedAt: toolStartedAt, isError: false, result: "file contents here" } });
           await new Promise((resolve) => setTimeout(resolve, 80));
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Done reading." } } });
           await new Promise((resolve) => setTimeout(resolve, 80));
           if (!withPendingToolRefresh) {
             appendMockMessage({ role: "assistant", content: [
               { type: "text", text: "Let me check that for you. " },
-              { type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/some/file" } },
+              { type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/some/file" }, startedAt: toolStartedAt },
               { type: "text", text: "Done reading." },
             ], timestamp: new Date().toISOString() });
           }
@@ -405,11 +416,13 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: `Mock response${promptOptions?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
         }
         mockSession.isStreaming = false;
+        runtimeStartedAt = undefined;
+        delete (mockSession as any).runtimeStartedAt;
         broadcastRuntimeChanged();
         broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
         if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       },
-      abort: async () => { mockSession.isStreaming = false; broadcastRuntimeChanged(); },
+      abort: async () => { mockSession.isStreaming = false; runtimeStartedAt = undefined; delete (mockSession as any).runtimeStartedAt; broadcastRuntimeChanged(); },
       abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,
       subscribe: () => undefined,

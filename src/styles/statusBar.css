@@ -73,6 +73,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.activityStatus,
 .connectionStatus {
   flex: 0 0 auto;
   max-width: min(220px, 34vw);
@@ -86,7 +87,20 @@
   font-size: 11px;
   line-height: 17px;
 }
+.activityStatus[hidden],
 .connectionStatus[hidden] { display: none; }
+.activityStatus.running {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: var(--accent);
+}
+.activityStatus.quiet {
+  border-color: color-mix(in srgb, #facc15 45%, transparent);
+  color: #facc15;
+}
+.activityStatus.stale {
+  border-color: color-mix(in srgb, #fb923c 48%, transparent);
+  color: #fb923c;
+}
 .connectionStatus.reconnecting {
   border-color: color-mix(in srgb, var(--accent) 38%, transparent);
   color: var(--accent);

@@ -5,13 +5,14 @@ import type { MarkdownRenderer } from "../markdown/render.js";
 import { imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote } from "./content.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) => void;
-export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>) => void;
+export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
 export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => void;
 
 type ToolCallSummary = {
   id?: string;
   toolName: string;
   args: Record<string, unknown>;
+  startedAt?: string | number;
 };
 
 export type MessageList = {
@@ -88,6 +89,7 @@ function toolCallFromPart(part: unknown): ToolCallSummary | undefined {
     id: typeof value.id === "string" ? value.id : undefined,
     toolName: typeof value.toolName === "string" ? value.toolName : typeof value.name === "string" ? value.name : "tool",
     args,
+    startedAt: typeof value.startedAt === "string" || typeof value.startedAt === "number" ? value.startedAt : undefined,
   };
 }
 
@@ -536,7 +538,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
           renderToolResultMessage(result, addToolHistoryCard, call.args);
           renderedToolResultIds.add(call.id || "");
         } else if (isStreaming) {
-          addPendingToolCard(call.id, call.toolName, call.args);
+          addPendingToolCard(call.id, call.toolName, call.args, call.startedAt);
         }
       }
     }

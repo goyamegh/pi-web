@@ -95,6 +95,8 @@ async function refreshState() {
   updateMeta(data);
   state.isStreaming = Boolean(data.isStreaming);
   state.isCompacting = Boolean(data.isCompacting);
+  if (state.isStreaming || state.isCompacting) statusBar.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtimeStartedAt || data.runtime?.startedAt);
+  else statusBar.markActivityEnd();
   contextMeter.update(state.stats);
   composer.updatePrimaryAction();
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
@@ -159,7 +161,10 @@ sessions = createSessions({
   refreshMessages,
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
-  clearMessages: () => messages.clear(),
+  clearMessages: () => {
+    tools.clearActiveToolCards();
+    messages.clear();
+  },
   addMessage: messages.addMessage,
 });
 
@@ -254,6 +259,7 @@ window.addEventListener("popstate", () => {
   const nextSessionId = readActiveSessionIdFromUrl();
   if (nextSessionId === state.currentSessionId) return;
   state.currentSessionId = nextSessionId;
+  tools.clearActiveToolCards();
   messages.clear();
   sessions.renderSessionBar();
   sessions.refreshSessions().catch(() => undefined);

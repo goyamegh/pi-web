@@ -497,9 +497,33 @@ async function persistPromptImages(images: Array<{ data: string; mimeType: strin
   return `\n\nAttached image file${images.length === 1 ? "" : "s"}:\n${lines.join("\n")}`;
 }
 
-function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<string, unknown>>) {
+function toolRuntimeKey(toolCallId: unknown, toolName: unknown) {
+  const id = typeof toolCallId === "string" ? toolCallId.trim() : "";
+  if (id) return id;
+  return typeof toolName === "string" && toolName.trim() ? toolName.trim() : "";
+}
+
+function toolStartedAtFor(sessionFile: string | undefined, toolCallId: unknown, toolName: unknown) {
+  const key = toolRuntimeKey(toolCallId, toolName);
+  return sessionFile && key ? toolStartedAts.get(sessionFile)?.get(key) : undefined;
+}
+
+function contentWithToolStartedAts(content: unknown, sessionFile?: string) {
+  if (!sessionFile || !Array.isArray(content)) return content;
+  return content.map((part) => {
+    if (!part || typeof part !== "object") return part;
+    const value = part as Record<string, unknown>;
+    if (value.type !== "toolCall") return part;
+    const toolName = value.toolName || value.name;
+    const startedAt = toolStartedAtFor(sessionFile, value.id, toolName);
+    return startedAt && !value.startedAt ? { ...value, startedAt } : part;
+  });
+}
+
+function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<string, unknown>>, sessionFile?: string) {
   if (!message || typeof message !== "object") return message;
   const m = message as Record<string, unknown>;
+  const content = contentWithToolStartedAts(m.content, sessionFile);
   if (m.role === "toolResult") {
     const args = toolCallArgs?.get(m.toolCallId as string);
     return {
@@ -513,15 +537,16 @@ function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<str
       raw: m,
     };
   }
-  const text = textFromContent(m.content);
+  const text = textFromContent(content);
   const errorText = m.role === "assistant" && m.errorMessage ? assistantErrorPreview(m) : "";
   const stopReasonText = m.role === "assistant" && !errorText ? assistantStopReasonPreview(m) : "";
   const displayText = errorText || (text && stopReasonText ? `${text}\n\n${stopReasonText}` : stopReasonText || text);
-  const toolCalls = m.role === "assistant" && Array.isArray(m.content)
-    ? m.content.filter((part: any) => part?.type === "toolCall").map((part: any) => ({
+  const toolCalls = m.role === "assistant" && Array.isArray(content)
+    ? content.filter((part: any) => part?.type === "toolCall").map((part: any) => ({
       id: part.id,
       toolName: part.toolName || part.name || "tool",
       args: part.arguments || part.args || {},
+      startedAt: part.startedAt,
     }))
     : undefined;
   return {
@@ -530,7 +555,7 @@ function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<str
     toolCalls,
     isError: Boolean(m.errorMessage || m.stopReason === "error" || stopReasonText),
     timestamp: m.timestamp,
-    raw: m,
+    raw: content === m.content ? m : { ...m, content },
   };
 }
 
@@ -711,15 +736,35 @@ function sessionCwd(targetSession: PiWebSession | any = session) {
   return String(targetSession?.sessionManager?.getCwd?.() || targetSession?.cwd || piCwd);
 }
 
+function runtimeStartedAtForPath(path: string, isRunning: boolean) {
+  return isRunning ? runtimeStartedAts.get(path) : undefined;
+}
+
+function ensureRuntimeStartedAt(targetSession: any, startedAt = new Date().toISOString()) {
+  const key = sessionPathKey(targetSession);
+  const existing = key ? runtimeStartedAts.get(key) : undefined;
+  const value = typeof targetSession?.runtimeStartedAt === "string" ? targetSession.runtimeStartedAt : existing || startedAt;
+  if (key) runtimeStartedAts.set(key, value);
+  if (targetSession && typeof targetSession === "object") targetSession.runtimeStartedAt = value;
+  return value;
+}
+
+function clearRuntimeStartedAt(targetSession: any, sessionFile = sessionPathKey(targetSession)) {
+  if (sessionFile) runtimeStartedAts.delete(sessionFile);
+  if (targetSession && typeof targetSession === "object") delete targetSession.runtimeStartedAt;
+}
+
 function runtimeForPath(path: string) {
   const live = liveSessions.get(path)?.session;
   const isStreaming = Boolean(live?.isStreaming);
   const isCompacting = Boolean(live?.isCompacting);
+  const isRunning = isStreaming || isCompacting;
   return {
     loaded: Boolean(live),
-    isRunning: isStreaming || isCompacting,
+    isRunning,
     isStreaming,
     isCompacting,
+    startedAt: runtimeStartedAtForPath(path, isRunning),
     pendingMessageCount: Number(live?.pendingMessageCount || 0),
     model: simplifyModel(live?.model),
   };
@@ -837,6 +882,10 @@ function currentState(targetSession: PiWebSession = session) {
     sessionName: sessionDisplayName(targetSession),
     sessionTitle: liveSessionTitle(targetSession),
     isStreaming: targetSession.isStreaming,
+    isCompacting: Boolean(targetSession.isCompacting),
+    runtimeStartedAt: typeof (targetSession as any).runtimeStartedAt === "string"
+      ? (targetSession as any).runtimeStartedAt
+      : runtimeStartedAtForPath(targetSession.sessionFile, Boolean(targetSession.isStreaming || targetSession.isCompacting)),
     model: simplifyModel(targetSession.model),
     thinkingLevel: targetSession.thinkingLevel,
     stats: sessionStats(targetSession),
@@ -986,12 +1035,16 @@ async function executeSlashCommand(input: string, targetSession: PiWebSession = 
       if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before compacting.");
       if (targetSession.isCompacting) throw new Error("Compaction is already running.");
       if (typeof targetSession.compact !== "function") throw new Error("Compaction is not available in this session.");
-      void targetSession.compact(args || undefined).catch((error: unknown) => broadcast({
-        type: "server_error",
-        sessionId: targetSession.sessionId,
-        sessionFile: targetSession.sessionFile,
-        error: error instanceof Error ? error.message : String(error),
-      }));
+      ensureRuntimeStartedAt(targetSession);
+      void targetSession.compact(args || undefined).catch((error: unknown) => {
+        clearRuntimeStartedAt(targetSession);
+        broadcast({
+          type: "server_error",
+          sessionId: targetSession.sessionId,
+          sessionFile: targetSession.sessionFile,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       return { message: "Compaction started.", state: currentStateWithThinkingLevels(targetSession) };
     }
 
@@ -1088,6 +1141,8 @@ const modelRegistry = ModelRegistry.create(authStorage);
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
 const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
+const runtimeStartedAts = new Map<string, string>();
+const toolStartedAts = new Map<string, Map<string, string>>();
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
 
@@ -1398,16 +1453,43 @@ function registerLiveSession(value: any) {
   const unsubscribe = value.subscribe?.((event: unknown) => {
     const eventSessionFile = value.sessionFile;
     const eventSessionId = value.sessionId;
-    broadcast({ type: "pi_event", sessionId: eventSessionId, sessionFile: eventSessionFile, event });
+
+    // Track models that fail with model_not_supported and remove them from the list.
+    const e = event as any;
+    let eventForClient = e;
+    if (e?.type === "agent_start" || e?.type === "compaction_start") {
+      const startedAt = ensureRuntimeStartedAt(value, typeof e.startedAt === "string" ? e.startedAt : undefined);
+      eventForClient = { ...e, startedAt };
+    } else if (e?.type === "agent_end" || e?.type === "compaction_end") {
+      clearRuntimeStartedAt(value, eventSessionFile);
+    }
+
+    if (e?.type === "tool_execution_start") {
+      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
+      const startedAt = typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString();
+      if (toolKey) {
+        let sessionToolStarts = toolStartedAts.get(eventSessionFile);
+        if (!sessionToolStarts) {
+          sessionToolStarts = new Map();
+          toolStartedAts.set(eventSessionFile, sessionToolStarts);
+        }
+        sessionToolStarts.set(toolKey, startedAt);
+      }
+      eventForClient = { ...e, startedAt };
+    } else if (e?.type === "tool_execution_update" || e?.type === "tool_execution_end") {
+      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
+      const startedAt = toolKey ? toolStartedAts.get(eventSessionFile)?.get(toolKey) : undefined;
+      if (startedAt) eventForClient = { ...e, startedAt };
+      if (e?.type === "tool_execution_end" && toolKey) toolStartedAts.get(eventSessionFile)?.delete(toolKey);
+    }
+
+    broadcast({ type: "pi_event", sessionId: eventSessionId, sessionFile: eventSessionFile, event: eventForClient });
     broadcast({
       type: "session_runtime_changed",
       sessionId: eventSessionId,
       sessionFile: eventSessionFile,
       runtime: runtimeForPath(eventSessionFile),
     });
-
-    // Track models that fail with model_not_supported and remove them from the list.
-    const e = event as any;
 
     // Broadcast state update when session name changes
     if (e?.type === "session_info_changed") {
@@ -1786,7 +1868,7 @@ const server = createServer(async (req, res) => {
             }
           }
         }
-        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown) => simplifyMessage(m, toolCallArgs)) });
+        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown) => simplifyMessage(m, toolCallArgs, targetSession.sessionFile)) });
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
@@ -1916,16 +1998,21 @@ const server = createServer(async (req, res) => {
         if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const imageFileNote = await persistPromptImages(images, sessionCwd(targetSession));
         const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
+        const wasAlreadyRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+        if (!wasAlreadyRunning) ensureRuntimeStartedAt(targetSession);
         void targetSession.prompt(promptText, {
           ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
           ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
         })
-          .catch((error: unknown) => broadcast({
-            type: "server_error",
-            sessionId: targetSession.sessionId,
-            sessionFile: targetSession.sessionFile,
-            error: error instanceof Error ? error.message : String(error),
-          }));
+          .catch((error: unknown) => {
+            if (!wasAlreadyRunning) clearRuntimeStartedAt(targetSession);
+            broadcast({
+              type: "server_error",
+              sessionId: targetSession.sessionId,
+              sessionFile: targetSession.sessionFile,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
 
         return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
       }

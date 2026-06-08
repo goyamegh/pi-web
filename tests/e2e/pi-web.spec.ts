@@ -719,6 +719,36 @@ test.describe("tool cards", () => {
     await expect(page.locator(".message.tool")).toHaveCount(0);
   });
 
+  test("keeps running elapsed timers when returning to a running session", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop", "Timer regression is covered once on desktop.");
+
+    await page.goto("/");
+    await page.locator("#prompt").fill("progress demo");
+    await page.locator("#primaryButton").click();
+
+    const liveCard = page.locator(".toolCard.toolCard--running", { hasText: "read" }).last();
+    await expect(liveCard).toBeVisible();
+
+    await page.waitForTimeout(2200);
+    await expect(page.locator("#activityStatus")).toContainText(/Running [2-9]s|Running \d+m/);
+    await expect(liveCard.locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
+
+    await page.reload();
+    await expect(page.locator("#activityStatus")).toContainText(/Running [2-9]s|Running \d+m/);
+    const reloadedCard = page.locator(".toolCard.toolCard--running", { hasText: "read" }).last();
+    await expect(reloadedCard).toBeVisible();
+    await expect(reloadedCard.locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
+
+    await page.goto("/?sessionId=mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+
+    await page.goto("/?sessionId=mock-current");
+    await expect(page.locator("#activityStatus")).toContainText(/Running [2-9]s|Running \d+m/);
+    const restoredCard = page.locator(".toolCard.toolCard--running", { hasText: "read" }).last();
+    await expect(restoredCard).toBeVisible();
+    await expect(restoredCard.locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
+  });
+
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");

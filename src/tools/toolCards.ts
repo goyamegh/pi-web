@@ -3,11 +3,12 @@ import { renderEditDiff } from "../components/editDiff.js";
 import { textFromRawContent } from "../messages/content.js";
 
 export type ToolCards = {
-  addToolCard: (toolName: string, args: Record<string, unknown>) => HTMLDivElement;
+  addToolCard: (toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => HTMLDivElement;
   updateToolCard: (card: HTMLDivElement, toolName: string, isError: boolean, result?: unknown) => void;
   addToolHistoryCard: (toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) => void;
   addRuntimeErrorCard: (title: string, subtitle: string, body: string) => void;
-  startTool: (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>) => void;
+  startTool: (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
+  updateToolProgress: (toolCallId: string | undefined, toolName: string, partialResult?: unknown, args?: Record<string, unknown>, startedAt?: string | number | Date) => void;
   endTool: (toolCallId: string | undefined, toolName: string, isError: boolean, result?: unknown) => void;
   clearActiveToolCards: () => void;
 };
@@ -173,30 +174,154 @@ function textFromToolResult(result: unknown): string {
   return textFromRawContent(value.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
 }
 
+const toolQuietNoticeMs = 30_000;
+const toolQuietWarnMs = 120_000;
+
+function runningToolKey(toolCallId: string | undefined, toolName: string) {
+  return toolCallId || toolName;
+}
+
+function formatToolDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function parseToolTimestamp(value: string | number | Date | undefined) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function latestPartialText(text: string) {
+  const maxPartialOutputLength = 4000;
+  return text.length > maxPartialOutputLength ? `…\n${text.slice(-maxPartialOutputLength)}` : text;
+}
+
+function removePartialToolOutput(card: HTMLDivElement) {
+  card.querySelector(".toolCardPartialLabel")?.remove();
+  card.querySelector(".toolCardPartialBody")?.remove();
+}
+
+function finalizePartialToolOutput(card: HTMLDivElement) {
+  card.querySelector(".toolCardPartialLabel")?.remove();
+  card.querySelector(".toolCardPartialBody")?.classList.remove("toolCardPartialBody");
+}
+
 export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () => void = () => {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }): ToolCards {
   const activeToolCards = new Map<string, HTMLDivElement>();
+  const knownToolStartedAts = new Map<string, number>();
+  const runningToolStates = new WeakMap<HTMLDivElement, { startedAt?: number; lastActivityAt: number; timer: number }>();
 
-  function addToolCard(toolName: string, args: Record<string, unknown>): HTMLDivElement {
+  function updateRunningToolProgress(card: HTMLDivElement) {
+    const state = runningToolStates.get(card);
+    const progress = card.querySelector<HTMLElement>(".toolCardProgress");
+    if (!state || !progress) return;
+
+    const now = Date.now();
+    const quietFor = now - state.lastActivityAt;
+    const quiet = quietFor >= toolQuietNoticeMs;
+    const stale = quietFor >= toolQuietWarnMs;
+    const hasPartialOutput = Boolean(card.querySelector<HTMLElement>(".toolCardPartialBody")?.textContent?.trim());
+    const elapsedText = state.startedAt ? ` ${formatToolDuration(now - state.startedAt)}` : "";
+    progress.textContent = `running${elapsedText}${quiet ? ` · ${hasPartialOutput ? "no output" : "no result"} ${formatToolDuration(quietFor)}` : ""}`;
+    progress.title = state.startedAt
+      ? `Still waiting for ${card.dataset.toolName || "tool"} to finish. Last tool update ${formatToolDuration(quietFor)} ago.`
+      : `Still waiting for ${card.dataset.toolName || "tool"} to finish. Original start time unavailable.`;
+    progress.classList.toggle("quiet", quiet);
+    progress.classList.toggle("stale", stale);
+    card.classList.toggle("toolCard--quiet", quiet);
+    card.classList.toggle("toolCard--stale", stale);
+  }
+
+  function startRunningToolProgress(card: HTMLDivElement, startedAt?: number) {
+    const header = card.querySelector<HTMLElement>(".toolCardHeader");
+    if (!header) return;
+    const progress = document.createElement("span");
+    progress.className = "toolCardProgress";
+    const toggle = header.querySelector(".toolCardExpandToggle");
+    header.insertBefore(progress, toggle || null);
+
+    const now = Date.now();
+    const timer = window.setInterval(() => updateRunningToolProgress(card), 1000);
+    runningToolStates.set(card, { startedAt, lastActivityAt: now, timer });
+    updateRunningToolProgress(card);
+  }
+
+  function stopRunningToolProgress(card: HTMLDivElement) {
+    const state = runningToolStates.get(card);
+    if (state) window.clearInterval(state.timer);
+    runningToolStates.delete(card);
+    card.querySelector(".toolCardProgress")?.remove();
+    card.classList.remove("toolCard--quiet", "toolCard--stale");
+  }
+
+  function updatePartialToolOutput(card: HTMLDivElement, partialResult: unknown) {
+    const resultStr = textFromToolResult(partialResult);
+    if (!resultStr.trim()) return;
+
+    let label = card.querySelector<HTMLElement>(".toolCardPartialLabel");
+    if (!label) {
+      label = document.createElement("div");
+      label.className = "toolCardPartialLabel";
+      label.textContent = "Partial output";
+      card.append(label);
+    }
+
+    let body = card.querySelector<HTMLPreElement>(".toolCardPartialBody");
+    if (!body) {
+      body = document.createElement("pre");
+      body.className = "toolCardBody toolCardPartialBody";
+      card.append(body);
+    }
+    body.textContent = latestPartialText(resultStr);
+    body.scrollTop = body.scrollHeight;
+  }
+
+  function noteToolActivity(card: HTMLDivElement, partialResult?: unknown) {
+    const state = runningToolStates.get(card);
+    if (state) state.lastActivityAt = Date.now();
+    if (partialResult !== undefined) updatePartialToolOutput(card, partialResult);
+    updateRunningToolProgress(card);
+    scrollToBottom();
+  }
+
+  function addToolCard(toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date): HTMLDivElement {
     const card = document.createElement("div");
     card.className = "toolCard toolCard--running";
     addToolHeader(card, toolName, args);
     if (toolName === "edit") renderEditDiff(card, args);
     card.dataset.toolName = toolName;
+    startRunningToolProgress(card, parseToolTimestamp(startedAt));
     messagesEl.append(card);
     scrollToBottom();
     return card;
   }
 
   function updateToolCard(card: HTMLDivElement, toolName: string, isError: boolean, result?: unknown) {
+    stopRunningToolProgress(card);
     card.classList.remove("toolCard--running");
     card.classList.add(isError ? "toolCard--error" : "toolCard--success");
 
     card.querySelector(".toolCardBadge")?.remove();
 
     const resultStr = textFromToolResult(result);
-    if (resultStr && (isError || card.dataset.toolName !== "edit")) addToolResultBody(card, resultStr);
+    if (resultStr && (isError || card.dataset.toolName !== "edit")) {
+      removePartialToolOutput(card);
+      addToolResultBody(card, resultStr);
+    } else {
+      finalizePartialToolOutput(card);
+    }
 
     scrollToBottom();
   }
@@ -218,20 +343,38 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     messagesEl.append(card);
   }
 
-  function startTool(toolCallId: string | undefined, toolName: string, args: Record<string, unknown>) {
-    const cardKey = toolCallId || toolName;
+  function startedAtForCard(cardKey: string, startedAt?: string | number | Date) {
+    const parsed = parseToolTimestamp(startedAt);
+    if (parsed) knownToolStartedAts.set(cardKey, parsed);
+    return knownToolStartedAts.get(cardKey);
+  }
+
+  function startTool(toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) {
+    const cardKey = runningToolKey(toolCallId, toolName);
     const existing = activeToolCards.get(cardKey);
     if (existing?.isConnected) return;
-    const card = addToolCard(toolName, args);
+    const card = addToolCard(toolName, args, startedAtForCard(cardKey, startedAt));
     activeToolCards.set(cardKey, card);
   }
 
+  function updateToolProgress(toolCallId: string | undefined, toolName: string, partialResult?: unknown, args: Record<string, unknown> = {}, startedAt?: string | number | Date) {
+    const cardKey = runningToolKey(toolCallId, toolName);
+    let card = activeToolCards.get(cardKey);
+    if (!card?.isConnected && Object.keys(args).length > 0) {
+      card = addToolCard(toolName, args, startedAtForCard(cardKey, startedAt));
+      activeToolCards.set(cardKey, card);
+    }
+    if (!card?.isConnected) return;
+    noteToolActivity(card, partialResult);
+  }
+
   function endTool(toolCallId: string | undefined, toolName: string, isError: boolean, result?: unknown) {
-    const cardKey = toolCallId || toolName;
+    const cardKey = runningToolKey(toolCallId, toolName);
     const card = activeToolCards.get(cardKey);
     if (!card) return;
     updateToolCard(card, toolName, isError, result);
     activeToolCards.delete(cardKey);
+    knownToolStartedAts.delete(cardKey);
   }
 
   return {
@@ -240,8 +383,10 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     addToolHistoryCard,
     addRuntimeErrorCard,
     startTool,
+    updateToolProgress,
     endTool,
     clearActiveToolCards() {
+      for (const card of activeToolCards.values()) stopRunningToolProgress(card);
       activeToolCards.clear();
     },
   };

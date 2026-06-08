@@ -2,6 +2,7 @@ export type AppElements = {
   messagesEl: HTMLDivElement;
   statusTitleEl: HTMLSpanElement;
   statusPathEl: HTMLSpanElement;
+  activityStatusEl: HTMLSpanElement;
   connectionStatusEl: HTMLSpanElement;
   formEl: HTMLFormElement;
   extensionFooterEl: HTMLDivElement;
@@ -68,6 +69,7 @@ export function getAppElements(): AppElements {
     messagesEl: requiredElement<HTMLDivElement>("#messages"),
     statusTitleEl: requiredElement<HTMLSpanElement>("#statusTitle"),
     statusPathEl: requiredElement<HTMLSpanElement>("#statusPath"),
+    activityStatusEl: requiredElement<HTMLSpanElement>("#activityStatus"),
     connectionStatusEl: requiredElement<HTMLSpanElement>("#connectionStatus"),
     formEl: requiredElement<HTMLFormElement>("#promptForm"),
     extensionFooterEl: requiredElement<HTMLDivElement>("#extensionFooter"),

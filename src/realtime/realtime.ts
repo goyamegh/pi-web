@@ -210,6 +210,7 @@ export function createRealtime(options: {
         break;
       case "agent_start":
         state.isStreaming = true;
+        status.markActivityStart("starting", event.startedAt);
         composer.updatePrimaryAction();
         messages.resetStreamingAssistant();
         messages.beginStreamFollow();
@@ -220,16 +221,24 @@ export function createRealtime(options: {
         else if (deltaEvent?.type === "thinking_start") messages.startStreamingThinking(deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_delta") messages.appendStreamingThinkingDelta(deltaEvent.delta || "", deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_end") messages.endStreamingThinking(deltaEvent.content || deltaEvent.thinking, deltaEvent.contentIndex);
+        status.markActivityProgress(deltaEvent?.type?.startsWith("thinking") ? "thinking" : "responding");
         break;
       }
       case "tool_execution_start":
-        tools.startTool(event.toolCallId, event.toolName, event.args || {});
+        tools.startTool(event.toolCallId, event.toolName || "tool", event.args || {}, event.startedAt);
+        status.markActivityProgress(`tool: ${event.toolName || "tool"}`);
+        break;
+      case "tool_execution_update":
+        tools.updateToolProgress(event.toolCallId, event.toolName || "tool", event.partialResult, event.args || {}, event.startedAt);
+        status.markActivityProgress(`tool: ${event.toolName || "tool"}`);
         break;
       case "tool_execution_end":
-        tools.endTool(event.toolCallId, event.toolName, Boolean(event.isError), event.result);
+        tools.endTool(event.toolCallId, event.toolName || "tool", Boolean(event.isError), event.result);
+        status.markActivityProgress("waiting for assistant");
         break;
       case "agent_end":
         state.isStreaming = false;
+        status.markActivityEnd();
         composer.updatePrimaryAction();
         messages.resetStreamingAssistant();
         messages.endStreamFollow();
@@ -240,10 +249,12 @@ export function createRealtime(options: {
         break;
       case "compaction_start":
         state.isCompacting = true;
+        status.markActivityStart("compacting", event.startedAt);
         updateSessionStats(state.stats);
         break;
       case "compaction_end": {
         state.isCompacting = false;
+        status.markActivityEnd();
         updateSessionStats(state.stats);
         const extraClass = event.errorMessage && !event.aborted ? "compaction error" : "compaction";
         setCompactionMessage(compactionEndText(event), extraClass);
@@ -288,6 +299,8 @@ export function createRealtime(options: {
         updateMeta(data);
         state.isStreaming = Boolean(data.isStreaming);
         state.isCompacting = Boolean(data.isCompacting);
+        if (state.isStreaming || state.isCompacting) status.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtimeStartedAt || data.runtime?.startedAt);
+        else status.markActivityEnd();
         updateSessionStats(state.stats);
         composer.updatePrimaryAction();
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);

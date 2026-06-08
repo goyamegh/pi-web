@@ -11,7 +11,36 @@ export type StatusBar = {
   markWebSocketOpen: () => void;
   markWebSocketClosed: () => void;
   markSyncRequired: () => void;
+  markActivityStart: (label?: string, startedAt?: string | number | Date) => void;
+  markActivityProgress: (label?: string) => void;
+  markActivityEnd: () => void;
 };
+
+const activityVisibleDelayMs = 1500;
+const activityQuietNoticeMs = 30_000;
+const activityQuietWarnMs = 120_000;
+
+function formatActivityDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+type ActivityEntry = { startedAt?: number; lastUpdateAt: number; label: string };
+
+function parseActivityTimestamp(value: string | number | Date | undefined) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
 
 export function createStatusBar(options: {
   state: AppState;
@@ -23,6 +52,9 @@ export function createStatusBar(options: {
   refreshState: () => Promise<void>;
 }): StatusBar {
   const { state, elements, api, updateMeta, addMessage, refreshSessions, refreshState } = options;
+  const activityBySession = new Map<string, ActivityEntry>();
+  let activityTimer: number | undefined;
+  let activityShowTimer: number | undefined;
 
   function setStatusTitle(title: string) {
     const value = title.trim() || "New session";
@@ -120,6 +152,85 @@ export function createStatusBar(options: {
     elements.connectionStatusEl.className = "connectionStatus";
   }
 
+  function activityKey() {
+    return state.currentSessionId || "__current";
+  }
+
+  function currentActivity() {
+    return activityBySession.get(activityKey());
+  }
+
+  function updateActivityStatus(forceVisible = false) {
+    const activity = currentActivity();
+    if (!activity) return;
+    const now = Date.now();
+    const quietFor = now - activity.lastUpdateAt;
+    const quiet = quietFor >= activityQuietNoticeMs;
+    const warn = quietFor >= activityQuietWarnMs;
+    const elapsedText = activity.startedAt ? ` ${formatActivityDuration(now - activity.startedAt)}` : "";
+    elements.activityStatusEl.className = `activityStatus ${warn ? "stale" : quiet ? "quiet" : "running"}`;
+    elements.activityStatusEl.textContent = `Running${elapsedText}${activity.label ? ` · ${activity.label}` : ""}${quiet ? ` · no updates ${formatActivityDuration(quietFor)}` : ""}`;
+    elements.activityStatusEl.title = activity.startedAt
+      ? `Session is still active. Last update ${formatActivityDuration(quietFor)} ago.${state.isStreaming ? " Use Stop to cancel if needed." : ""}`
+      : `Session is still active, but its original start time is unavailable.${state.isStreaming ? " Use Stop to cancel if needed." : ""}`;
+    if (forceVisible) elements.activityStatusEl.hidden = false;
+  }
+
+  function clearActivityTimers() {
+    if (activityTimer !== undefined) window.clearInterval(activityTimer);
+    if (activityShowTimer !== undefined) window.clearTimeout(activityShowTimer);
+    activityTimer = undefined;
+    activityShowTimer = undefined;
+  }
+
+  function ensureActivityTimers() {
+    if (activityTimer === undefined) activityTimer = window.setInterval(() => updateActivityStatus(), 1000);
+    if (activityShowTimer === undefined && elements.activityStatusEl.hidden) {
+      activityShowTimer = window.setTimeout(() => {
+        activityShowTimer = undefined;
+        updateActivityStatus(true);
+      }, activityVisibleDelayMs);
+    }
+  }
+
+  function markActivityStart(label = "starting", startedAt?: string | number | Date) {
+    const now = Date.now();
+    const key = activityKey();
+    const parsedStartedAt = parseActivityTimestamp(startedAt);
+    let activity = activityBySession.get(key);
+    if (!activity) {
+      activity = { startedAt: parsedStartedAt, lastUpdateAt: now, label };
+      activityBySession.set(key, activity);
+      elements.activityStatusEl.hidden = true;
+    } else if (parsedStartedAt && (!activity.startedAt || Math.abs(activity.startedAt - parsedStartedAt) > 1000)) {
+      activity.startedAt = parsedStartedAt;
+    }
+    activity.lastUpdateAt = now;
+    activity.label = label;
+    updateActivityStatus(!elements.activityStatusEl.hidden);
+    ensureActivityTimers();
+  }
+
+  function markActivityProgress(label?: string) {
+    let activity = currentActivity();
+    if (!activity) {
+      markActivityStart(label || "working");
+      return;
+    }
+    activity.lastUpdateAt = Date.now();
+    if (label) activity.label = label;
+    updateActivityStatus(!elements.activityStatusEl.hidden);
+  }
+
+  function markActivityEnd() {
+    clearActivityTimers();
+    activityBySession.delete(activityKey());
+    elements.activityStatusEl.hidden = true;
+    elements.activityStatusEl.textContent = "";
+    elements.activityStatusEl.title = "";
+    elements.activityStatusEl.className = "activityStatus";
+  }
+
   function scheduleConnectionStatus() {
     if (state.reconnectNoticeTimer === undefined) {
       state.reconnectNoticeTimer = window.setTimeout(() => {
@@ -207,5 +318,8 @@ export function createStatusBar(options: {
     markWebSocketOpen,
     markWebSocketClosed,
     markSyncRequired,
+    markActivityStart,
+    markActivityProgress,
+    markActivityEnd,
   };
 }
