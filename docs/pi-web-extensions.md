@@ -11,7 +11,7 @@ Both styles run through pi's existing extension runtime. pi-web does not have a 
 
 | Use case | Location | Type import | Runs in pi TUI? | Runs in pi-web? |
 | --- | --- | --- | --- | --- |
-| Agent behavior, tools, commands, prompts, permission gates | `.pi/extensions` or `~/.pi/agent/extensions` | `ExtensionAPI` from `@mariozechner/pi-coding-agent` | Yes | Yes |
+| Agent behavior, tools, commands, prompts, permission gates | `.pi/extensions` or `~/.pi/agent/extensions` | `ExtensionAPI` from `@earendil-works/pi-coding-agent` | Yes | Yes |
 | Browser-only UI such as HTML footers | `.pi/web/extensions` or `~/.pi/web/extensions` | `PiWebExtensionAPI` from `@ashwin-pc/pi-web/extensions` | No | Yes |
 
 Use a regular pi extension when the extension should behave the same in terminal pi and pi-web. Use a pi-web extension when it depends on browser UI or HTML rendering.
@@ -21,7 +21,7 @@ Use a regular pi extension when the extension should behave the same in terminal
 Regular pi extensions continue to work in pi-web:
 
 ```ts
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {

@@ -19,7 +19,7 @@ import {
   type ExtensionUIContext,
   type SessionStartEvent,
   type SlashCommandInfo,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";

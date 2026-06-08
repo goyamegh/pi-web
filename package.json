@@ -47,7 +47,8 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.73.0",
+    "@earendil-works/pi-ai": "^0.78.1",
+    "@earendil-works/pi-coding-agent": "^0.78.1",
     "highlight.js": "^11.11.1",
     "lucide": "^1.14.0",
     "marked": "^15.0.12",

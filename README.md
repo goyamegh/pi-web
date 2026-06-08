@@ -1,6 +1,6 @@
 # pi-web
 
-A minimal, mobile-first local/Tailscale web UI for [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent).
+A minimal, mobile-first local/Tailscale web UI for [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
 pi-web is designed to feel like the core pi agent in a browser: small, direct, self-aware about its environment, and focused on helping you work with code rather than becoming a heavyweight IDE. It runs locally, works comfortably from a phone over Tailscale, and gives pi the web-specific context it needs to render artifacts, images, sessions, diffs, and tool output clearly.
 

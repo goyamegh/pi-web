@@ -28,7 +28,7 @@ import type {
   TurnStartEvent,
   UserBashEvent,
   UserBashEventResult,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 export type PiWebFooter =
   | string
