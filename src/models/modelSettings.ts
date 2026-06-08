@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { iconElement } from "../app/icons.js";
+import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState } from "../app/types.js";
 
 export type ModelSettings = {
@@ -41,6 +42,7 @@ export function createModelSettings(options: {
   }
 
   function setModelSettingsOpen(open: boolean) {
+    if (open) blurActiveEditableOnMobile();
     elements.modelSettingsPopover.hidden = !open;
     elements.modelSettingsButton.setAttribute("aria-expanded", String(open));
   }

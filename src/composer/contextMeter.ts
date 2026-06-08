@@ -1,4 +1,5 @@
 import type { AppElements } from "../app/elements.js";
+import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState, SessionStats } from "../app/types.js";
 
 export type ContextMeterController = {
@@ -138,6 +139,7 @@ export function createContextMeter(options: { state: AppState; elements: AppElem
   function init() {
     elements.contextMeterEl.addEventListener("click", () => {
       const open = elements.contextMeterPopoverEl.hidden;
+      if (open) blurActiveEditableOnMobile();
       renderPopover(state.stats);
       elements.contextMeterPopoverEl.hidden = !open;
       elements.contextMeterEl.setAttribute("aria-expanded", String(open));

@@ -1,3 +1,4 @@
+import { blurActiveEditableOnMobile } from "../app/focus.js";
 import { fetchGitCommit, fetchGitDiff, fetchGitLog, fetchGitRepos, fetchGitStatus, syncGit } from "./api.js";
 import { renderCommitView } from "./commitView.js";
 import { renderDiffView } from "./diffView.js";
@@ -44,6 +45,7 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
   }
 
   function setOpen(open: boolean) {
+    if (open) blurActiveEditableOnMobile();
     state.isOpen = open;
     panel.hidden = !open;
     button.classList.toggle("active", open);

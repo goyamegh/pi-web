@@ -3,6 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ImageAttachment, SlashCommand } from "../app/types.js";
 import { setIcon } from "../app/icons.js";
+import { focusIfKeyboardFriendly } from "../app/focus.js";
 
 export type ComposerController = {
   init: () => void;
@@ -89,6 +90,10 @@ export function createComposer(options: {
 
   function clearDraft() {
     try { localStorage.removeItem(draftStorageKey); } catch { /* ignore */ }
+  }
+
+  function settlePromptFocusAfterSubmit() {
+    if (!focusIfKeyboardFriendly(elements.promptEl)) elements.promptEl.blur();
   }
 
   function setPromptText(text: string) {
@@ -351,7 +356,7 @@ export function createComposer(options: {
           } catch (error) {
             addMessage("system", error instanceof Error ? error.message : String(error), "error");
           } finally {
-            elements.promptEl.focus();
+            settlePromptFocusAfterSubmit();
           }
           return;
         }
@@ -380,7 +385,7 @@ export function createComposer(options: {
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       } finally {
-        elements.promptEl.focus();
+        settlePromptFocusAfterSubmit();
       }
     });
 
@@ -486,7 +491,7 @@ export function createComposer(options: {
       setIcon(elements.expandButton, state.editorExpanded ? "minimize-2" : "maximize-2");
       elements.expandButton.title = state.editorExpanded ? "Collapse editor" : "Expand editor";
       elements.expandButton.setAttribute("aria-label", elements.expandButton.title);
-      elements.promptEl.focus();
+      focusIfKeyboardFriendly(elements.promptEl);
       void persistComposerSettings({ expanded: state.editorExpanded });
     });
 

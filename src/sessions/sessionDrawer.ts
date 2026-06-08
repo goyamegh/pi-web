@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { iconElement, setIcon, type IconName } from "../app/icons.js";
+import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 
@@ -159,6 +160,7 @@ export function createSessions(options: {
   }
 
   async function openFolderPicker(startPath: string) {
+    blurActiveEditableOnMobile();
     const backdrop = document.createElement("div");
     backdrop.className = "folderPickerBackdrop";
     const modal = document.createElement("div");
@@ -278,6 +280,7 @@ export function createSessions(options: {
   }
 
   function setSessionDrawerOpen(open: boolean) {
+    if (open) blurActiveEditableOnMobile();
     persistSessionDrawerOpen(open);
     if (!open) {
       closeOpenSessionActionsMenu();

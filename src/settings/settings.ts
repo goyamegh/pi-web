@@ -1,4 +1,5 @@
 import type { ApiClient } from "../app/api.js";
+import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
 import { defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
@@ -130,6 +131,7 @@ export function createSettings(options: {
   }
 
   function openSettings() {
+    blurActiveEditableOnMobile();
     elements.settingsBackdrop.hidden = false;
     elements.settingsPanel.hidden = false;
     setSettingsStatus("");

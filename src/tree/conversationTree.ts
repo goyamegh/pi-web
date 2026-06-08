@@ -1,4 +1,5 @@
 import type { ApiClient } from "../app/api.js";
+import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
@@ -497,6 +498,7 @@ export function createConversationTree(options: {
   }
 
   function setOpen(open: boolean) {
+    if (open) blurActiveEditableOnMobile();
     panel.hidden = !open;
     backdrop.hidden = !open;
     document.body.classList.toggle("conversationTreeOpen", open);
