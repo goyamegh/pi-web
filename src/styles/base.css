@@ -28,6 +28,14 @@ html, body {
      even with body { overflow: hidden }. Lock scroll position explicitly. */
   overscroll-behavior: none;
 }
+/* `overflow: clip` is stricter than `overflow: hidden` — it disables
+   programmatic scrolling entirely, which prevents iOS Safari from horizontally
+   scrolling the document while tracking the caret of a focused textarea.
+   Supported in Safari 16+, Chrome 90+, Firefox 81+. We keep `overflow: hidden`
+   above as a fallback for older engines. */
+@supports (overflow: clip) {
+  html, body { overflow: clip; }
+}
 body {
   margin: 0;
   min-height: var(--app-height);

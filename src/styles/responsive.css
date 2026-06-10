@@ -32,6 +32,22 @@
     padding-top: max(10px, env(safe-area-inset-top));
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
+  /* iOS Safari auto-zooms the page when the user focuses an input/textarea
+     whose font-size is < 16px. That zoom shifts the layout sideways, clips
+     the composer’s send button at the right edge, makes the session-bar
+     tabs overflow, and is what users experience as “the UI is a little
+     zoomed in”. Force 16px on every text input on mobile so iOS leaves the
+     page at the natural zoom level. */
+  textarea,
+  input[type="text"],
+  input[type="search"],
+  input[type="email"],
+  input[type="url"],
+  input[type="tel"],
+  input[type="password"],
+  input:not([type]) {
+    font-size: 16px;
+  }
   .composer {
     margin: 0 10px;
     margin-bottom: max(0px, env(safe-area-inset-bottom));

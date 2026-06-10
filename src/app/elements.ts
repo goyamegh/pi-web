@@ -144,4 +144,15 @@ export function initAppHeightSync() {
   window.addEventListener("resize", syncAppHeight);
   window.visualViewport?.addEventListener("resize", syncAppHeight);
   window.visualViewport?.addEventListener("scroll", syncAppHeight);
+  // iOS Safari ignores `html, body { overflow: hidden }` when the user types
+  // in a focused textarea: it scrolls the document horizontally to keep the
+  // caret in view, which clips the composer footer (send button) at the right
+  // edge. The visualViewport `scroll` event does NOT fire for document scroll,
+  // so we also need a window-level scroll listener to snap back.
+  window.addEventListener("scroll", syncAppHeight, { passive: true });
+  // After focusing an input, iOS may scroll once more on the next frame;
+  // schedule a follow-up snap-back so the UI never lands offset.
+  document.addEventListener("focusin", () => {
+    requestAnimationFrame(syncAppHeight);
+  }, { passive: true });
 }
