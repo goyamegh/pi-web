@@ -198,10 +198,12 @@ settings = createSettings({
   api,
   addMessage: messages.addMessage,
   onNavPinnedChange: (pinned) => {
+    // "Keep navigation open" only forces the drawer open when enabled. When
+    // disabled we leave the drawer to its normal persisted/user-controlled
+    // state instead of force-closing it (origin persists drawer-open across
+    // refreshes, and force-closing here would override that).
     if (pinned && window.innerWidth > 700) {
       sessions.setSessionDrawerOpen(true);
-    } else if (!pinned) {
-      sessions.setSessionDrawerOpen(false);
     }
   },
   onNavWidthChange: (width) => {

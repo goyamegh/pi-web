@@ -87,8 +87,10 @@ test.describe("agent UI", () => {
 
     // Pinning re-renders the list (cachedSessions is mapped, the drawer is
     // re-built). If the spread that copies a session into the new list ever
-    // drops the `agent` field, the badge would vanish here.
-    await ccRow.locator(".sessionItemPinBtn").click();
+    // drops the `agent` field, the badge would vanish here. The current drawer
+    // pins a session through its per-row actions menu.
+    await ccRow.locator(".sessionItemActionsBtn").click();
+    await page.locator(".sessionActionsMenuItem", { hasText: "Pin to tab bar" }).click();
 
     await expect(page.locator(".sessionAgentBadge.sessionAgentBadge-claude-code")).toHaveCount(1);
     await expect(page.locator(".sessionAgentBadge")).toHaveCount(3);

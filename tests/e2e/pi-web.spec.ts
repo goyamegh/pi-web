@@ -597,9 +597,9 @@ test.describe("sessions drawer", () => {
     expect(drawerBox!.width).toBeLessThanOrEqual(390);
 
     const items = page.locator(".sessionItem");
-    await expect(items).toHaveCount(2);
+    await expect(items).toHaveCount(3);
 
-    for (let i = 0; i < 2; i += 1) {
+    for (let i = 0; i < 3; i += 1) {
       const item = items.nth(i);
       const itemBox = await item.boundingBox();
       const titleBox = await item.locator(".sessionItemTitle").boundingBox();

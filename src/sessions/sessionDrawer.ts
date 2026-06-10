@@ -1200,6 +1200,12 @@ export function createSessions(options: {
   // ── Session list ───────────────────────────────────────────────────────────
 
   function renderSessionList(sessions: SessionInfo[]) {
+    // Never rebuild the list while the user is inline-renaming a row — removing
+    // the focused <input> fires blur, which saves the partial value. Streaming
+    // runtime/UI-state updates can trigger renders from several paths; this
+    // central guard covers them all. finish() clears activeRenameSessionId
+    // before its own re-render, so committing/cancelling still refreshes.
+    if (activeRenameSessionId !== null) return;
     closeOpenSessionActionsMenu();
     elements.sessionListEl.textContent = "";
 
