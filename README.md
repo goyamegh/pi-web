@@ -1,4 +1,7 @@
-# pi-web
+# pi-web (Claude Code fork)
+
+> **A fork of [pi-web](https://github.com/ashwin-pc/pi-web) that also supports [Claude Code](https://docs.anthropic.com/en/docs/claude-code).**
+> A per-session agent selector lets you drive both the pi agent and the local `claude` CLI from one unified web UI — the session drawer, tabs, model picker, and slash-command palette all work across both agents.
 
 A minimal, mobile-first local/Tailscale web UI for [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
@@ -7,6 +10,17 @@ pi-web is designed to feel like the core pi agent in a browser: small, direct, s
 | Desktop | Mobile |
 | --- | --- |
 | ![pi-web desktop showcase](tests/e2e/visual.spec.ts-snapshots/hero-showcase-desktop.png) | ![pi-web mobile showcase](tests/e2e/visual.spec.ts-snapshots/hero-showcase-mobile.png) |
+
+## This fork: Claude Code support
+
+This is a fork of [`ashwin-pc/pi-web`](https://github.com/ashwin-pc/pi-web) that adds a **per-session agent selector**, so you can run **Claude Code** sessions alongside pi from the same UI:
+
+- Pick **pi** or **claude-code** per session from the model popover (the agent is locked once a session has messages — start a new session to switch).
+- Claude Code sessions drive the local `claude` CLI in streaming-JSON mode, replay existing `~/.claude/projects` transcripts, and surface CC's native + project/plugin slash commands and skills in the command palette.
+- The unified session drawer tags every row with a `pi` / `cc` badge so mixed-agent lists stay scannable.
+- Works with Amazon Bedrock out of the box via the usual `CLAUDE_CODE_USE_BEDROCK` / `AWS_*` environment variables.
+
+Other additions in this fork: a repo info bar with branch + PR hyperlink, draggable session-drawer width, pin-folders, inline session rename, saved/bookmarked sessions, and an optional supervisor-managed tunnel (`PI_WEB_TUNNEL_*`).
 
 ## Why pi-web?
 
