@@ -882,7 +882,6 @@ function simplifySessionInfo(
     cwd: info.cwd || cwd,
     agent: resolvedAgent,
     isCurrent: false,
-    inactive: inactiveSessionIds.has(info.id),
     saved: savedSessionIds.has(info.id),
     runtime: runtimeForPath(info.path),
   };
@@ -1274,22 +1273,6 @@ const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
-
-// Inactive sessions store
-const inactiveSessionsFile = join(getAgentDir(), "pi-web-inactive-sessions.json");
-let inactiveSessionIds: Set<string> = new Set();
-(async () => {
-  try {
-    const data = JSON.parse(await readFile(inactiveSessionsFile, "utf-8"));
-    if (Array.isArray(data)) inactiveSessionIds = new Set(data);
-  } catch {}
-})();
-async function persistInactiveSessions() {
-  await mkdir(dirname(inactiveSessionsFile), { recursive: true });
-  const tmp = `${inactiveSessionsFile}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, JSON.stringify([...inactiveSessionIds]), "utf-8");
-  await rename(tmp, inactiveSessionsFile);
-}
 
 // Saved sessions store
 const savedSessionsFile = join(getAgentDir(), "pi-web-saved-sessions.json");
@@ -2319,17 +2302,6 @@ const server = createServer(async (req, res) => {
         targetSession.setSessionName(name);
         const state = currentStateWithThinkingLevels(targetSession);
         return sendJson(res, 200, { ok: true, ...state });
-      }
-
-      if (method === "POST" && url.pathname === "/api/session/active") {
-        const body = await readBody(req) as { sessionId?: unknown; inactive?: unknown };
-        const targetId = typeof body.sessionId === "string" ? body.sessionId : "";
-        if (!targetId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
-        const inactive = Boolean(body.inactive);
-        if (inactive) inactiveSessionIds.add(targetId);
-        else inactiveSessionIds.delete(targetId);
-        await persistInactiveSessions();
-        return sendJson(res, 200, { ok: true, sessionId: targetId, inactive });
       }
 
       if (method === "POST" && url.pathname === "/api/session/saved") {

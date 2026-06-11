@@ -1156,7 +1156,6 @@ export function createSessions(options: {
 
   function filterSessionItems(items: SessionInfo[]): SessionInfo[] {
     let result = items;
-    if (state.hideInactiveSessions) result = result.filter(i => !i.inactive);
     if (state.showSavedOnly) result = result.filter(i => i.saved);
     return result;
   }
@@ -1164,20 +1163,6 @@ export function createSessions(options: {
   function renderFilterBar() {
     const bar = document.createElement("div");
     bar.className = "sessionFilterBar";
-
-    const hideInactiveLabel = document.createElement("label");
-    hideInactiveLabel.className = "sessionFilterToggle";
-    const hideInactiveCheckbox = document.createElement("input");
-    hideInactiveCheckbox.type = "checkbox";
-    hideInactiveCheckbox.checked = state.hideInactiveSessions;
-    hideInactiveCheckbox.addEventListener("change", () => {
-      state.hideInactiveSessions = hideInactiveCheckbox.checked;
-      localStorage.setItem("pi-web:hideInactiveSessions", String(state.hideInactiveSessions));
-      renderSessionList(cachedSessions);
-    });
-    const hideInactiveText = document.createElement("span");
-    hideInactiveText.textContent = "Hide inactive";
-    hideInactiveLabel.append(hideInactiveCheckbox, hideInactiveText);
 
     const savedOnlyLabel = document.createElement("label");
     savedOnlyLabel.className = "sessionFilterToggle";
@@ -1193,7 +1178,7 @@ export function createSessions(options: {
     savedOnlyText.textContent = "Saved only";
     savedOnlyLabel.append(savedOnlyCheckbox, savedOnlyText);
 
-    bar.append(hideInactiveLabel, savedOnlyLabel);
+    bar.append(savedOnlyLabel);
     return bar;
   }
 
@@ -1359,7 +1344,7 @@ export function createSessions(options: {
     const originalDisplay = navBtn.style.display;
     navBtn.style.display = "none";
     // Hide action buttons during rename
-    const actionBtns = row.querySelectorAll<HTMLElement>(".sessionRenameBtn, .sessionActiveToggle, .sessionBookmarkBtn");
+    const actionBtns = row.querySelectorAll<HTMLElement>(".sessionRenameBtn, .sessionBookmarkBtn");
     actionBtns.forEach(btn => btn.style.display = "none");
 
     row.insertBefore(input, navBtn.nextSibling);
@@ -1419,7 +1404,7 @@ export function createSessions(options: {
     const pinned = isPinned(item.id);
     const pinToolSelected = selectedSessionRowTool === "pin";
     const row = document.createElement("div");
-    row.className = `sessionItem${item.isCurrent ? " current" : ""}${pinned ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}${item.inactive ? " inactive" : ""}`;
+    row.className = `sessionItem${item.isCurrent ? " current" : ""}${pinned ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
     if (item.isCurrent) row.setAttribute("aria-current", "page");
 
     const markerButton = document.createElement("button");
@@ -1541,28 +1526,6 @@ export function createSessions(options: {
       beginInlineRename(row, navBtn, item);
     });
 
-    // ── Active/Inactive toggle ──────────────────────────────────────────────
-    const activeToggle = document.createElement("button");
-    activeToggle.type = "button";
-    activeToggle.className = `sessionActiveToggle${item.inactive ? " inactive" : ""}`;
-    activeToggle.title = item.inactive ? "Mark as active" : "Mark as inactive";
-    activeToggle.setAttribute("aria-label", activeToggle.title);
-    activeToggle.textContent = "\u25CF";
-    activeToggle.addEventListener("click", async () => {
-      try {
-        const res = await fetch("/api/session/active", {
-          method: "POST",
-          headers: api.headers(),
-          body: JSON.stringify({ sessionId: item.id, inactive: !item.inactive }),
-        });
-        if (!res.ok) throw new Error(await res.text());
-        item.inactive = !item.inactive;
-        renderSessionList(cachedSessions);
-      } catch (error) {
-        addMessage("system", error instanceof Error ? error.message : String(error), "error");
-      }
-    });
-
     // ── Bookmark/Saved toggle ──────────────────────────────────────────────
     const bookmarkBtn = document.createElement("button");
     bookmarkBtn.type = "button";
@@ -1585,7 +1548,7 @@ export function createSessions(options: {
       }
     });
 
-    row.append(markerButton, navBtn, renameBtn, activeToggle, bookmarkBtn, actionsBtn);
+    row.append(markerButton, navBtn, renameBtn, bookmarkBtn, actionsBtn);
     return row;
   }
 

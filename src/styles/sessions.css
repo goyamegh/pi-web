@@ -977,38 +977,6 @@ body.hasPinnedSessions .app {
   color: var(--text);
 }
 
-/* Active/Inactive toggle button */
-.sessionActiveToggle {
-  flex: 0 0 auto;
-  width: 24px;
-  min-width: 24px;
-  height: auto;
-  min-height: 0;
-  align-self: center;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: #22c55e;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  transition: color .15s;
-}
-.sessionActiveToggle.inactive {
-  color: #ef4444;
-}
-.sessionActiveToggle:hover {
-  background: var(--panel-2);
-}
-
-/* Inactive session styling */
-.sessionItem.inactive {
-  opacity: 0.5;
-}
-.sessionItem.inactive .sessionItemTitle {
-  text-decoration: line-through;
-}
-
 /* Bookmark button */
 .sessionBookmarkBtn {
   flex: 0 0 auto;

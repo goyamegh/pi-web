@@ -218,7 +218,6 @@ export type SessionInfo = {
   cwd?: string;
   agent?: AgentKind;
   isCurrent: boolean;
-  inactive?: boolean;
   saved?: boolean;
   runtime?: {
     loaded: boolean;
@@ -256,7 +255,6 @@ export type AppState = {
   currentCapabilities: AgentCapabilities;
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
-  hideInactiveSessions: boolean;
   showSavedOnly: boolean;
   queueMode: QueueMode;
   attachedImages: ImageAttachment[];
@@ -362,7 +360,6 @@ export function createAppState(): AppState {
     currentCapabilities: defaultAgentCapabilities,
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
-    hideInactiveSessions: localStorage.getItem("pi-web:hideInactiveSessions") === "true",
     showSavedOnly: localStorage.getItem("pi-web:showSavedOnly") === "true",
     queueMode: "steer",
     attachedImages: [],
