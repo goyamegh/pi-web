@@ -115,6 +115,7 @@ export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; no
 export type SessionUiState = {
   version: 1;
   pinnedSessions: PinnedSession[];
+  pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   selectedMarkerColor: SessionMarkerColorId;
 };
@@ -130,6 +131,7 @@ export const sessionMarkerColors: SessionMarkerColor[] = [
 export const defaultSessionUiState: SessionUiState = {
   version: 1,
   pinnedSessions: [],
+  pinnedFolders: [],
   sessionMarkers: [],
   selectedMarkerColor: "blue",
 };
@@ -144,6 +146,7 @@ const legacyMarkerBucketToColor: Record<string, SessionMarkerColorId> = {
 };
 
 const pinnedSessionsKey = "pi-web-pinned-sessions";
+const pinnedFoldersKey = "pi-web-pinned-folders";
 const sessionMarkersKey = "pi-web-session-markers";
 const selectedMarkerColorKey = "pi-web-selected-session-marker-color";
 
@@ -151,6 +154,19 @@ export function normalizeMarkerColor(value: unknown): SessionMarkerColorId | und
   return typeof value === "string" && markerColorIds.has(value as SessionMarkerColorId)
     ? value as SessionMarkerColorId
     : undefined;
+}
+
+export function normalizePinnedFolders(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    const cwd = typeof item === "string" ? item.trim() : "";
+    if (!cwd || seen.has(cwd)) continue;
+    seen.add(cwd);
+    result.push(cwd);
+  }
+  return result;
 }
 
 export function normalizePinnedSessions(value: unknown): PinnedSession[] {
@@ -187,6 +203,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   return {
     version: 1,
     pinnedSessions: normalizePinnedSessions(raw.pinnedSessions),
+    pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
   };
@@ -195,6 +212,12 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
 export function readLegacyPinnedSessions(): PinnedSession[] {
   try {
     return normalizePinnedSessions(JSON.parse(localStorage.getItem(pinnedSessionsKey) || "[]"));
+  } catch { return []; }
+}
+
+export function readLegacyPinnedFolders(): string[] {
+  try {
+    return normalizePinnedFolders(JSON.parse(localStorage.getItem(pinnedFoldersKey) || "[]"));
   } catch { return []; }
 }
 
@@ -249,6 +272,7 @@ export type AppState = {
   connectionLostTimer: number | undefined;
   reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
+  pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   selectedMarkerColor: SessionMarkerColorId;
   currentAgent: AgentKind;
@@ -354,6 +378,7 @@ export function createAppState(): AppState {
     connectionLostTimer: undefined,
     reconnectedClearTimer: undefined,
     pinnedSessions: readLegacyPinnedSessions(),
+    pinnedFolders: readLegacyPinnedFolders(),
     sessionMarkers: readLegacySessionMarkers(),
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     currentAgent: "pi",
