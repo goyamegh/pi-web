@@ -68,6 +68,40 @@ test.describe("composer layout", () => {
     expect(data.cwd).toBe("/tmp");
   });
 
+  test("running activity badge keeps header actions right-aligned", async ({ page }) => {
+    await page.goto("/");
+
+    const readLayout = () =>
+      page.locator("#statusBar").evaluate((bar) => {
+        const rect = bar.getBoundingClientRect();
+        const lastActionRect = bar.querySelector("#currentSessionBucketButton")?.getBoundingClientRect();
+        return {
+          scrollWidth: bar.scrollWidth,
+          clientWidth: bar.clientWidth,
+          right: rect.right,
+          lastActionRight: lastActionRect?.right || 0,
+          viewportWidth: window.innerWidth,
+        };
+      });
+    const expectActionsAtRight = (layout: Awaited<ReturnType<typeof readLayout>>) => {
+      expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+      expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth + 1);
+      expect(layout.lastActionRight).toBeLessThanOrEqual(layout.viewportWidth + 1);
+      expect(layout.lastActionRight).toBeGreaterThanOrEqual(layout.right - 12);
+    };
+
+    expectActionsAtRight(await readLayout());
+
+    await page.locator("#activityStatus").evaluate((el) => {
+      el.hidden = false;
+      el.className = "activityStatus running";
+      el.textContent = "Running 12m 34s · tool: bash · no updates 45s";
+    });
+
+    expectActionsAtRight(await readLayout());
+  });
+
+
   test("shows transient WebSocket reconnect state outside the chat", async ({ page }) => {
     let messagesRequestCount = 0;
     await page.route("**/api/messages**", async (route) => {
@@ -823,6 +857,19 @@ test.describe("tool cards", () => {
     await expect(page.locator(".message.tool")).toHaveCount(0);
   });
 
+  test("adds elapsed time when a running tool timestamp arrives after the card", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop", "Timer regression is covered once on desktop.");
+
+    await page.goto("/");
+    await page.locator("#prompt").fill("late tool timestamp");
+    await page.locator("#primaryButton").click();
+
+    const liveCard = page.locator(".toolCard.toolCard--running", { hasText: "read" }).last();
+    await expect(liveCard).toBeVisible();
+    await expect(liveCard.locator(".toolCardProgress")).toContainText(/running [1-9]s|running \d+m/, { timeout: 3000 });
+    await expect(page.locator(".toolCard--running")).toHaveCount(0, { timeout: 6000 });
+  });
+
   test("keeps running elapsed timers when returning to a running session", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "desktop", "Timer regression is covered once on desktop.");
 
@@ -834,11 +881,9 @@ test.describe("tool cards", () => {
     await expect(liveCard).toBeVisible();
 
     await page.waitForTimeout(2200);
-    await expect(page.locator("#activityStatus")).toContainText(/Running [2-9]s|Running \d+m/);
     await expect(liveCard.locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
 
     await page.reload();
-    await expect(page.locator("#activityStatus")).toContainText(/Running [2-9]s|Running \d+m/);
     const reloadedCard = page.locator(".toolCard.toolCard--running", { hasText: "read" }).last();
     await expect(reloadedCard).toBeVisible();
     await expect(reloadedCard.locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
@@ -847,10 +892,33 @@ test.describe("tool cards", () => {
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
 
     await page.goto("/?sessionId=mock-current");
-    await expect(page.locator("#activityStatus")).toContainText(/Running [2-9]s|Running \d+m/);
     const restoredCard = page.locator(".toolCard.toolCard--running", { hasText: "read" }).last();
     await expect(restoredCard).toBeVisible();
     await expect(restoredCard.locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
+  });
+
+  test("keeps quiet activity elapsed when returning to a running session", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop", "Timer regression is covered once on desktop.");
+
+    const quietPattern = /no updates (3[0-9]|4[0-9]|5[0-9])s|no updates \d+m/;
+
+    await page.goto("/");
+    await page.locator("#prompt").fill("quiet runtime");
+    await page.locator("#primaryButton").click();
+
+    await expect(page.locator("#runtimeStatus")).toContainText(quietPattern);
+
+    await page.reload();
+    await expect(page.locator("#runtimeStatus")).toContainText(quietPattern);
+
+    await page.goto("/?sessionId=mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+
+    await page.goto("/?sessionId=mock-current");
+    await expect(page.locator("#runtimeStatus")).toContainText(quietPattern);
+
+    await page.locator("#stopButton").click();
+    await expect(page.locator("#runtimeStatus")).toBeHidden();
   });
 
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {

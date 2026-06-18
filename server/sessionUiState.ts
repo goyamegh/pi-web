@@ -15,11 +15,18 @@ export type SessionMarker = {
   updatedAt: string;
 };
 
+export type SessionUnreadState = {
+  sessionId: string;
+  unreadAt: string;
+  updatedAt: string;
+};
+
 export type SessionUiState = {
   version: 1;
   pinnedSessions: PinnedSession[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
+  sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
 };
 
@@ -27,6 +34,7 @@ export type SessionUiStatePatch = Partial<{
   pinnedSessions: unknown;
   pinnedFolders: unknown;
   sessionMarkers: unknown;
+  sessionUnreadStates: unknown;
   selectedMarkerColor: unknown;
 }>;
 
@@ -44,6 +52,7 @@ export const defaultSessionUiState: SessionUiState = {
   pinnedSessions: [],
   pinnedFolders: [],
   sessionMarkers: [],
+  sessionUnreadStates: [],
   selectedMarkerColor: "blue",
 };
 
@@ -85,6 +94,15 @@ function normalizeSessionMarker(value: unknown): SessionMarker | undefined {
   return { sessionId, color, updatedAt };
 }
 
+function normalizeSessionUnreadState(value: unknown): SessionUnreadState | undefined {
+  if (!isRecord(value)) return undefined;
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
+  if (!sessionId) return undefined;
+  const unreadAt = typeof value.unreadAt === "string" && value.unreadAt.trim() ? value.unreadAt.trim() : new Date().toISOString();
+  const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : unreadAt;
+  return { sessionId, unreadAt, updatedAt };
+}
+
 function uniqueBy<T>(items: T[], key: (item: T) => string) {
   const seen = new Set<string>();
   const result: T[] = [];
@@ -113,6 +131,10 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     state.sessionMarkers = uniqueBy(value.sessionMarkers.map(normalizeSessionMarker).filter(Boolean) as SessionMarker[], (item) => item.sessionId);
   }
 
+  if (Array.isArray(value.sessionUnreadStates)) {
+    state.sessionUnreadStates = uniqueBy(value.sessionUnreadStates.map(normalizeSessionUnreadState).filter(Boolean) as SessionUnreadState[], (item) => item.sessionId);
+  }
+
   state.selectedMarkerColor = normalizeMarkerColor(value.selectedMarkerColor) || state.selectedMarkerColor;
   return state;
 }
@@ -131,6 +153,10 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
   if ("sessionMarkers" in patch && Array.isArray(patch.sessionMarkers)) {
     next.sessionMarkers = uniqueBy(patch.sessionMarkers.map(normalizeSessionMarker).filter(Boolean) as SessionMarker[], (item) => item.sessionId);
+  }
+
+  if ("sessionUnreadStates" in patch && Array.isArray(patch.sessionUnreadStates)) {
+    next.sessionUnreadStates = uniqueBy(patch.sessionUnreadStates.map(normalizeSessionUnreadState).filter(Boolean) as SessionUnreadState[], (item) => item.sessionId);
   }
 
   const selectedMarkerColor = normalizeMarkerColor(patch.selectedMarkerColor);
@@ -179,6 +205,28 @@ export function createSessionUiStateStore(file: string) {
     return serializeWrite(async () => writeState(applySessionUiStatePatch(await read(), value)));
   }
 
+  async function markUnread(sessionId: string, unreadAt = new Date().toISOString()) {
+    const id = sessionId.trim();
+    if (!id) return read();
+    return serializeWrite(async () => {
+      const current = await read();
+      if (current.sessionUnreadStates.some((item) => item.sessionId === id)) return current;
+      const next: SessionUnreadState = { sessionId: id, unreadAt, updatedAt: new Date().toISOString() };
+      return writeState({ ...current, sessionUnreadStates: [next, ...current.sessionUnreadStates] });
+    });
+  }
+
+  async function markRead(sessionId: string) {
+    const id = sessionId.trim();
+    if (!id) return read();
+    return serializeWrite(async () => {
+      const current = await read();
+      const sessionUnreadStates = current.sessionUnreadStates.filter((item) => item.sessionId !== id);
+      if (sessionUnreadStates.length === current.sessionUnreadStates.length) return current;
+      return writeState({ ...current, sessionUnreadStates });
+    });
+  }
+
   async function removeSession(sessionId: string) {
     return serializeWrite(async () => {
       const current = await read();
@@ -186,9 +234,10 @@ export function createSessionUiStateStore(file: string) {
         ...current,
         pinnedSessions: current.pinnedSessions.filter((item) => item.id !== sessionId),
         sessionMarkers: current.sessionMarkers.filter((item) => item.sessionId !== sessionId),
+        sessionUnreadStates: current.sessionUnreadStates.filter((item) => item.sessionId !== sessionId),
       });
     });
   }
 
-  return { file, read, write, patch, removeSession };
+  return { file, read, write, patch, markUnread, markRead, removeSession };
 }

@@ -78,7 +78,8 @@
 }
 .activityStatus,
 .connectionStatus {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: min(220px, 34vw);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -120,4 +121,35 @@
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--accent);
   cursor: pointer;
+}
+
+@media (max-width: 700px) {
+  .statusBar {
+    gap: 4px;
+  }
+
+  .statusTitle {
+    max-width: 28vw;
+  }
+
+  .statusPath {
+    color: var(--muted);
+    font-size: 10px;
+    pointer-events: auto;
+  }
+
+  .activityStatus {
+    flex: 0 1 auto;
+    width: auto;
+    max-width: min(116px, 30vw);
+    height: auto;
+    padding: 1px 6px;
+    text-indent: 0;
+    overflow: hidden;
+    font-size: 10px;
+  }
+
+  .activityStatus::before {
+    content: none;
+  }
 }

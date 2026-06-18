@@ -205,9 +205,11 @@ describe("pi-web mock API", () => {
   });
 
   it("persists and returns server session UI state", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(initial.sessionUiState.pinnedSessions).toEqual([]);
     expect(initial.sessionUiState.pinnedFolders).toEqual([]);
+    expect(initial.sessionUiState.sessionUnreadStates).toEqual([]);
     expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
 
     const patchedRes = await fetch(`${baseUrl}/api/session-ui-state`, {
@@ -217,6 +219,7 @@ describe("pi-web mock API", () => {
         pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
         pinnedFolders: ["/work/repo-a", "/work/repo-b", "/work/repo-a", "", "  "],
         sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
+        sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
         selectedMarkerColor: "green",
       }),
     });
@@ -226,12 +229,23 @@ describe("pi-web mock API", () => {
       pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
       pinnedFolders: ["/work/repo-a", "/work/repo-b"],
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
+      sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z" }],
       selectedMarkerColor: "green",
     });
+
+    const readRes = await fetch(`${baseUrl}/api/session-ui-state/read`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-older" }),
+    });
+    expect(readRes.status).toBe(200);
+    const read = await readRes.json();
+    expect(read.sessionUiState.sessionUnreadStates).toEqual([]);
 
     const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(current.sessionUiState.selectedMarkerColor).toBe("green");
     expect(current.sessionUiState.pinnedFolders).toEqual(["/work/repo-a", "/work/repo-b"]);
+    expect(current.sessionUiState.sessionUnreadStates).toEqual([]);
 
     // Reset for downstream tests.
     await fetch(`${baseUrl}/api/session-ui-state`, {

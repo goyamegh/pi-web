@@ -112,11 +112,13 @@ export type PinnedSession = { id: string; label: string; cwd?: string };
 export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
 export type SessionMarkerColor = { id: SessionMarkerColorId; label: string };
 export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; note?: string; updatedAt: string };
+export type SessionUnreadState = { sessionId: string; unreadAt: string; updatedAt: string };
 export type SessionUiState = {
   version: 1;
   pinnedSessions: PinnedSession[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
+  sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
 };
 
@@ -133,6 +135,7 @@ export const defaultSessionUiState: SessionUiState = {
   pinnedSessions: [],
   pinnedFolders: [],
   sessionMarkers: [],
+  sessionUnreadStates: [],
   selectedMarkerColor: "blue",
 };
 
@@ -198,6 +201,21 @@ export function normalizeSessionMarkers(value: unknown): SessionMarker[] {
   return result;
 }
 
+export function normalizeSessionUnreadStates(value: unknown): SessionUnreadState[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: SessionUnreadState[] = [];
+  for (const item of value) {
+    const sessionId = typeof item?.sessionId === "string" ? item.sessionId.trim() : "";
+    if (!sessionId || seen.has(sessionId)) continue;
+    seen.add(sessionId);
+    const unreadAt = typeof item?.unreadAt === "string" && item.unreadAt.trim() ? item.unreadAt : new Date().toISOString();
+    const updatedAt = typeof item?.updatedAt === "string" && item.updatedAt.trim() ? item.updatedAt : unreadAt;
+    result.push({ sessionId, unreadAt, updatedAt });
+  }
+  return result;
+}
+
 export function normalizeSessionUiState(value: unknown): SessionUiState {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   return {
@@ -205,6 +223,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     pinnedSessions: normalizePinnedSessions(raw.pinnedSessions),
     pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
+    sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
   };
 }
@@ -248,8 +267,11 @@ export type SessionInfo = {
     isStreaming: boolean;
     isCompacting: boolean;
     startedAt?: string;
+    lastActivityAt?: string;
     pendingMessageCount: number;
   };
+  unread?: boolean;
+  unreadAt?: string;
 };
 
 export type AppState = {
@@ -274,6 +296,7 @@ export type AppState = {
   pinnedSessions: PinnedSession[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
+  sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
   currentAgent: AgentKind;
   currentCapabilities: AgentCapabilities;
@@ -380,6 +403,7 @@ export function createAppState(): AppState {
     pinnedSessions: readLegacyPinnedSessions(),
     pinnedFolders: readLegacyPinnedFolders(),
     sessionMarkers: readLegacySessionMarkers(),
+    sessionUnreadStates: [],
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     currentAgent: "pi",
     currentCapabilities: defaultAgentCapabilities,

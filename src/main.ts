@@ -145,7 +145,11 @@ async function refreshState() {
   updateMeta(data);
   state.isStreaming = Boolean(data.isStreaming);
   state.isCompacting = Boolean(data.isCompacting);
-  if (state.isStreaming || state.isCompacting) statusBar.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtimeStartedAt || data.runtime?.startedAt);
+  if (state.isStreaming || state.isCompacting) statusBar.markActivityStart(
+    state.isCompacting ? "compacting" : "active",
+    data.runtimeStartedAt || data.runtime?.startedAt,
+    data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
+  );
   else statusBar.markActivityEnd();
   contextMeter.update(state.stats);
   composer.updatePrimaryAction();
@@ -158,6 +162,7 @@ async function refreshState() {
     if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
   }
   state.initialSyncComplete = messagesResult.status === "fulfilled";
+  if (messagesResult.status === "fulfilled") sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   composer.updatePrimaryAction();
 }
 
