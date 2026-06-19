@@ -316,6 +316,50 @@ test.describe("composer layout", () => {
     expect(sessions.sessions.find((item: any) => item.id === "mock-current").name).toBe("Renamed from title");
   });
 
+  test("status title is selection-proof so iOS taps reach the rename handler", async ({ page }) => {
+    // Regression (iOS Safari): tapping the title <span> was interpreted as a
+    // native text-selection gesture (blue handles + magnifier) which competed
+    // with / swallowed the click that opens the rename input. The title must
+    // therefore be non-user-selectable and use touch-action: manipulation.
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    const styles = await page.locator("#statusTitle").evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        userSelect: cs.userSelect,
+        webkitUserSelect: (cs as any).webkitUserSelect,
+        touchAction: cs.touchAction,
+        role: el.getAttribute("role"),
+      };
+    });
+    expect(styles.role).toBe("button");
+    expect([styles.userSelect, styles.webkitUserSelect]).toContain("none");
+    expect(styles.touchAction).toBe("manipulation");
+  });
+
+  test("tapping the status title on touch opens the rename input and survives an iOS keyboard blur", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "Touch-tap + iOS blur race is only meaningful on the mobile project.");
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+
+    // Real touch tap (not a synthetic mouse click) must open the rename input.
+    const box = await page.locator("#statusTitle").boundingBox();
+    expect(box).not.toBeNull();
+    await page.touchscreen.tap(box!.x + Math.min(40, box!.width / 2), box!.y + box!.height / 2);
+    await expect(page.locator("#statusTitle input")).toBeVisible();
+
+    // iOS Safari fires a spurious blur right after focus while the on-screen
+    // keyboard animates in. The editor must NOT be torn down by it (otherwise
+    // the tap appears to "do nothing"). Fire that blur within the grace window.
+    await page.locator("#statusTitle input").evaluate((el) => el.dispatchEvent(new FocusEvent("blur")));
+    await expect(page.locator("#statusTitle input")).toBeVisible();
+
+    // And the rename still saves through the input.
+    await page.locator("#statusTitle input").fill("Renamed on iPhone");
+    await page.locator("#statusTitle input").press("Enter");
+    await expect(page.locator("#statusTitle")).toHaveText("Renamed on iPhone");
+  });
+
   test("inline rename of a streaming session is not clobbered by runtime updates", async ({ page }) => {
     // Regression: while a session is streaming, session_runtime_changed events
     // (and pi_event-driven session refreshes) used to call renderSessionList,
