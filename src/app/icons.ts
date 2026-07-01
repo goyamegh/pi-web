@@ -1,10 +1,13 @@
-import { Bookmark, Brain, CornerDownRight, createElement, Flag, GitBranch, GitFork, KeyRound, Maximize2, Minimize2, Menu, MoreVertical, Paperclip, Pencil, Pin, Route, SendHorizontal, Settings, Square, SquarePen, Star, Trash2, X } from "lucide";
+import { Bookmark, Brain, Check, Copy, CornerDownRight, createElement, Flag, Funnel, GitBranch, GitFork, KeyRound, Maximize2, Minimize2, Menu, MoreVertical, Paperclip, Pencil, Pin, RotateCcw, Route, ScrollText, SendHorizontal, Settings, Square, SquarePen, Star, Trash2, X } from "lucide";
 
 const iconNodes = {
   bookmark: Bookmark,
   brain: Brain,
+  check: Check,
+  copy: Copy,
   "corner-down-right": CornerDownRight,
   flag: Flag,
+  funnel: Funnel,
   "git-branch": GitBranch,
   "git-fork": GitFork,
   "key-round": KeyRound,
@@ -13,7 +16,9 @@ const iconNodes = {
   paperclip: Paperclip,
   pin: Pin,
   pencil: Pencil,
+  "rotate-ccw": RotateCcw,
   route: Route,
+  "scroll-text": ScrollText,
   "send-horizontal": SendHorizontal,
   settings: Settings,
   square: Square,

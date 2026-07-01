@@ -58,11 +58,26 @@ export function createMockHarness(options: MockSessionOptions) {
   }
 
   const mockSessions: Array<PiWebSessionInfo & { agent?: "pi" | "claude-code" }> = initialMockSessions();
+  const mockLifecycle = new Map<string, { shutdowns: number; disposes: number }>();
   let mockGeneration = 0;
+
+  function lifecycleFor(id: string) {
+    let stats = mockLifecycle.get(id);
+    if (!stats) {
+      stats = { shutdowns: 0, disposes: 0 };
+      mockLifecycle.set(id, stats);
+    }
+    return stats;
+  }
 
   function resetMockSessions() {
     mockGeneration += 1;
     mockSessions.splice(0, mockSessions.length, ...initialMockSessions());
+    mockLifecycle.clear();
+  }
+
+  function getMockLifecycle() {
+    return Array.from(mockLifecycle.entries()).map(([sessionId, stats]) => ({ sessionId, ...stats }));
   }
 
   function initialMessages(path: string): unknown[] {
@@ -88,8 +103,18 @@ export function createMockHarness(options: MockSessionOptions) {
   }
 
   function createInitialEntries(path: string) {
+    const deepTreeDepth = Number(process.env.PI_WEB_MOCK_DEEP_TREE_DEPTH || 0);
+    if (deepTreeDepth > 0 && path === mockSessions[0].path) {
+      return Array.from({ length: deepTreeDepth }, (_, index): any => ({
+        type: "message",
+        id: `mock-deep-${index}`,
+        parentId: index === 0 ? null : `mock-deep-${index - 1}`,
+        timestamp: new Date(Date.UTC(2026, 4, 7, 10, 0, index)).toISOString(),
+        message: { role: index % 2 === 0 ? "user" : "assistant", content: `Deep mock entry ${index}` },
+      }));
+    }
     const [first, second] = initialMessages(path) as Array<Record<string, unknown>>;
-    const entries = [
+    const entries: any[] = [
       { type: "message", id: "mock-u1", parentId: null, timestamp: String(first.timestamp), message: first },
       { type: "message", id: "mock-a1", parentId: "mock-u1", timestamp: String(second.timestamp), message: second },
     ];
@@ -132,13 +157,22 @@ export function createMockHarness(options: MockSessionOptions) {
     }
 
     function buildTree(parentId: string | null): any[] {
-      return mockEntries
-        .filter((entry) => entry.parentId === parentId)
-        .map((entry) => ({
-          entry,
-          label: labelsById.get(entry.id),
-          children: buildTree(entry.id),
-        }));
+      type MockTreeNode = { entry: any; label?: string; children: MockTreeNode[] };
+      const childrenByParent = new Map<string | null, any[]>();
+      for (const entry of mockEntries) {
+        const key = typeof entry.parentId === "string" ? entry.parentId : null;
+        const siblings = childrenByParent.get(key) || [];
+        siblings.push(entry);
+        childrenByParent.set(key, siblings);
+      }
+      const roots: MockTreeNode[] = (childrenByParent.get(parentId) || []).map((entry) => ({ entry, label: labelsById.get(entry.id), children: [] }));
+      const stack = [...roots];
+      while (stack.length > 0) {
+        const node = stack.pop()!;
+        node.children = (childrenByParent.get(node.entry.id) || []).map((entry) => ({ entry, label: labelsById.get(entry.id), children: [] }));
+        for (const child of node.children) stack.push(child);
+      }
+      return roots;
     }
 
     function appendMockMessage(message: Record<string, unknown>) {
@@ -297,7 +331,12 @@ export function createMockHarness(options: MockSessionOptions) {
           description: "Mock extension command",
           sourceInfo: { path: "<mock-extension>", source: "mock", scope: "temporary", origin: "top-level" },
         }],
-      },
+        hasHandlers: (eventType: string) => eventType === "session_shutdown",
+        emit: async (event: { type?: string }) => {
+          if (event?.type === "session_shutdown") lifecycleFor(mockSession.sessionId).shutdowns += 1;
+          return undefined;
+        },
+      } as any,
       promptTemplates: [{
         name: "mock-prompt",
         description: "Mock prompt template",
@@ -359,6 +398,13 @@ export function createMockHarness(options: MockSessionOptions) {
         return { editorText, cancelled: false };
       },
       compact: async (customInstructions?: string) => runMockCompaction(customInstructions),
+      executeBash: async (command: string, onChunk?: (chunk: string) => void, options?: { excludeFromContext?: boolean }) => {
+        const output = `Mock bash output: ${command}\n`;
+        onChunk?.(output);
+        const result = { output, exitCode: 0, cancelled: false, truncated: false };
+        appendMockMessage({ role: "bashExecution", command, ...result, excludeFromContext: Boolean(options?.excludeFromContext), timestamp: new Date().toISOString() });
+        return result;
+      },
       prompt: async (message: string, promptOptions?: { images?: unknown[] }) => {
         const runGeneration = mockGeneration;
         const isCurrentMockRun = () => runGeneration === mockGeneration;
@@ -515,8 +561,9 @@ export function createMockHarness(options: MockSessionOptions) {
       clearQueue: () => undefined,
       subscribe: () => undefined,
     };
+    (mockSession as any).dispose = () => { lifecycleFor(mockSession.sessionId).disposes += 1; };
     return mockSession;
   }
 
-  return { mockSessions, createMockSession, resetMockSessions };
+  return { mockSessions, createMockSession, resetMockSessions, getMockLifecycle };
 }

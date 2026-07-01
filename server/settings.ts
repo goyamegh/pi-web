@@ -12,12 +12,15 @@ const sessionMarkerColors = new Set<SessionMarkerColorId>(["blue", "purple", "ye
 
 export type PiWebAgentKind = "pi" | "claude-code";
 
+export const defaultAccentColor = "#e2b15f";
+
 export type PiWebSettings = {
   version: 1;
   appearance: {
     density: "comfortable" | "compact";
     navPinned: boolean;
     navWidth: number;
+    accentColor: string;
   };
   composer: {
     queueMode: "steer" | "followUp";
@@ -37,6 +40,7 @@ export type PiWebSettingsPatch = Partial<{
     density: unknown;
     navPinned: unknown;
     navWidth: unknown;
+    accentColor: unknown;
   }>;
   composer: Partial<{
     queueMode: unknown;
@@ -56,6 +60,7 @@ export const defaultPiWebSettings: PiWebSettings = {
     density: "comfortable",
     navPinned: false,
     navWidth: 360,
+    accentColor: defaultAccentColor,
   },
   composer: {
     queueMode: "steer",
@@ -88,6 +93,17 @@ export function normalizeSessionBucketColor(value: unknown): SessionMarkerColorI
     : undefined;
 }
 
+export function normalizeAccentColor(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+    const [, r, g, b] = trimmed;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return undefined;
+}
+
 export function normalizeSettings(value: unknown): PiWebSettings {
   const settings = cloneSettings(defaultPiWebSettings);
   if (!isRecord(value)) return settings;
@@ -100,6 +116,7 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   if (typeof appearance?.navWidth === "number" && Number.isFinite(appearance.navWidth)) {
     settings.appearance.navWidth = Math.round(Math.max(240, Math.min(520, appearance.navWidth)));
   }
+  settings.appearance.accentColor = normalizeAccentColor(appearance?.accentColor) || settings.appearance.accentColor;
 
   const composer = isRecord(value.composer) ? value.composer : undefined;
   if (composer?.queueMode === "followUp" || composer?.queueMode === "steer") {
@@ -134,6 +151,8 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
     if (typeof patch.appearance.navWidth === "number" && Number.isFinite(patch.appearance.navWidth)) {
       next.appearance.navWidth = Math.round(Math.max(240, Math.min(520, patch.appearance.navWidth)));
     }
+    const accentColor = normalizeAccentColor(patch.appearance.accentColor);
+    if (accentColor) next.appearance.accentColor = accentColor;
   }
 
   if (isRecord(patch.composer)) {

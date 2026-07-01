@@ -119,7 +119,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
     data: {
-      appearance: { density: "comfortable" },
+      appearance: { density: "comfortable", accentColor: "#e2b15f" },
       composer: { queueMode: "steer", expanded: false },
       defaults: { model: null, thinkingLevel: null },
     },
@@ -193,7 +193,7 @@ test.describe("visual regression", () => {
     await page.goto("/");
     await page.locator("#conversationTreeButton").click();
     await expect(page.locator(".conversationTreePanel")).toBeVisible();
-    await expect(page.locator(".conversationTreeChildren")).toBeVisible();
+    await expect(page.locator(".conversationTreeGraphPath")).toHaveCount(3);
     await expect(page.locator(".conversationTreeBadge.branch")).toHaveText("2 branches");
 
     await expect(page).toHaveScreenshot(`conversation-tree-${testInfo.project.name}.png`, {

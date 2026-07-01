@@ -5,7 +5,6 @@ export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green
 
 export type PinnedSession = {
   id: string;
-  label: string;
   cwd?: string;
 };
 
@@ -28,6 +27,7 @@ export type SessionUiState = {
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
+  allowedMarkerColors: SessionMarkerColorId[];
 };
 
 export type SessionUiStatePatch = Partial<{
@@ -36,6 +36,7 @@ export type SessionUiStatePatch = Partial<{
   sessionMarkers: unknown;
   sessionUnreadStates: unknown;
   selectedMarkerColor: unknown;
+  allowedMarkerColors: unknown;
 }>;
 
 const markerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green"]);
@@ -54,6 +55,7 @@ export const defaultSessionUiState: SessionUiState = {
   sessionMarkers: [],
   sessionUnreadStates: [],
   selectedMarkerColor: "blue",
+  allowedMarkerColors: [],
 };
 
 function cloneState(value: SessionUiState): SessionUiState {
@@ -70,19 +72,30 @@ function normalizeMarkerColor(value: unknown): SessionMarkerColorId | undefined 
     : undefined;
 }
 
-function normalizePinnedFolder(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
+function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<SessionMarkerColorId>();
+  const result: SessionMarkerColorId[] = [];
+  for (const item of value) {
+    const color = normalizeMarkerColor(item);
+    if (!color || seen.has(color)) continue;
+    seen.add(color);
+    result.push(color);
+  }
+  return result;
 }
 
 function normalizePinnedSession(value: unknown): PinnedSession | undefined {
   if (!isRecord(value)) return undefined;
   const id = typeof value.id === "string" ? value.id.trim() : "";
-  const label = typeof value.label === "string" ? value.label.trim() : "";
-  if (!id || !label) return undefined;
+  if (!id) return undefined;
   const cwd = typeof value.cwd === "string" && value.cwd.trim() ? value.cwd.trim() : undefined;
-  return { id, label, ...(cwd ? { cwd } : {}) };
+  return { id, ...(cwd ? { cwd } : {}) };
+}
+
+function normalizePinnedFolder(value: unknown): string | undefined {
+  const cwd = typeof value === "string" ? value.trim() : "";
+  return cwd || undefined;
 }
 
 function normalizeSessionMarker(value: unknown): SessionMarker | undefined {
@@ -136,6 +149,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   }
 
   state.selectedMarkerColor = normalizeMarkerColor(value.selectedMarkerColor) || state.selectedMarkerColor;
+  state.allowedMarkerColors = normalizeMarkerColors(value.allowedMarkerColors);
   return state;
 }
 
@@ -161,6 +175,10 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
   const selectedMarkerColor = normalizeMarkerColor(patch.selectedMarkerColor);
   if (selectedMarkerColor) next.selectedMarkerColor = selectedMarkerColor;
+
+  if ("allowedMarkerColors" in patch && Array.isArray(patch.allowedMarkerColors)) {
+    next.allowedMarkerColors = normalizeMarkerColors(patch.allowedMarkerColors);
+  }
 
   return normalizeSessionUiState(next);
 }

@@ -3,6 +3,14 @@ import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
   appType: "spa",
+  build: {
+    rollupOptions: {
+      input: {
+        index: "index.html",
+        artifactPreview: "artifact-preview.html",
+      },
+    },
+  },
   plugins: [
     VitePWA({
       registerType: "autoUpdate",
@@ -34,7 +42,7 @@ export default defineConfig({
         // offline.
         navigateFallback: "index.html",
         navigateFallbackDenylist: [/./],
-        globPatterns: ["index.html", "assets/index-*.{js,css}", "*.{svg,png,webmanifest}"],
+        globPatterns: ["index.html", "artifact-preview.html", "assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.mode === "navigate",

@@ -4,6 +4,14 @@ import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.j
 import type { AppState, ImageAttachment, SlashCommand } from "../app/types.js";
 import { setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
+import { extractTokenFromScannedText } from "../token/tokenShare.js";
+import { bindCompactInactiveAction } from "./compactInteractions.js";
+
+type BarcodeDetectorLike = {
+  detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>>;
+};
+
+type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
 
 export type ComposerController = {
   init: () => void;
@@ -32,6 +40,7 @@ export function createComposer(options: {
   elements: AppElements;
   api: ApiClient;
   addMessage: (role: "user" | "system", text: string, extraClass?: string, images?: any[]) => void;
+  addToolHistoryCard?: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
   updateMeta: (data: any) => void;
   updateThinkingOptions: (levels?: string[]) => void;
   refreshModels: () => Promise<void>;
@@ -40,14 +49,18 @@ export function createComposer(options: {
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
 }): ComposerController {
-  const { state, elements, api, addMessage, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginStreamFollow, endStreamFollow } = options;
+  const { state, elements, api, addMessage, addToolHistoryCard, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginStreamFollow, endStreamFollow } = options;
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
   const draftStorageKey = "pi-web-composer-draft";
+  const expandedStorageKey = "pi-web-composer-expanded";
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
   let slashCommandSelectedIndex = 0;
+  let tokenScanStream: MediaStream | undefined;
+  let tokenScanFrame = 0;
+  let tokenScanActive = false;
 
   function updatePrimaryAction() {
     const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0;
@@ -65,6 +78,11 @@ export function createComposer(options: {
     setIcon(elements.queueToggle, isSteer ? "route" : "corner-down-right");
   }
 
+  function updateCompactInactive() {
+    const active = document.activeElement;
+    elements.formEl.classList.toggle("compactInactive", !active || !elements.formEl.contains(active));
+  }
+
   async function stopStreaming() {
     if (!state.currentSessionId) return;
     await fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId: state.currentSessionId }) });
@@ -78,7 +96,7 @@ export function createComposer(options: {
     } catch { /* ignore */ }
   }
 
-  async function persistComposerSettings(patch: { queueMode?: AppState["queueMode"]; expanded?: boolean }) {
+  async function persistComposerSettings(patch: { queueMode?: AppState["queueMode"] }) {
     try {
       await fetch("/api/settings", {
         method: "PATCH",
@@ -109,7 +127,7 @@ export function createComposer(options: {
   }
 
   function slashCommandQuery() {
-    const value = elements.promptEl.value.trimStart();
+    const value = elements.promptEl.value;
     if (!value.startsWith("/") || state.attachedImages.length > 0) return undefined;
     const withoutSlash = value.slice(1);
     if (/\s/.test(withoutSlash) || withoutSlash.includes("\n")) return undefined;
@@ -295,9 +313,140 @@ export function createComposer(options: {
     });
   }
 
+  function isShellError(data: { exitCode?: unknown; cancelled?: unknown }) {
+    return Boolean(data.cancelled || (typeof data.exitCode === "number" && data.exitCode !== 0));
+  }
+
+  function barcodeDetectorConstructor(): BarcodeDetectorConstructor | undefined {
+    return (window as Window & { BarcodeDetector?: BarcodeDetectorConstructor }).BarcodeDetector;
+  }
+
+  function setTokenScanStatus(message: string) {
+    elements.tokenScanStatus.textContent = message;
+  }
+
+  function stopTokenScanner(hidePanel = true) {
+    tokenScanActive = false;
+    if (tokenScanFrame) cancelAnimationFrame(tokenScanFrame);
+    tokenScanFrame = 0;
+    if (tokenScanStream) {
+      for (const track of tokenScanStream.getTracks()) track.stop();
+      tokenScanStream = undefined;
+    }
+    elements.tokenScanVideo.pause();
+    elements.tokenScanVideo.srcObject = null;
+    if (hidePanel) {
+      elements.tokenScanPanel.hidden = true;
+      setTokenScanStatus("");
+    }
+  }
+
+  function connectWithToken(token: string) {
+    const val = token.trim();
+    if (!val) return;
+    stopTokenScanner();
+    state.token = val;
+    saveToken(state.token);
+    elements.tokenInput.value = val;
+    elements.tokenOverlay.hidden = true;
+    refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  }
+
+  function useScannedToken(text: string) {
+    const scanned = extractTokenFromScannedText(text);
+    if (!scanned?.token.trim()) return false;
+
+    if (scanned.url && (scanned.url.origin !== location.origin || scanned.url.pathname !== location.pathname)) {
+      stopTokenScanner(false);
+      setTokenScanStatus("Opening token link…");
+      location.href = scanned.url.toString();
+      return true;
+    }
+
+    const sessionId = scanned.url?.searchParams.get("sessionId")?.trim();
+    if (sessionId) {
+      state.currentSessionId = sessionId;
+      writeActiveSessionIdToUrl(sessionId, "replace");
+    }
+    connectWithToken(scanned.token);
+    return true;
+  }
+
+  async function scanTokenQrLoop(detector: BarcodeDetectorLike) {
+    if (!tokenScanActive) return;
+    try {
+      if (elements.tokenScanVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        const barcodes = await detector.detect(elements.tokenScanVideo);
+        const rawValue = barcodes.map((barcode) => barcode.rawValue?.trim()).find(Boolean);
+        if (rawValue) {
+          if (useScannedToken(rawValue)) return;
+          setTokenScanStatus("QR code found, but it did not contain a token.");
+        }
+      }
+    } catch (error) {
+      stopTokenScanner(false);
+      setTokenScanStatus(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (tokenScanActive) tokenScanFrame = requestAnimationFrame(() => { void scanTokenQrLoop(detector); });
+  }
+
+  async function startTokenScanner() {
+    elements.tokenScanPanel.hidden = false;
+    setTokenScanStatus("Starting camera…");
+
+    if (!window.isSecureContext) {
+      setTokenScanStatus("Camera access requires HTTPS or localhost.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setTokenScanStatus("Camera access is not available in this browser.");
+      return;
+    }
+    const Detector = barcodeDetectorConstructor();
+    if (!Detector) {
+      setTokenScanStatus("QR scanning is not available in this browser yet.");
+      return;
+    }
+
+    stopTokenScanner(false);
+    elements.tokenScanPanel.hidden = false;
+    setTokenScanStatus("Starting camera…");
+    try {
+      const detector = new Detector({ formats: ["qr_code"] });
+      tokenScanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+      elements.tokenScanVideo.srcObject = tokenScanStream;
+      await elements.tokenScanVideo.play();
+      tokenScanActive = true;
+      setTokenScanStatus("Point the camera at a pi-web token QR code.");
+      await scanTokenQrLoop(detector);
+    } catch (error) {
+      stopTokenScanner(false);
+      setTokenScanStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function runShellEscape(input: string) {
+    const trimmed = input.trim();
+    const excludeFromContext = trimmed.startsWith("!!");
+    const command = trimmed.slice(excludeFromContext ? 2 : 1).trim();
+    if (!command) throw new Error("Shell command is required");
+    const res = await fetch("/api/shell", {
+      method: "POST",
+      headers: api.headers(),
+      body: JSON.stringify({ sessionId: state.currentSessionId, command, excludeFromContext }),
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok || data.ok === false) throw new Error(data.error || text);
+    if (addToolHistoryCard) addToolHistoryCard("bash", isShellError(data), data, { command });
+    else addMessage("system", typeof data.output === "string" && data.output ? data.output : "(no output)", isShellError(data) ? "error" : "");
+  }
+
   async function runSlashCommand(command: string) {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
     if (name === "logout") {
+      stopTokenScanner();
       state.token = "";
       clearToken();
       elements.tokenInput.value = "";
@@ -331,11 +480,27 @@ export function createComposer(options: {
       event.preventDefault();
       if (state.isStreaming && !elements.promptEl.value.trim() && state.attachedImages.length === 0) return;
 
-      const message = elements.promptEl.value.trim();
+      const rawMessage = elements.promptEl.value;
+      const message = rawMessage.trim();
       const images = state.attachedImages.map(({ type, data, mimeType, name }) => ({ type, data, mimeType, name }));
       if (!message && images.length === 0) return;
 
-      if (message.startsWith("/") && images.length === 0) {
+      if (rawMessage.startsWith("!") && images.length === 0) {
+        elements.promptEl.value = "";
+        clearDraft();
+        hideSlashCommands();
+        updatePrimaryAction();
+        try {
+          await runShellEscape(message);
+        } catch (error) {
+          addMessage("system", error instanceof Error ? error.message : String(error), "error");
+        } finally {
+          settlePromptFocusAfterSubmit();
+        }
+        return;
+      }
+
+      if (rawMessage.startsWith("/") && images.length === 0) {
         let commandInfo: SlashCommand | undefined;
         try {
           commandInfo = await commandInfoForMessage(message);
@@ -421,6 +586,8 @@ export function createComposer(options: {
       }
     });
 
+    elements.formEl.addEventListener("focusin", updateCompactInactive);
+    elements.formEl.addEventListener("focusout", () => window.setTimeout(updateCompactInactive, 0));
     elements.promptEl.addEventListener("focus", () => { void maybeRefreshSlashCommands(); });
     elements.promptEl.addEventListener("blur", () => window.setTimeout(hideSlashCommands, 100));
     elements.promptEl.addEventListener("input", () => {
@@ -431,7 +598,13 @@ export function createComposer(options: {
       void maybeRefreshSlashCommands();
     });
 
-    elements.attachButton.addEventListener("click", () => elements.imageInput.click());
+    const consumeCompactAttachClick = bindCompactInactiveAction(elements.attachButton, elements.formEl, () => {
+      elements.imageInput.click();
+    });
+    elements.attachButton.addEventListener("click", (event) => {
+      if (consumeCompactAttachClick(event)) return;
+      elements.imageInput.click();
+    });
 
     elements.imageInput.addEventListener("change", () => {
       const files = Array.from(elements.imageInput.files || []);
@@ -465,7 +638,11 @@ export function createComposer(options: {
       void attachImageFiles(Array.from(event.dataTransfer?.files || []));
     });
 
-    elements.stopButton.addEventListener("click", () => {
+    const consumeCompactStopClick = bindCompactInactiveAction(elements.stopButton, elements.formEl, () => {
+      void stopStreaming();
+    });
+    elements.stopButton.addEventListener("click", (event) => {
+      if (consumeCompactStopClick(event)) return;
       void stopStreaming();
     });
 
@@ -477,12 +654,20 @@ export function createComposer(options: {
 
     elements.tokenForm.addEventListener("submit", (e) => {
       e.preventDefault();
-      const val = elements.tokenInput.value.trim();
-      if (!val) return;
-      state.token = val;
-      saveToken(state.token);
-      elements.tokenOverlay.hidden = true;
-      refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+      connectWithToken(elements.tokenInput.value);
+    });
+
+    elements.tokenScanButton.addEventListener("click", () => {
+      void startTokenScanner();
+    });
+
+    elements.tokenScanStopButton.addEventListener("click", () => {
+      stopTokenScanner();
+      elements.tokenScanButton.focus();
+    });
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) stopTokenScanner();
     });
 
     elements.expandButton.addEventListener("click", () => {
@@ -491,8 +676,8 @@ export function createComposer(options: {
       setIcon(elements.expandButton, state.editorExpanded ? "minimize-2" : "maximize-2");
       elements.expandButton.title = state.editorExpanded ? "Collapse editor" : "Expand editor";
       elements.expandButton.setAttribute("aria-label", elements.expandButton.title);
+      try { sessionStorage.setItem(expandedStorageKey, JSON.stringify(state.editorExpanded)); } catch { /* ignore */ }
       focusIfKeyboardFriendly(elements.promptEl);
-      void persistComposerSettings({ expanded: state.editorExpanded });
     });
 
     try {
@@ -502,6 +687,7 @@ export function createComposer(options: {
         updatePrimaryAction();
       }
     } catch { /* ignore */ }
+    updateCompactInactive();
   }
 
   return {

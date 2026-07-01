@@ -15,9 +15,26 @@
     <div id="tokenOverlay" class="tokenOverlay" hidden>
       <form id="tokenForm" class="tokenForm">
         <label for="tokenInput">Enter PI_WEB_TOKEN to continue</label>
+        <p class="tokenHint">Paste a token, open a token link, or scan a token QR code.</p>
         <input id="tokenInput" type="password" placeholder="Token" autocomplete="current-password" />
-        <button type="submit" class="primaryAction">Connect</button>
+        <div class="tokenActions">
+          <button type="submit" class="primaryAction">Connect</button>
+          <button id="tokenScanButton" type="button">Scan QR</button>
+        </div>
+        <div id="tokenScanPanel" class="tokenScanPanel" hidden>
+          <video id="tokenScanVideo" autoplay playsinline muted></video>
+          <span id="tokenScanStatus" class="tokenScanStatus" aria-live="polite"></span>
+          <button id="tokenScanStopButton" type="button">Stop camera</button>
+        </div>
       </form>
+    </div>
+    <div id="tokenShareFullscreen" class="tokenShareFullscreen" role="dialog" aria-modal="true" aria-label="Token QR code" hidden>
+      <button id="tokenShareFullscreenCloseButton" class="tokenShareFullscreenClose" type="button" aria-label="Close full-screen QR">×</button>
+      <div class="tokenShareFullscreenContent">
+        <h2>Scan to connect to pi web</h2>
+        <div id="tokenShareFullscreenQr" class="tokenShareFullscreenQr"></div>
+        <p>Only share this QR code with trusted devices.</p>
+      </div>
     </div>
     <main class="app">
       <div id="statusBar" class="statusBar">
@@ -28,6 +45,7 @@
         <span id="statusPath" class="statusPath"></span>
         <span id="activityStatus" class="activityStatus" hidden></span>
         <span id="connectionStatus" class="connectionStatus" aria-live="polite" hidden></span>
+        <span id="headerActions" class="headerActions"></span>
         <button id="newSessionHeaderButton" class="iconButton statusBarButton" type="button" aria-label="New session" title="New session">
           <span data-icon="square-pen"></span>
         </button>
@@ -98,6 +116,73 @@
             <input id="settingNavPinnedCheckbox" type="checkbox" />
             <span>Keep navigation open</span>
           </label>
+          <div class="settingsField settingsAccentField">
+            <span>Accent color</span>
+            <div class="settingsAccentPicker">
+              <button id="settingAccentMenuButton" class="settingsAccentMenuButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="settingAccentPopover">
+                <span class="settingsAccentCurrentSwatch" aria-hidden="true"></span>
+                <span id="settingAccentMenuName">Antique Gold</span>
+                <span id="settingAccentMenuValue" class="settingsAccentMenuValue">#e2b15f</span>
+                <span class="settingsAccentMenuChevron" aria-hidden="true">▾</span>
+              </button>
+              <div id="settingAccentPopover" class="settingsAccentPopover" role="dialog" aria-label="Accent color picker" hidden>
+                <div class="settingsAccentPopoverHeader">
+                  <span>Signature accents</span>
+                  <span>Save to confirm</span>
+                </div>
+                <div class="settingsAccentSwatches" role="radiogroup" aria-label="Accent color presets">
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#e2b15f" data-accent-name="Antique Gold" style="--swatch-color: #e2b15f" aria-label="Antique Gold accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Antique Gold</span><span class="settingsAccentSwatchHex">#e2b15f</span></span>
+                  </button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#7dd3fc" data-accent-name="Nocturne Sky" style="--swatch-color: #7dd3fc" aria-label="Nocturne Sky accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Nocturne Sky</span><span class="settingsAccentSwatchHex">#7dd3fc</span></span>
+                  </button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#9db4ff" data-accent-name="Moonlit Lapis" style="--swatch-color: #9db4ff" aria-label="Moonlit Lapis accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Moonlit Lapis</span><span class="settingsAccentSwatchHex">#9db4ff</span></span>
+                  </button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#b69cff" data-accent-name="Imperial Iris" style="--swatch-color: #b69cff" aria-label="Imperial Iris accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Imperial Iris</span><span class="settingsAccentSwatchHex">#b69cff</span></span>
+                  </button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#d98adf" data-accent-name="Velvet Orchid" style="--swatch-color: #d98adf" aria-label="Velvet Orchid accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Velvet Orchid</span><span class="settingsAccentSwatchHex">#d98adf</span></span>
+                  </button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#f09bb3" data-accent-name="Rose Quartz" style="--swatch-color: #f09bb3" aria-label="Rose Quartz accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Rose Quartz</span><span class="settingsAccentSwatchHex">#f09bb3</span></span>
+                  </button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#b8b5ad" data-accent-name="Palladium" style="--swatch-color: #b8b5ad" aria-label="Palladium accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Palladium</span><span class="settingsAccentSwatchHex">#b8b5ad</span></span>
+                  </button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#5fd0c4" data-accent-name="Verdigris" style="--swatch-color: #5fd0c4" aria-label="Verdigris accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Verdigris</span><span class="settingsAccentSwatchHex">#5fd0c4</span></span>
+                  </button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#7bcf9e" data-accent-name="Jadeite" style="--swatch-color: #7bcf9e" aria-label="Jadeite accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Jadeite</span><span class="settingsAccentSwatchHex">#7bcf9e</span></span>
+                  </button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#94a3b8" data-accent-name="Slate Smoke" style="--swatch-color: #94a3b8" aria-label="Slate Smoke accent">
+                    <span class="settingsAccentSwatchPreview" aria-hidden="true"></span>
+                    <span class="settingsAccentSwatchCopy"><span class="settingsAccentSwatchLabel">Slate Smoke</span><span class="settingsAccentSwatchHex">#94a3b8</span></span>
+                  </button>
+                </div>
+                <div class="settingsAccentCustom">
+                  <input id="settingAccentColorInput" type="text" value="#e2b15f" maxlength="7" spellcheck="false" aria-label="Custom accent hex color" />
+                  <button id="settingAccentPreviewButton" type="button">Preview</button>
+                </div>
+                <div class="settingsAccentActions">
+                  <button id="settingAccentCancelButton" type="button">Cancel</button>
+                  <button id="settingAccentApplyButton" type="button">Save accent</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </section>
         <section class="settingsSection">
           <h3>Composer</h3>
@@ -124,6 +209,16 @@
           <div class="settingsActions">
             <button id="settingSaveModelDefaultsButton" type="button">Use current model</button>
             <button id="settingClearModelDefaultsButton" type="button">Clear model</button>
+          </div>
+        </section>
+        <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
+          <h3>Token sharing</h3>
+          <p class="settingsHint">Scan this QR on another device to open pi web with this browser’s saved token. Only share it with trusted devices.</p>
+          <div id="tokenShareQr" class="tokenShareQr" aria-live="polite"></div>
+          <input id="tokenShareUrl" class="tokenShareUrl" type="text" readonly aria-label="Token share link" />
+          <div class="settingsActions">
+            <button id="tokenShareFullscreenButton" type="button">Show full screen</button>
+            <button id="tokenShareCopyButton" type="button">Copy token link</button>
           </div>
         </section>
         <span id="settingsStatus" class="settingsStatus" aria-live="polite"></span>

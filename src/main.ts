@@ -2,20 +2,23 @@
 import "./style.css";
 import "./components/diff.css";
 import "./git/git.css";
+import "./styles/appLayout.css";
 import "highlight.js/styles/github-dark.css";
 import { createApiClient } from "./app/api.js";
 import { getAppElements, initAppHeightSync } from "./app/elements.js";
 import { initSwAutoReload } from "./app/sw-update.js";
 import { setIcon } from "./app/icons.js";
 import { initKeyboardShortcuts } from "./app/shortcuts.js";
+import { createRightPanelManager } from "./layout/rightPanel.js";
 import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
+import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createRepoInfoBar, type RepoInfoBarController } from "./composer/repoInfoBar.js";
 import { initGitPanel } from "./git/panel.js";
 import { createMarkdownRenderer } from "./markdown/render.js";
-import { createMessageList } from "./messages/messageList.js";
+import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
@@ -66,11 +69,11 @@ if (import.meta.env.DEV && "serviceWorker" in navigator) {
 
 const elements = getAppElements();
 const state = createAppState();
+const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
 const markdown = createMarkdownRenderer(elements.messagesEl);
-const messages = createMessageList({ messagesEl: elements.messagesEl, markdown });
-const tools = createToolCards(elements.messagesEl, messages.scrollToBottom);
 
+let messages: MessageList;
 let composer: ComposerController;
 let contextMeter: ContextMeterController;
 let repoInfoBar: RepoInfoBarController;
@@ -79,14 +82,102 @@ let sessions: SessionsController;
 let settings: SettingsController;
 let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
+async function submitPromptFromMessageAction(message: string) {
+  const promptText = message.trim();
+  if (!promptText) throw new Error("Message is empty.");
+
+  state.isStreaming = true;
+  composer.updatePrimaryAction();
+  messages.beginStreamFollow();
+  messages.addMessage("user", promptText);
+
+  try {
+    const res = await fetch("/api/prompt", {
+      method: "POST",
+      headers: api.headers(),
+      body: JSON.stringify({ sessionId: state.currentSessionId, message: promptText, mode: state.queueMode, images: [] }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+  } catch (error) {
+    state.isStreaming = false;
+    composer.updatePrimaryAction();
+    messages.endStreamFollow();
+    throw error;
+  }
+}
+
+async function navigateMessageActionTarget(context: MessageActionContext) {
+  if (state.isStreaming) throw new Error("Wait for the current response to finish first.");
+  if (state.isCompacting) throw new Error("Wait for compaction to finish first.");
+
+  const res = await fetch("/api/session/tree/navigate", {
+    method: "POST",
+    headers: api.headers(),
+    body: JSON.stringify({ sessionId: state.currentSessionId, targetId: context.entryId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+  if (data.cancelled) return data;
+
+  if (data.state) {
+    updateMeta(data.state);
+    state.isStreaming = Boolean(data.state.isStreaming);
+    state.isCompacting = Boolean(data.state.isCompacting);
+    composer.updatePrimaryAction();
+  }
+  await refreshMessages();
+  if (conversationTree?.isOpen()) await conversationTree.refreshTree().catch(() => undefined);
+  return data;
+}
+
+async function handleMessageAction(context: MessageActionContext) {
+  try {
+    const data = await navigateMessageActionTarget(context);
+    if (data?.cancelled) return;
+
+    if (context.action === "edit") {
+      composer.setPromptText(typeof data.editorText === "string" ? data.editorText : context.text);
+      messages.addMessage("system", "Loaded an earlier prompt — edit and send to create a new branch.");
+      return;
+    }
+
+    if (context.action === "rerun") {
+      await submitPromptFromMessageAction(typeof data.editorText === "string" ? data.editorText : context.text);
+    }
+  } catch (error) {
+    showSystemError(error);
+  }
+}
+
+messages = createMessageList({ messagesEl: elements.messagesEl, markdown, onMessageAction: handleMessageAction });
+const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers);
+
+const webHeaderActions = createWebHeaderActions({
+  container: elements.headerActionsEl,
+  headers: api.headers,
+  getSessionId: () => state.currentSessionId,
+  markdown,
+});
 
 function showSystemError(error: unknown) {
   messages.addMessage("system", error instanceof Error ? error.message : String(error), "error");
 }
 
 function updateMeta(data: any) {
+  const sessionId = typeof data.sessionId === "string" ? data.sessionId : state.currentSessionId;
+  if (sessionId) {
+    const sessionName = typeof data.sessionName === "string" ? data.sessionName : typeof data.sessionTitle === "string" ? data.sessionTitle : undefined;
+    state.sessionsById[sessionId] = {
+      ...state.sessionsById[sessionId],
+      id: sessionId,
+      ...(sessionName !== undefined ? { name: sessionName } : {}),
+      ...(typeof data.cwd === "string" ? { cwd: data.cwd } : {}),
+      isCurrent: sessionId === (data.sessionId || state.currentSessionId),
+    };
+  }
   state.currentModelKey = modelKey(data.model);
-  state.currentModelDisplay = data.model ? modelLabel(data.model) : "No model";
+  state.currentModelDisplay = data.model ? modelLabel(data.model) : "";
   state.currentThinkingLevel = data.thinkingLevel || "off";
   state.currentSessionId = data.sessionId || state.currentSessionId;
   state.currentCwd = data.cwd || state.currentCwd;
@@ -101,6 +192,7 @@ function updateMeta(data: any) {
   }
   if ("stats" in data) contextMeter.update(data.stats);
   if ("webFooters" in data) renderWebFooters(elements.extensionFooterEl, data.webFooters);
+  if ("webHeaderActions" in data) webHeaderActions.render(data.webHeaderActions);
   if ("sessionTitle" in data) statusBar.setStatusTitle(data.sessionTitle?.trim() || "New session");
   else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
@@ -201,6 +293,7 @@ settings = createSettings({
   state,
   elements,
   api,
+  rightPanels,
   addMessage: messages.addMessage,
   onNavPinnedChange: (pinned) => {
     // "Keep navigation open" only forces the drawer open when enabled. When
@@ -242,6 +335,7 @@ composer = createComposer({
   elements,
   api,
   addMessage: messages.addMessage,
+  addToolHistoryCard: tools.addToolHistoryCard,
   updateMeta,
   updateThinkingOptions: (levels) => modelSettings.updateThinkingOptions(levels),
   refreshModels: () => modelSettings.refreshModels(),
@@ -255,6 +349,7 @@ conversationTree = createConversationTree({
   state,
   elements,
   api,
+  rightPanels,
   composer,
   updateMeta,
   refreshMessages,
@@ -325,7 +420,7 @@ initKeyboardShortcuts([
 initSessionDrawerResize({ elements, settings });
 repoInfoBar.init();
 composer.updateQueueToggle();
-initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
+initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 window.addEventListener("popstate", () => {
   const nextSessionId = readActiveSessionIdFromUrl();
   if (nextSessionId === state.currentSessionId) return;

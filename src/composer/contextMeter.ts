@@ -1,6 +1,7 @@
 import type { AppElements } from "../app/elements.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState, SessionStats } from "../app/types.js";
+import { bindCompactInactiveAction } from "./compactInteractions.js";
 
 export type ContextMeterController = {
   init: () => void;
@@ -136,13 +137,21 @@ export function createContextMeter(options: { state: AppState; elements: AppElem
     renderPopover(stats);
   }
 
+  function togglePopover() {
+    const open = elements.contextMeterPopoverEl.hidden;
+    if (open) blurActiveEditableOnMobile();
+    renderPopover(state.stats);
+    elements.contextMeterPopoverEl.hidden = !open;
+    elements.contextMeterEl.setAttribute("aria-expanded", String(open));
+  }
+
   function init() {
-    elements.contextMeterEl.addEventListener("click", () => {
-      const open = elements.contextMeterPopoverEl.hidden;
-      if (open) blurActiveEditableOnMobile();
-      renderPopover(state.stats);
-      elements.contextMeterPopoverEl.hidden = !open;
-      elements.contextMeterEl.setAttribute("aria-expanded", String(open));
+    const consumeCompactMeterClick = bindCompactInactiveAction(elements.contextMeterEl, elements.formEl, () => {
+      togglePopover();
+    });
+    elements.contextMeterEl.addEventListener("click", (event) => {
+      if (consumeCompactMeterClick(event)) return;
+      togglePopover();
     });
     document.addEventListener("click", (event) => {
       const target = event.target as Node | null;

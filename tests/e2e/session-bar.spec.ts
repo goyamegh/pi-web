@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
-  pinnedSessions?: Array<{ id: string; label: string; cwd?: string }>;
+  pinnedSessions?: Array<{ id: string; cwd?: string }>;
   pinnedFolders?: string[];
   sessionMarkers?: Array<{ sessionId: string; color: string; updatedAt: string }>;
   sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string; updatedAt: string }>;
@@ -9,7 +9,7 @@ async function seedServerSessionUiState(page: import("@playwright/test").Page, s
   await page.request.patch("/api/session-ui-state", { data: state });
 }
 
-async function seedServerPinned(page: import("@playwright/test").Page, ...sessions: Array<{ id: string; label: string; cwd?: string }>) {
+async function seedServerPinned(page: import("@playwright/test").Page, ...sessions: Array<{ id: string; cwd?: string }>) {
   await seedServerSessionUiState(page, { pinnedSessions: sessions });
 }
 
@@ -34,8 +34,52 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab.pinned").nth(0)).toContainText("Current mock session");
   });
 
+  test("renaming the current session updates its pinned tab", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" });
+    await page.goto("/");
+    await expect(page.locator(".sessionBarTab.pinned")).toContainText("Current mock session");
+
+    await page.locator("#statusTitle").click();
+    await page.locator("#statusTitle input").fill("Renamed pinned session");
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#statusTitle")).toHaveText("Renamed pinned session");
+    await expect(page.locator(".sessionBarTab.pinned")).toContainText("Renamed pinned session");
+  });
+
+  test("renamed pinned tab keeps its new title after switching away and back", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
+    await page.goto("/");
+
+    await page.locator("#statusTitle").click();
+    await page.locator("#statusTitle input").fill("Renamed current tab");
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Renamed current tab" })).toHaveClass(/\bactive\b/);
+
+    await page.locator(".sessionBarTab").filter({ hasText: "Older mock session" }).click();
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Renamed current tab" })).not.toHaveClass(/\bactive\b/);
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).toHaveCount(0);
+
+    await page.locator(".sessionBarTab").filter({ hasText: "Renamed current tab" }).click();
+    await expect(page.locator("#statusTitle")).toHaveText("Renamed current tab");
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Renamed current tab" })).toHaveClass(/\bactive\b/);
+  });
+
+  test("renaming the current unpinned session updates its temporary tab", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".sessionBarTab.temporary")).toContainText("Current mock session");
+
+    await page.locator("#statusTitle").click();
+    await page.locator("#statusTitle input").fill("Renamed temporary session");
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#statusTitle")).toHaveText("Renamed temporary session");
+    await expect(page.locator(".sessionBarTab.temporary")).toContainText("Renamed temporary session");
+  });
+
   test("unpinning the last pinned session leaves it as the current unpinned tab", async ({ page }) => {
-    await seedServerPinned(page, { id: "mock-current", label: "Current mock session" });
+    await seedServerPinned(page, { id: "mock-current" });
 
     await page.goto("/");
     await expect(page.locator("#sessionBar")).toBeVisible();
@@ -50,8 +94,8 @@ test.describe("session quick bar", () => {
   test("bar is restored from server storage and marked tabs use marker color backgrounds", async ({ page }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [
-        { id: "mock-current", label: "Current mock session" },
-        { id: "mock-older", label: "Older mock session" },
+        { id: "mock-current" },
+        { id: "mock-older" },
       ],
       sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
     });
@@ -68,8 +112,8 @@ test.describe("session quick bar", () => {
   test("current session tab is marked active", async ({ page }) => {
     await seedServerPinned(
       page,
-      { id: "mock-current", label: "Current mock session" },
-      { id: "mock-older", label: "Older mock session" },
+      { id: "mock-current" },
+      { id: "mock-older" },
     );
 
     await page.goto("/");
@@ -80,8 +124,8 @@ test.describe("session quick bar", () => {
   test("shows unread indicators in tabs and session drawer rows", async ({ page }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [
-        { id: "mock-current", label: "Current mock session" },
-        { id: "mock-older", label: "Older mock session" },
+        { id: "mock-current" },
+        { id: "mock-older" },
       ],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
     });
@@ -101,8 +145,8 @@ test.describe("session quick bar", () => {
   test("opening an unread session clears it in other browser views", async ({ page, context }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [
-        { id: "mock-current", label: "Current mock session" },
-        { id: "mock-older", label: "Older mock session" },
+        { id: "mock-current" },
+        { id: "mock-older" },
       ],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
     });
@@ -129,8 +173,8 @@ test.describe("session quick bar", () => {
   test("/clear reuses the current tab pin and marker while releasing the old session", async ({ page }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [
-        { id: "mock-older", label: "Older mock session" },
-        { id: "mock-current", label: "Current mock session" },
+        { id: "mock-older" },
+        { id: "mock-current" },
       ],
       sessionMarkers: [{ sessionId: "mock-current", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
     });
@@ -155,8 +199,8 @@ test.describe("session quick bar", () => {
 
     const uiState = await (await page.request.get("/api/session-ui-state")).json();
     expect(uiState.sessionUiState.pinnedSessions).toEqual([
-      expect.objectContaining({ id: "mock-older", label: "Older mock session" }),
-      expect.objectContaining({ label: "New session" }),
+      expect.objectContaining({ id: "mock-older" }),
+      expect.objectContaining({ cwd: expect.any(String) }),
     ]);
     expect(uiState.sessionUiState.pinnedSessions[1].id).not.toBe("mock-current");
     expect(uiState.sessionUiState.sessionMarkers).toEqual([
@@ -199,8 +243,8 @@ test.describe("session quick bar", () => {
   test("clicking a tab switches sessions and moves the active marker", async ({ page }) => {
     await seedServerPinned(
       page,
-      { id: "mock-current", label: "Current mock session" },
-      { id: "mock-older", label: "Older mock session" },
+      { id: "mock-current" },
+      { id: "mock-older" },
     );
 
     await page.goto("/");
@@ -233,16 +277,23 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#sessionDrawer")).toBeHidden();
   });
 
-  test("new session opens the drawer on wide viewports and preserves mobile close behavior", async ({ page }) => {
+  test("new session preserves the drawer state on wide viewports and closes on mobile", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#sessionDrawer")).toBeHidden();
 
     await page.locator("#newSessionHeaderButton").click();
 
     await expect(page.locator("#statusTitle")).toHaveText("New session");
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
+
     const width = page.viewportSize()?.width || 0;
-    if (width <= 700) await expect(page.locator("#sessionDrawer")).toBeHidden();
-    else await expect(page.locator("#sessionDrawer")).toBeVisible();
+    if (width > 700) {
+      await page.locator("#sessionButton").click();
+      await expect(page.locator("#sessionDrawer")).toBeVisible();
+      await page.locator("#newSessionHeaderButton").click();
+      await expect(page.locator("#statusTitle")).toHaveText("New session");
+      await expect(page.locator("#sessionDrawer")).toBeVisible();
+    }
   });
 
   test("session drawer keeps folder headers visible when filters hide their sessions", async ({ page }) => {
@@ -538,8 +589,8 @@ test.describe("session quick bar", () => {
     // were never attached.
     await seedServerPinned(
       page,
-      { id: "mock-current", label: "Current mock session" },
-      { id: "mock-older", label: "Older mock session" },
+      { id: "mock-current" },
+      { id: "mock-older" },
     );
 
     await page.goto("/");
@@ -558,8 +609,8 @@ test.describe("session quick bar", () => {
     // not wait for the POST /api/sessions/open round-trip to complete.
     await seedServerPinned(
       page,
-      { id: "mock-current", label: "Current mock session" },
-      { id: "mock-older", label: "Older mock session" },
+      { id: "mock-current" },
+      { id: "mock-older" },
     );
 
     // Delay the sessions/open response so we can observe the pre-response state.
@@ -578,8 +629,11 @@ test.describe("session quick bar", () => {
 
     await page.locator(".sessionBarTab").filter({ hasText: "Older mock session" }).click();
 
-    // The highlight should switch immediately — the gate is still blocking /api/sessions/open.
+    // The highlight and active tab title should switch immediately — the gate is still blocking /api/sessions/open.
+    const activeTab = page.locator(".sessionBarTab.active");
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).toHaveClass(/\bactive\b/);
+    await expect(activeTab).toContainText("Older mock session");
+    await expect(activeTab).not.toContainText("Current mock session");
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
 
     // The old session messages should not remain visible under the newly active tab
@@ -594,7 +648,7 @@ test.describe("session quick bar", () => {
   });
 
   test("running session tab gets the running class and loses it after the session ends", async ({ page }) => {
-    await seedServerPinned(page, { id: "mock-current", label: "Current mock session" });
+    await seedServerPinned(page, { id: "mock-current" });
 
     await page.goto("/");
     await expect(page.locator("#sessionBar")).toBeVisible();
@@ -647,8 +701,8 @@ test.describe("session quick bar", () => {
     // session_runtime_changed WebSocket events, not just when refreshSessions() fires.
     await seedServerPinned(
       page,
-      { id: "mock-current", label: "Current mock session" },
-      { id: "mock-older", label: "Older mock session" },
+      { id: "mock-current" },
+      { id: "mock-older" },
     );
 
     await page.goto("/");
@@ -670,8 +724,8 @@ test.describe("session quick bar", () => {
   test("background completion recovers unread state when agent_end is missed", async ({ page }) => {
     await seedServerPinned(
       page,
-      { id: "mock-current", label: "Current mock session" },
-      { id: "mock-older", label: "Older mock session" },
+      { id: "mock-current" },
+      { id: "mock-older" },
     );
 
     await page.goto("/");

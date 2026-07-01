@@ -2,7 +2,10 @@ import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
-import { defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
+import { defaultAccentColor, defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
+import { createQrSvg } from "../token/qr.js";
+import { createTokenShareUrl } from "../token/tokenShare.js";
+import type { RightPanelManager } from "../layout/rightPanel.js";
 
 export type SettingsController = {
   init: () => void;
@@ -21,6 +24,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function normalizeAccentColor(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+    const [, r, g, b] = trimmed;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return undefined;
+}
+
 function normalizeSettings(value: unknown): PiWebSettings {
   const settings = cloneSettings(defaultPiWebSettings);
   if (!isRecord(value)) return settings;
@@ -31,6 +45,7 @@ function normalizeSettings(value: unknown): PiWebSettings {
   if (typeof appearance?.navWidth === "number" && Number.isFinite(appearance.navWidth)) {
     settings.appearance.navWidth = Math.round(Math.max(240, Math.min(520, appearance.navWidth)));
   }
+  settings.appearance.accentColor = normalizeAccentColor(appearance?.accentColor) || settings.appearance.accentColor;
 
   const composer = isRecord(value.composer) ? value.composer : undefined;
   if (composer?.queueMode === "steer" || composer?.queueMode === "followUp") settings.composer.queueMode = composer.queueMode;
@@ -75,6 +90,7 @@ export function createSettings(options: {
   state: AppState;
   elements: AppElements;
   api: ApiClient;
+  rightPanels?: RightPanelManager;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
   onNavPinnedChange?: (pinned: boolean) => void;
   onNavWidthChange?: (width: number) => void;
@@ -82,6 +98,8 @@ export function createSettings(options: {
   const { state, elements, api, addMessage, onNavPinnedChange, onNavWidthChange } = options;
   let lastNavPinned: boolean | undefined;
   let lastNavWidth: number | undefined;
+  const expandedStorageKey = "pi-web-composer-expanded";
+  let hasAppliedSettings = false;
 
   function updateQueueToggle() {
     const isSteer = state.queueMode === "steer";
@@ -98,15 +116,101 @@ export function createSettings(options: {
     elements.expandButton.setAttribute("aria-label", elements.expandButton.title);
   }
 
+  function savedAccentColor() {
+    return normalizeAccentColor(state.settings.appearance.accentColor) || defaultAccentColor;
+  }
+
+  function accentSwatchButtons() {
+    return Array.from(elements.settingsPanel.querySelectorAll<HTMLButtonElement>(".settingsAccentSwatch"));
+  }
+
+  function accentName(accentColor: string) {
+    const normalized = normalizeAccentColor(accentColor) || defaultAccentColor;
+    const swatch = accentSwatchButtons().find((button) => normalizeAccentColor(button.dataset.accentColor) === normalized);
+    return swatch?.dataset.accentName || "Custom";
+  }
+
+  function setDocumentAccent(accentColor: string) {
+    document.documentElement.style.setProperty("--accent", accentColor);
+  }
+
+  function syncAccentControls(accentColor: string) {
+    const normalized = normalizeAccentColor(accentColor) || defaultAccentColor;
+    elements.settingAccentColorInput.value = normalized;
+    elements.settingAccentColorInput.setAttribute("aria-invalid", "false");
+    elements.settingAccentMenuButton.style.setProperty("--settings-accent-preview", normalized);
+    elements.settingAccentMenuName.textContent = accentName(normalized);
+    elements.settingAccentMenuValue.textContent = normalized;
+    for (const button of accentSwatchButtons()) {
+      const selected = normalizeAccentColor(button.dataset.accentColor) === normalized;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-checked", String(selected));
+    }
+  }
+
+  function isAccentPopoverOpen() {
+    return !elements.settingAccentPopover.hidden;
+  }
+
+  function openAccentPopover() {
+    const accentColor = savedAccentColor();
+    syncAccentControls(accentColor);
+    setDocumentAccent(accentColor);
+    elements.settingAccentPopover.hidden = false;
+    elements.settingAccentMenuButton.setAttribute("aria-expanded", "true");
+    setSettingsStatus("Choose an accent, then Save accent");
+  }
+
+  function closeAccentPopover(options: { restorePreview?: boolean; focusButton?: boolean } = {}) {
+    if (!isAccentPopoverOpen()) return;
+    const restorePreview = options.restorePreview ?? true;
+    const focusButton = options.focusButton ?? true;
+    elements.settingAccentPopover.hidden = true;
+    elements.settingAccentMenuButton.setAttribute("aria-expanded", "false");
+    elements.settingAccentColorInput.setAttribute("aria-invalid", "false");
+    if (restorePreview) {
+      const accentColor = savedAccentColor();
+      setDocumentAccent(accentColor);
+      syncAccentControls(accentColor);
+    }
+    if (focusButton) elements.settingAccentMenuButton.focus();
+  }
+
+  function previewAccentColor(value: string | undefined) {
+    const accentColor = normalizeAccentColor(value);
+    if (!accentColor) {
+      elements.settingAccentColorInput.setAttribute("aria-invalid", "true");
+      setSettingsStatus("Enter a hex color like #e2b15f", true);
+      return false;
+    }
+    setDocumentAccent(accentColor);
+    syncAccentControls(accentColor);
+    setSettingsStatus("Previewing accent — save to keep");
+    return true;
+  }
+
   function applySettings(rawSettings: PiWebSettings) {
     const settings = normalizeSettings(rawSettings);
+    const storedExpanded = (() => {
+      try {
+        const value = sessionStorage.getItem(expandedStorageKey);
+        return value === null ? undefined : value === "true";
+      } catch {
+        return undefined;
+      }
+    })();
+    const shouldInitializeExpanded = !hasAppliedSettings;
     state.settings = settings;
     state.queueMode = settings.composer.queueMode;
-    state.editorExpanded = settings.composer.expanded;
+    if (shouldInitializeExpanded) state.editorExpanded = storedExpanded ?? settings.composer.expanded;
+    hasAppliedSettings = true;
 
+    const accentColor = settings.appearance.accentColor || defaultAccentColor;
     document.documentElement.dataset.density = settings.appearance.density;
+    setDocumentAccent(accentColor);
     elements.settingDensitySelect.value = settings.appearance.density;
     elements.settingNavPinnedCheckbox.checked = settings.appearance.navPinned;
+    syncAccentControls(accentColor);
     elements.settingQueueModeSelect.value = settings.composer.queueMode;
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
@@ -122,11 +226,68 @@ export function createSettings(options: {
       lastNavWidth = settings.appearance.navWidth;
       onNavWidthChange?.(settings.appearance.navWidth);
     }
+    if (!elements.settingsPanel.hidden) renderTokenShare();
   }
 
   function setSettingsStatus(message: string, isError = false) {
     elements.settingsStatusEl.textContent = message;
     elements.settingsStatusEl.classList.toggle("error", isError);
+  }
+
+  function tokenShareUrl() {
+    const token = state.token.trim();
+    return token ? createTokenShareUrl(token) : "";
+  }
+
+  function renderQr(container: HTMLElement, shareUrl: string, label: string) {
+    container.replaceChildren();
+    try {
+      container.append(createQrSvg(shareUrl, label));
+    } catch (error) {
+      const message = document.createElement("p");
+      message.className = "settingsHint";
+      message.textContent = error instanceof Error ? error.message : String(error);
+      container.append(message);
+    }
+  }
+
+  function renderTokenShare() {
+    const shareUrl = tokenShareUrl();
+    elements.tokenShareSection.hidden = !shareUrl;
+    elements.tokenShareUrl.value = shareUrl;
+    elements.tokenShareQr.replaceChildren();
+    if (shareUrl) renderQr(elements.tokenShareQr, shareUrl, "pi web token link QR code");
+  }
+
+  function openTokenShareFullscreen() {
+    const shareUrl = tokenShareUrl();
+    if (!shareUrl) return;
+
+    renderQr(elements.tokenShareFullscreenQr, shareUrl, "Full-screen pi web token link QR code");
+    elements.tokenShareFullscreen.hidden = false;
+    elements.tokenShareFullscreenCloseButton.focus();
+    elements.tokenShareFullscreen.requestFullscreen?.().catch(() => undefined);
+  }
+
+  function closeTokenShareFullscreen(focusButton = true) {
+    if (elements.tokenShareFullscreen.hidden) return;
+    const shouldExitNativeFullscreen = document.fullscreenElement === elements.tokenShareFullscreen;
+    elements.tokenShareFullscreen.hidden = true;
+    elements.tokenShareFullscreenQr.replaceChildren();
+    if (shouldExitNativeFullscreen) document.exitFullscreen().catch(() => undefined);
+    if (focusButton && !elements.settingsPanel.hidden) elements.tokenShareFullscreenButton.focus();
+  }
+
+  async function copyTokenShareUrl() {
+    const value = elements.tokenShareUrl.value;
+    if (!value) return;
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
+    else {
+      elements.tokenShareUrl.select();
+      document.execCommand("copy");
+      elements.tokenShareUrl.blur();
+    }
+    setSettingsStatus("Copied token link");
   }
 
   async function patchSettings(patch: unknown) {
@@ -143,6 +304,22 @@ export function createSettings(options: {
     setSettingsStatus("Saved");
   }
 
+  function saveAccentColor() {
+    const accentColor = normalizeAccentColor(elements.settingAccentColorInput.value);
+    if (!accentColor) {
+      elements.settingAccentColorInput.setAttribute("aria-invalid", "true");
+      setSettingsStatus("Enter a hex color like #e2b15f", true);
+      return;
+    }
+    patchSettings({ appearance: { accentColor } }).then(() => {
+      closeAccentPopover({ restorePreview: false });
+    }).catch((error) => {
+      closeAccentPopover({ restorePreview: true, focusButton: false });
+      setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+    });
+  }
+
   async function refreshSettings() {
     const res = await fetch("/api/settings", { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
@@ -152,6 +329,7 @@ export function createSettings(options: {
 
   function openSettings() {
     blurActiveEditableOnMobile();
+    renderTokenShare();
     elements.settingsBackdrop.hidden = false;
     elements.settingsPanel.hidden = false;
     setSettingsStatus("");
@@ -159,6 +337,8 @@ export function createSettings(options: {
   }
 
   function closeSettings() {
+    closeAccentPopover({ restorePreview: true, focusButton: false });
+    closeTokenShareFullscreen(false);
     elements.settingsPanel.hidden = true;
     elements.settingsBackdrop.hidden = true;
     elements.settingsButton.focus();
@@ -169,10 +349,30 @@ export function createSettings(options: {
     applySettings(state.settings);
 
     elements.settingsButton.addEventListener("click", openSettings);
+    elements.tokenShareFullscreenButton.addEventListener("click", openTokenShareFullscreen);
+    elements.tokenShareFullscreenCloseButton.addEventListener("click", () => closeTokenShareFullscreen());
+    elements.tokenShareFullscreen.addEventListener("click", (event) => {
+      if (event.target === elements.tokenShareFullscreen) closeTokenShareFullscreen();
+    });
+    document.addEventListener("fullscreenchange", () => {
+      if (!document.fullscreenElement && !elements.tokenShareFullscreen.hidden) closeTokenShareFullscreen(false);
+    });
+    elements.tokenShareCopyButton.addEventListener("click", () => {
+      copyTokenShareUrl().catch((error) => setSettingsStatus(error instanceof Error ? error.message : String(error), true));
+    });
     elements.settingsCloseButton.addEventListener("click", closeSettings);
     elements.settingsBackdrop.addEventListener("click", closeSettings);
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !elements.settingsPanel.hidden) closeSettings();
+      if (event.key !== "Escape") return;
+      if (!elements.tokenShareFullscreen.hidden) {
+        closeTokenShareFullscreen();
+        return;
+      }
+      if (isAccentPopoverOpen()) {
+        closeAccentPopover();
+        return;
+      }
+      if (!elements.settingsPanel.hidden) closeSettings();
     });
 
     elements.settingDensitySelect.addEventListener("change", () => {
@@ -180,6 +380,29 @@ export function createSettings(options: {
         setSettingsStatus(error instanceof Error ? error.message : String(error), true);
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       });
+    });
+
+    elements.settingAccentMenuButton.addEventListener("click", () => {
+      if (isAccentPopoverOpen()) closeAccentPopover();
+      else openAccentPopover();
+    });
+    for (const button of accentSwatchButtons()) {
+      button.addEventListener("click", () => previewAccentColor(button.dataset.accentColor));
+    }
+    elements.settingAccentPreviewButton.addEventListener("click", () => previewAccentColor(elements.settingAccentColorInput.value));
+    elements.settingAccentCancelButton.addEventListener("click", () => closeAccentPopover());
+    elements.settingAccentApplyButton.addEventListener("click", saveAccentColor);
+    elements.settingAccentColorInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      previewAccentColor(elements.settingAccentColorInput.value);
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!isAccentPopoverOpen()) return;
+      const target = event.target instanceof Node ? event.target : undefined;
+      if (target && elements.settingAccentPopover.contains(target)) return;
+      if (target && elements.settingAccentMenuButton.contains(target)) return;
+      closeAccentPopover({ restorePreview: true, focusButton: false });
     });
 
     elements.settingQueueModeSelect.addEventListener("change", () => {

@@ -54,6 +54,29 @@ test.describe("stop button", () => {
     await page.locator("#stopButton").click();
     await expect(page.locator("#stopButton")).toBeHidden({ timeout: 3000 });
   });
+
+  test("compact stop aborts streaming with one click", async ({ page }) => {
+    let abortRequests = 0;
+    await page.route("**/api/abort", async (route) => {
+      abortRequests += 1;
+      await route.continue();
+    });
+
+    await page.locator("#prompt").fill("quiet runtime");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator("#stopButton")).toBeVisible();
+
+    await page.locator("#prompt").focus();
+    await page.locator("#messages").click({ position: { x: 4, y: 4 } });
+    await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+
+    await page.locator("#stopButton").click();
+
+    await expect.poll(() => abortRequests).toBe(1);
+    await page.waitForTimeout(100);
+    expect(abortRequests).toBe(1);
+    await expect(page.locator("#stopButton")).toBeHidden({ timeout: 3000 });
+  });
 });
 
 test.describe("send button", () => {

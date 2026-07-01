@@ -239,6 +239,11 @@ function videoMimeType(pathname: string) {
   return "video/*";
 }
 
+function isStandalonePwa() {
+  return window.matchMedia("(display-mode: standalone)").matches ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true;
+}
+
 function enhanceArtifactLinks(root: ParentNode) {
   for (const link of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="/api/artifacts/"]'))) {
     if (link.dataset.artifactPreviewEnhanced) continue;
@@ -255,9 +260,15 @@ function enhanceArtifactLinks(root: ParentNode) {
     title.className = "artifactPreviewTitle";
     title.textContent = artifactName(url.pathname);
     const open = document.createElement("a");
-    open.href = url.pathname;
-    open.target = "_blank";
-    open.rel = "noopener noreferrer";
+    open.href = kind === "markdown"
+      ? `/artifact-preview.html?src=${encodeURIComponent(url.pathname)}&name=${encodeURIComponent(artifactName(url.pathname))}`
+      : url.pathname;
+    if (isStandalonePwa()) {
+      open.target = "_top";
+    } else {
+      open.target = "_blank";
+      open.rel = "noopener noreferrer";
+    }
     open.textContent = "Open";
     header.append(title, open);
     const content = document.createElement("div");
@@ -274,7 +285,9 @@ function enhanceArtifactLinks(root: ParentNode) {
       iframe.className = "artifactPreviewFrame";
       iframe.src = url.pathname;
       iframe.title = `Preview of ${title.textContent}`;
-      iframe.setAttribute("sandbox", "");
+      // Allow artifact scripts (for diagrams and interactive previews) while omitting
+      // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
+      iframe.setAttribute("sandbox", "allow-scripts");
       content.append(iframe);
       continue;
     }
@@ -315,13 +328,17 @@ function enhanceArtifactLinks(root: ParentNode) {
   }
 }
 
-function renderAssistantMarkdown(body: HTMLElement, text: string) {
+export function renderStandaloneMarkdown(body: HTMLElement, text: string) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
   enhanceMermaid(body);
   enhanceCodeBlocks(body);
   enhanceImages(body);
   enhanceArtifactLinks(body);
+}
+
+function renderAssistantMarkdown(body: HTMLElement, text: string) {
+  renderStandaloneMarkdown(body, text);
   body.dataset.markdownRendered = "true";
   delete body.dataset.markdownText;
 }

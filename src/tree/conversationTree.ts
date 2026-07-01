@@ -3,6 +3,7 @@ import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
+import type { RightPanelManager } from "../layout/rightPanel.js";
 
 export type ConversationTreeController = {
   init: () => void;
@@ -43,6 +44,32 @@ type NavigateOptions = {
   customInstructions?: string;
 };
 
+type ConversationGraphRow = {
+  node: ConversationTreeNode;
+  lane: number;
+  depth: number;
+  hasActiveSubtree: boolean;
+  parentId?: string;
+  branchIndex?: number;
+  branchCount?: number;
+  element?: HTMLButtonElement;
+};
+
+type ConversationGraphFrame = {
+  node: ConversationTreeNode;
+  lane: number;
+  depth: number;
+  parentId?: string;
+  branchIndex?: number;
+  branchCount?: number;
+};
+
+const svgNamespace = "http://www.w3.org/2000/svg";
+const graphLaneGap = 18;
+const graphNodeOffset = 12;
+const graphNodePadding = 14;
+const graphColours = ["#7dd3fc", "#a78bfa", "#fbbf24", "#34d399", "#fb7185", "#60a5fa"];
+
 function roleLabel(role: string, type: string) {
   switch (role) {
     case "user": return "user";
@@ -69,44 +96,94 @@ function formatTimestamp(value: string) {
 }
 
 function projectTree(nodes: ConversationTreeNode[], mode: FilterMode): ConversationTreeNode[] {
-  const projected: ConversationTreeNode[] = [];
-  for (const node of nodes) {
-    const children = projectTree(node.children || [], mode);
-    if (matchesFilter(node, mode)) projected.push({ ...node, children, childCount: children.length });
-    else projected.push(...children);
+  const projectedByNode = new Map<ConversationTreeNode, ConversationTreeNode[]>();
+  const stack = nodes.map((node) => ({ node, visited: false }));
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const children = frame.node.children || [];
+    if (!frame.visited) {
+      stack.push({ node: frame.node, visited: true });
+      for (let index = children.length - 1; index >= 0; index -= 1) stack.push({ node: children[index], visited: false });
+      continue;
+    }
+    const projectedChildren = children.flatMap((child) => projectedByNode.get(child) || []);
+    projectedByNode.set(
+      frame.node,
+      matchesFilter(frame.node, mode)
+        ? [{ ...frame.node, children: projectedChildren, childCount: projectedChildren.length }]
+        : projectedChildren,
+    );
   }
-  return projected;
+  return nodes.flatMap((node) => projectedByNode.get(node) || []);
 }
 
 function countVisibleNodes(nodes: ConversationTreeNode[]): number {
-  return nodes.reduce((sum, node) => sum + 1 + countVisibleNodes(node.children || []), 0);
+  let count = 0;
+  const stack = [...nodes];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    count += 1;
+    for (const child of node.children || []) stack.push(child);
+  }
+  return count;
 }
 
 function collectVisibleIds(nodes: ConversationTreeNode[], ids = new Set<string>()) {
-  for (const node of nodes) {
+  const stack = [...nodes];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
     ids.add(node.id);
-    collectVisibleIds(node.children || [], ids);
+    for (const child of node.children || []) stack.push(child);
   }
   return ids;
 }
 
 function searchTree(nodes: ConversationTreeNode[], query: string): ConversationTreeNode[] {
   if (!query) return nodes;
-  const matches: ConversationTreeNode[] = [];
-  for (const node of nodes) {
-    const children = searchTree(node.children || [], query);
-    if (matchesSearch(node, query) || children.length > 0) matches.push({ ...node, children, childCount: children.length });
+  const matchesByNode = new Map<ConversationTreeNode, ConversationTreeNode[]>();
+  const stack = nodes.map((node) => ({ node, visited: false }));
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const children = frame.node.children || [];
+    if (!frame.visited) {
+      stack.push({ node: frame.node, visited: true });
+      for (let index = children.length - 1; index >= 0; index -= 1) stack.push({ node: children[index], visited: false });
+      continue;
+    }
+    const matchedChildren = children.flatMap((child) => matchesByNode.get(child) || []);
+    matchesByNode.set(
+      frame.node,
+      matchesSearch(frame.node, query) || matchedChildren.length > 0
+        ? [{ ...frame.node, children: matchedChildren, childCount: matchedChildren.length }]
+        : [],
+    );
   }
-  return matches;
+  return nodes.flatMap((node) => matchesByNode.get(node) || []);
 }
 
 function findNode(nodes: ConversationTreeNode[], id: string): ConversationTreeNode | undefined {
-  for (const node of nodes) {
+  const stack = [...nodes].reverse();
+  while (stack.length > 0) {
+    const node = stack.pop()!;
     if (node.id === id) return node;
-    const child = findNode(node.children || [], id);
-    if (child) return child;
+    const children = node.children || [];
+    for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index]);
   }
   return undefined;
+}
+
+function treeFromFlatNodes(nodes: ConversationTreeNode[]): ConversationTreeNode[] {
+  const byId = new Map<string, ConversationTreeNode>();
+  const roots: ConversationTreeNode[] = [];
+  for (const node of nodes) byId.set(node.id, { ...node, children: [] });
+  for (const node of nodes) {
+    const copy = byId.get(node.id)!;
+    const parent = node.parentId ? byId.get(node.parentId) : undefined;
+    if (parent) parent.children.push(copy);
+    else roots.push(copy);
+  }
+  for (const node of byId.values()) node.childCount = node.children.length;
+  return roots;
 }
 
 function isToolNode(node: ConversationTreeNode) {
@@ -139,10 +216,85 @@ function plural(value: number, singular: string, pluralValue = `${singular}s`) {
   return `${value} ${value === 1 ? singular : pluralValue}`;
 }
 
+function activeSubtreeMap(nodes: ConversationTreeNode[]): Map<ConversationTreeNode, boolean> {
+  const activeByNode = new Map<ConversationTreeNode, boolean>();
+  const stack = nodes.map((node) => ({ node, visited: false }));
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const children = frame.node.children || [];
+    if (!frame.visited) {
+      stack.push({ node: frame.node, visited: true });
+      for (let index = children.length - 1; index >= 0; index -= 1) stack.push({ node: children[index], visited: false });
+      continue;
+    }
+    activeByNode.set(frame.node, frame.node.isOnActivePath || children.some((child) => activeByNode.get(child)));
+  }
+  return activeByNode;
+}
+
+function subtreeHasActivePath(node: ConversationTreeNode): boolean {
+  return activeSubtreeMap([node]).get(node) || false;
+}
+
+function graphLaneX(lane: number) {
+  return graphNodeOffset + lane * graphLaneGap;
+}
+
+function graphColour(lane: number) {
+  return graphColours[Math.max(0, lane) % graphColours.length];
+}
+
+function flattenGraphRows(nodes: ConversationTreeNode[]) {
+  const rows: ConversationGraphRow[] = [];
+  const activeByNode = activeSubtreeMap(nodes);
+  const stack: ConversationGraphFrame[] = [...nodes].reverse().map((node) => ({ node, lane: 0, depth: 0 }));
+
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const row: ConversationGraphRow = {
+      node: frame.node,
+      lane: frame.lane,
+      depth: frame.depth,
+      hasActiveSubtree: activeByNode.get(frame.node) || false,
+      ...(frame.parentId ? { parentId: frame.parentId } : {}),
+      ...(frame.branchIndex && frame.branchCount ? { branchIndex: frame.branchIndex, branchCount: frame.branchCount } : {}),
+    };
+    rows.push(row);
+
+    const children = frame.node.children || [];
+    if (children.length === 0) continue;
+    if (children.length === 1) {
+      stack.push({ node: children[0], lane: frame.lane, depth: frame.depth + 1, parentId: frame.node.id });
+      continue;
+    }
+
+    const activeIndex = Math.max(0, children.findIndex((child) => activeByNode.get(child)));
+    const childLanes = children.map((_, index) => frame.lane + index + 1);
+    childLanes[activeIndex] = frame.lane;
+    let nextLane = frame.lane + 1;
+    for (let index = 0; index < children.length; index += 1) {
+      if (index !== activeIndex) childLanes[index] = nextLane++;
+    }
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        node: children[index],
+        lane: childLanes[index],
+        depth: frame.depth + 1,
+        parentId: frame.node.id,
+        branchIndex: index + 1,
+        branchCount: children.length,
+      });
+    }
+  }
+
+  return rows;
+}
+
 export function createConversationTree(options: {
   state: AppState;
   elements: AppElements;
   api: ApiClient;
+  rightPanels?: RightPanelManager;
   composer: ComposerController;
   updateMeta: (data: any) => void;
   refreshMessages: () => Promise<void>;
@@ -312,7 +464,8 @@ export function createConversationTree(options: {
     customButton.hidden = node.isCurrentLeaf;
   }
 
-  function createRow(node: ConversationTreeNode) {
+  function createRow(graphRow: ConversationGraphRow, graphWidth: number) {
+    const { node } = graphRow;
     const row = document.createElement("button");
     row.type = "button";
     row.className = "conversationTreeNode";
@@ -321,7 +474,14 @@ export function createConversationTree(options: {
     row.classList.toggle("currentLeaf", node.isCurrentLeaf);
     row.classList.toggle("inactivePath", !node.isOnActivePath);
     row.classList.toggle("toolEntry", isToolNode(node));
+    row.classList.toggle("branchPoint", node.childCount > 1);
+    row.classList.toggle("branchStart", Boolean(graphRow.branchCount));
+    row.style.setProperty("--tree-graph-width", `${graphWidth}px`);
+    row.style.setProperty("--tree-node-x", `${graphLaneX(graphRow.lane)}px`);
+    row.style.setProperty("--tree-node-color", graphColour(graphRow.lane));
+    row.dataset.nodeId = node.id;
     row.setAttribute("role", "treeitem");
+    row.setAttribute("aria-level", String(graphRow.depth + 1));
     row.setAttribute("aria-selected", String(node.id === selectedId));
     if (node.isCurrentLeaf) row.setAttribute("aria-current", "true");
 
@@ -349,6 +509,13 @@ export function createConversationTree(options: {
 
     const badges = document.createElement("span");
     badges.className = "conversationTreeBadges";
+    if (graphRow.branchIndex && graphRow.branchCount) {
+      const branch = document.createElement("span");
+      branch.className = `conversationTreeBadge branchLane${graphRow.hasActiveSubtree ? " current" : " alternate"}`;
+      branch.textContent = graphRow.hasActiveSubtree ? `branch ${graphRow.branchIndex} · current` : `branch ${graphRow.branchIndex}`;
+      branch.title = `${graphRow.hasActiveSubtree ? "Current" : "Alternate"} branch ${graphRow.branchIndex} of ${graphRow.branchCount}`;
+      badges.append(branch);
+    }
     if (node.label) {
       const label = document.createElement("span");
       label.className = "conversationTreeBadge label";
@@ -359,6 +526,7 @@ export function createConversationTree(options: {
       const branches = document.createElement("span");
       branches.className = "conversationTreeBadge branch";
       branches.textContent = `${node.childCount} branches`;
+      branches.title = "This entry splits into multiple conversation branches";
       badges.append(branches);
     }
     if (node.isCurrentLeaf) {
@@ -379,30 +547,90 @@ export function createConversationTree(options: {
     return row;
   }
 
-  function renderNode(node: ConversationTreeNode, container: HTMLElement, inBranchGroup = false) {
-    const item = document.createElement("div");
-    item.className = "conversationTreeItem";
-    item.classList.toggle("branchItem", inBranchGroup);
-    item.classList.toggle("activePath", node.isOnActivePath);
-    item.classList.toggle("inactivePath", !node.isOnActivePath);
-    item.append(createRow(node));
-    container.append(item);
+  function appendGraphPath(svg: SVGElement, d: string, row: ConversationGraphRow) {
+    const shadow = document.createElementNS(svgNamespace, "path");
+    shadow.setAttribute("class", "conversationTreeGraphPathShadow");
+    shadow.setAttribute("d", d);
+    svg.append(shadow);
 
-    const children = node.children || [];
-    if (children.length === 1) {
-      renderNode(children[0], inBranchGroup ? container : container, inBranchGroup);
-      return;
+    const line = document.createElementNS(svgNamespace, "path");
+    line.setAttribute("class", `conversationTreeGraphPath${row.hasActiveSubtree ? " activePath" : " inactivePath"}`);
+    line.setAttribute("d", d);
+    line.style.stroke = graphColour(row.lane);
+    svg.append(line);
+  }
+
+  function drawConversationGraph(svg: SVGElement, graph: HTMLElement, rows: ConversationGraphRow[], width: number) {
+    svg.textContent = "";
+    const graphRect = graph.getBoundingClientRect();
+    const height = Math.max(graph.scrollHeight, graphRect.height);
+    svg.setAttribute("width", String(width));
+    svg.setAttribute("height", String(height));
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+    const positions = new Map<string, { x: number; y: number }>();
+    for (const row of rows) {
+      if (!row.element) continue;
+      const rect = row.element.getBoundingClientRect();
+      positions.set(row.node.id, {
+        x: graphLaneX(row.lane),
+        y: rect.top - graphRect.top + rect.height / 2,
+      });
     }
-    if (children.length > 1) {
-      const childWrap = document.createElement("div");
-      childWrap.className = "conversationTreeChildren";
-      item.append(childWrap);
-      for (const child of children) renderNode(child, childWrap, true);
+
+    for (const row of rows) {
+      if (!row.parentId) continue;
+      const parent = positions.get(row.parentId);
+      const child = positions.get(row.node.id);
+      if (!parent || !child) continue;
+      const distance = Math.max(0, child.y - parent.y);
+      const transition = Math.min(22, Math.max(10, distance * 0.28));
+      const elbowY = Math.min(child.y, parent.y + transition);
+      const d = parent.x === child.x
+        ? `M${parent.x},${parent.y.toFixed(1)}L${child.x},${child.y.toFixed(1)}`
+        : `M${parent.x},${parent.y.toFixed(1)}C${parent.x},${(parent.y + transition * 0.55).toFixed(1)} ${child.x},${(elbowY - transition * 0.35).toFixed(1)} ${child.x},${elbowY.toFixed(1)}L${child.x},${child.y.toFixed(1)}`;
+      appendGraphPath(svg, d, row);
+    }
+
+    for (const row of rows) {
+      const position = positions.get(row.node.id);
+      if (!position) continue;
+      const node = document.createElementNS(svgNamespace, "circle");
+      node.setAttribute("class", `conversationTreeGraphNode ${row.node.role}${row.node.isCurrentLeaf ? " currentLeaf" : ""}${row.node.isOnActivePath ? " activePath" : " inactivePath"}`);
+      node.setAttribute("cx", String(position.x));
+      node.setAttribute("cy", position.y.toFixed(1));
+      node.setAttribute("r", row.node.isCurrentLeaf ? "5" : "4.2");
+      node.style.fill = row.node.isCurrentLeaf ? "var(--tree-panel-bg)" : graphColour(row.lane);
+      node.style.stroke = graphColour(row.lane);
+      svg.append(node);
     }
   }
 
   function renderNodes(nodes: ConversationTreeNode[], container: HTMLElement) {
-    for (const node of nodes) renderNode(node, container);
+    const rows = flattenGraphRows(nodes);
+    const maxLane = rows.reduce((max, row) => Math.max(max, row.lane), 0);
+    const graphWidth = graphLaneX(maxLane) + graphNodePadding;
+    const graph = document.createElement("div");
+    graph.className = "conversationTreeGraph";
+    graph.style.setProperty("--tree-graph-width", `${graphWidth}px`);
+
+    const svg = document.createElementNS(svgNamespace, "svg");
+    svg.setAttribute("class", "conversationTreeGraphSvg");
+    svg.setAttribute("aria-hidden", "true");
+
+    const rowsEl = document.createElement("div");
+    rowsEl.className = "conversationTreeGraphRows";
+    rowsEl.setAttribute("role", "group");
+
+    for (const graphRow of rows) {
+      const row = createRow(graphRow, graphWidth);
+      graphRow.element = row;
+      rowsEl.append(row);
+    }
+
+    graph.append(svg, rowsEl);
+    container.append(graph);
+    window.requestAnimationFrame(() => drawConversationGraph(svg, graph, rows, graphWidth));
   }
 
   function renderTree() {
@@ -446,10 +674,15 @@ export function createConversationTree(options: {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
       const nextTree = data as ConversationTreeResponse;
+      nextTree.nodes = treeFromFlatNodes(nextTree.nodes || []);
       treeData = nextTree;
       if (selectedId && !findNode(nextTree.nodes || [], selectedId)) selectedId = "";
       if (!selectedId && nextTree.leafId) selectedId = nextTree.leafId;
-      setStatus(nextTree.entryCount ? "Tap an entry to choose how to continue." : "This session has no tree entries yet.");
+      setStatus(nextTree.entryCount
+        ? nextTree.branchPointCount > 0
+          ? "Follow the colored graph lines; the current branch is highlighted."
+          : "Tap an entry to choose how to continue."
+        : "This session has no tree entries yet.");
       renderTree();
     } catch (error) {
       treeData = null;

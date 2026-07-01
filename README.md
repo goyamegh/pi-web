@@ -31,17 +31,16 @@ Other additions in this fork: a repo info bar with branch + PR hyperlink, dragga
 - Code-review friendly: inspect tool output, edits, Git status, commits, and diffs
 - Session-oriented: manage ongoing work with tabs, drawers, pins, buckets, filters, and conversation navigation
 
-## What changed in 0.3.0?
+## What changed in 0.4.1?
 
-0.3.0 focuses on continuity and richer session review:
+0.4.1 makes first-run setup easier for new users:
 
-- Active sessions are reflected in the URL, so refreshes, browser history, and copied links preserve the selected workspace
-- Session buckets now have default colors, and inactive running tabs are dimmed for easier scanning
-- Drawer filtering and flat edit diffs are more reliable
-- Markdown messages can render Mermaid diagrams inline
-- README showcase content and screenshots were refreshed for the current UI
+- `pi-web` detects when no Pi provider login, API key, or custom model config is available
+- first run prompts in the terminal to open the bundled Pi CLI
+- run `/login` there, connect your LLM provider, exit Pi, and pi-web continues starting
+- set `PI_WEB_SKIP_PROVIDER_ONBOARDING=1` to skip the provider onboarding prompt
 
-See the [0.3.0 release notes](docs/releases/0.3.0.md) for the fuller changelog.
+See the [0.4.1 release notes](docs/releases/0.4.1.md) for the fuller changelog.
 
 ## Install
 
@@ -57,6 +56,14 @@ From npm:
 npm i -g @ashwin-pc/pi-web
 pi-web
 ```
+
+Or run without a global install:
+
+```bash
+npx -y @ashwin-pc/pi-web@latest
+```
+
+First run: if pi-web does not find an existing Pi provider login, API key, or custom model config, it prompts in the same terminal to open the bundled Pi CLI. Run `/login` there, connect your provider, exit Pi, and pi-web continues starting. You can skip this prompt with `PI_WEB_SKIP_PROVIDER_ONBOARDING=1`.
 
 From a GitHub release asset:
 
@@ -191,7 +198,7 @@ Then open:
 https://<machine-name>.<tailnet>.ts.net
 ```
 
-Click **Token** in the UI and paste the `PI_WEB_TOKEN` value.
+Enter `PI_WEB_TOKEN` on the token screen, or use **Scan QR** if another signed-in pi-web tab is showing the Settings → Token sharing QR code.
 
 ## Direct Tailnet bind
 
@@ -217,7 +224,8 @@ http://<machine-name>:8787
 - `PI_WEB_TOKEN` - optional bearer token for API/WebSocket access
 - `PI_WEB_CWD` - project directory Pi should operate in, default current directory
 - `PI_WEB_NO_SESSION=1` - use in-memory sessions only
-- `PI_WEB_CHILD_PORT` - supervised child port, default `8788`
+- `PI_WEB_CHILD_HOST` - supervised child bind host, default `127.0.0.1`
+- `PI_WEB_CHILD_PORT` - supervised child port, default `PORT + 1` (for example `8788` when `PORT=8787`)
 - `PI_WEB_RESTART_GRACE_MS` - delay between child stop/start, default `250`
 
 ## Development architecture

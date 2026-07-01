@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
     data: {
-      appearance: { density: "comfortable" },
+      appearance: { density: "comfortable", accentColor: "#e2b15f" },
       composer: { queueMode: "steer", expanded: false },
       defaults: { model: null, thinkingLevel: null },
     },
@@ -218,7 +218,9 @@ test.describe("composer layout", () => {
   test("persists composer controls after page refresh", async ({ page }) => {
     await page.goto("/");
 
+    await page.locator("#prompt").focus();
     await page.locator("#queueToggle").click();
+    await page.locator("#promptForm").hover();
     await page.locator("#expandButton").click();
     await expect(page.locator("#promptForm")).toHaveClass(/expanded/);
 
@@ -502,6 +504,10 @@ test.describe("composer layout", () => {
     const composer = page.locator("#promptForm");
     await expect(composer).toBeVisible();
     await expect(page.locator("#sessionButton")).toBeVisible();
+    await expect(page.locator("#attachButton")).toBeVisible();
+    await expect(page.locator("#primaryButton")).toBeHidden();
+
+    await page.locator("#prompt").focus();
     await expect(page.locator("#primaryButton")).toBeVisible();
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
@@ -516,6 +522,7 @@ test.describe("composer layout", () => {
 
   test("composer action row is flush, 40px tall, and has rounded bottom corners", async ({ page }) => {
     await page.goto("/");
+    await page.locator("#prompt").focus();
 
     const footerBox = await page.locator(".composerFooter").boundingBox();
     const textAreaBox = await page.locator("#prompt").boundingBox();
@@ -543,6 +550,89 @@ test.describe("composer layout", () => {
     const styles = await page.locator("#modelSettingsButton").evaluate((el) => getComputedStyle(el));
     expect(styles.outlineStyle).toBe("none");
     expect(styles.boxShadow).toContain("inset");
+  });
+
+  test("accent color setting previews in one row and saves explicitly", async ({ page }) => {
+    await page.goto("/");
+
+    const readAccentStyles = () => page.evaluate(() => {
+      let dot = document.querySelector<HTMLElement>("#accentTestUnreadDot");
+      if (!dot) {
+        dot = document.createElement("span");
+        dot.id = "accentTestUnreadDot";
+        dot.className = "sessionUnreadDot";
+        dot.style.position = "fixed";
+        dot.style.left = "8px";
+        dot.style.bottom = "8px";
+        document.body.append(dot);
+      }
+      const prompt = document.querySelector<HTMLElement>("#prompt")!;
+      prompt.focus();
+      return {
+        rootAccent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
+        buttonBackground: getComputedStyle(document.querySelector<HTMLElement>("#primaryButton")!).backgroundColor,
+        promptFocusBorder: getComputedStyle(prompt).borderBottomColor,
+        unreadDotBackground: getComputedStyle(dot).backgroundColor,
+      };
+    });
+
+    const openSettings = async () => {
+      if (await page.locator("#settingsPanel").isVisible()) return;
+      if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
+      await page.locator("#settingsButton").click();
+      await expect(page.locator("#settingsPanel")).toBeVisible();
+    };
+
+    const before = await readAccentStyles();
+    expect(before.rootAccent).toBe("#e2b15f");
+    expect(before.promptFocusBorder).toBe("rgb(226, 177, 95)");
+    expect(before.unreadDotBackground).toBe("rgb(226, 177, 95)");
+
+    await openSettings();
+    await expect(page.locator("#settingAccentMenuButton")).toBeVisible();
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Antique Gold");
+    await expect(page.locator("#settingAccentMenuValue")).toHaveText("#e2b15f");
+    await expect(page.locator("#settingAccentPopover")).toBeHidden();
+
+    await page.locator("#settingAccentMenuButton").click();
+    await expect(page.locator("#settingAccentPopover")).toBeVisible();
+    await expect(page.locator("#settingAccentColorInput")).toHaveValue("#e2b15f");
+    await expect(page.locator('.settingsAccentSwatch[data-accent-color="#e2b15f"]')).toHaveAttribute("aria-checked", "true");
+
+    await page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]').click();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#d98adf");
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Velvet Orchid");
+    await expect(page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]')).toHaveAttribute("aria-checked", "true");
+    const preview = await readAccentStyles();
+    expect(preview.buttonBackground).not.toBe(before.buttonBackground);
+    expect(preview.promptFocusBorder).toBe("rgb(217, 138, 223)");
+    expect(preview.unreadDotBackground).toBe("rgb(217, 138, 223)");
+
+    await page.locator("#settingAccentCancelButton").click();
+    await expect(page.locator("#settingAccentPopover")).toBeHidden();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#e2b15f");
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Antique Gold");
+
+    await page.locator("#settingAccentMenuButton").click();
+    await page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]').click();
+    await page.locator("#settingAccentApplyButton").click();
+    await expect(page.locator("#settingAccentPopover")).toBeHidden();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#d98adf");
+    await expect(page.locator("#settingAccentMenuValue")).toHaveText("#d98adf");
+
+    await page.reload();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#d98adf");
+
+    await openSettings();
+    await page.locator("#settingAccentMenuButton").click();
+    await page.locator("#settingAccentColorInput").fill("#ff00aa");
+    await page.locator("#settingAccentApplyButton").click();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#ff00aa");
+    const custom = await readAccentStyles();
+    expect(custom.buttonBackground).not.toBe(before.buttonBackground);
+    expect(custom.buttonBackground).not.toBe(preview.buttonBackground);
+    expect(custom.promptFocusBorder).toBe("rgb(255, 0, 170)");
+    expect(custom.unreadDotBackground).toBe("rgb(255, 0, 170)");
   });
 
   test("context meter shows known usage details without low-usage label", async ({ page }) => {
@@ -583,6 +673,13 @@ test.describe("composer layout", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
 
+    const compactMeterBox = await page.locator("#contextMeter").boundingBox();
+    const compactComposerBox = await page.locator("#promptForm").boundingBox();
+    expect(compactMeterBox).toBeTruthy();
+    expect(compactComposerBox).toBeTruthy();
+    expect(compactMeterBox!.y + compactMeterBox!.height).toBeLessThanOrEqual(compactComposerBox!.y + 1);
+
+    await page.locator("#prompt").focus();
     const meterBox = await page.locator("#contextMeter").boundingBox();
     const composerBox = await page.locator("#promptForm").boundingBox();
     const textareaBox = await page.locator("#prompt").boundingBox();
@@ -597,11 +694,6 @@ test.describe("composer layout", () => {
     const trackRadius = await page.locator(".contextMeterTrack").evaluate((el) => getComputedStyle(el).borderTopLeftRadius);
     expect(textareaRadius).toBe("15px");
     expect(trackRadius).toBe("999px");
-
-    await page.locator("#prompt").focus();
-    const meterAfterFocus = await page.locator("#contextMeter").boundingBox();
-    expect(meterAfterFocus).toBeTruthy();
-    expect(meterAfterFocus!.y + meterAfterFocus!.height).toBeLessThanOrEqual(composerBox!.y + 1);
   });
 
   test("model settings popover changes reasoning level explicitly", async ({ page }) => {
@@ -622,6 +714,49 @@ test.describe("composer layout", () => {
 
     const state = await (await page.request.get("/api/state")).json();
     expect(state.thinkingLevel).toBe("off");
+  });
+
+  test("model settings popover stays open after mobile model selection", async ({ page }) => {
+    const models = [
+      { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 },
+      { provider: "mock", id: "other", name: "Other Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 },
+    ];
+    let current = models[0];
+    await page.route("**/api/models**", async (route) => {
+      await route.fulfill({
+        json: { ok: true, cwd: process.cwd(), current, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"], models },
+      });
+    });
+    await page.route("**/api/model", async (route) => {
+      const body = route.request().postDataJSON() as { provider?: string; id?: string; thinkingLevel?: string };
+      current = models.find((model) => model.provider === body.provider && model.id === body.id) || current;
+      await route.fulfill({
+        json: { ok: true, sessionId: "mock-current", cwd: process.cwd(), model: current, thinkingLevel: body.thinkingLevel || "medium", thinkingLevels: ["off", "low", "medium", "high"] },
+      });
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(page.locator("#modelSelect")).toHaveValue("mock/model");
+
+    await page.locator("#modelSelect").selectOption("mock/other");
+    await expect(page.locator("#modelSettingsButton")).toBeEnabled();
+
+    await page.evaluate(() => {
+      document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    });
+
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
+    await expect(page.locator("#modelSettingsButton")).toContainText("mock/other");
+
+    await page.mouse.click(5, 5);
+    await expect(page.locator("#modelSettingsPopover")).toBeHidden();
   });
 
   test("model settings popover is not clipped on mobile", async ({ page }) => {
@@ -645,6 +780,7 @@ test.describe("composer layout", () => {
   test("composer expands to fullscreen editor", async ({ page }) => {
     await page.goto("/");
     const composer = page.locator("#promptForm");
+    await page.locator("#prompt").focus();
     const before = await composer.boundingBox();
     expect(before).toBeTruthy();
 
@@ -748,6 +884,45 @@ test.describe("sessions drawer", () => {
     expect(new URL(sessionsUrl).searchParams.getAll("cwd")).toContain(rememberedCwd);
   });
 
+  test("pinned folders stay first and folder labels disambiguate on one row", async ({ page }) => {
+    const pinnedCwd = "/Users/ashwin/projects/pi";
+    const projectCwd = "/Users/ashwin/projects/pi-web";
+    const archiveCwd = "/Users/ashwin/archive/pi-web";
+    await page.request.patch("/api/session-ui-state", { data: { pinnedFolders: [pinnedCwd] } });
+
+    await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+      await route.fulfill({
+        json: {
+          ok: true,
+          sessions: [
+            { id: "archive", name: "Archive session", created: "2026-01-03T00:00:00.000Z", modified: "2026-01-03T00:00:00.000Z", messageCount: 1, cwd: archiveCwd, isCurrent: false, unread: false },
+            { id: "project", name: "Project session", created: "2026-01-02T00:00:00.000Z", modified: "2026-01-02T00:00:00.000Z", messageCount: 1, cwd: projectCwd, isCurrent: false, unread: false },
+            { id: "pinned", name: "Pinned session", created: "2026-01-01T00:00:00.000Z", modified: "2026-01-01T00:00:00.000Z", messageCount: 1, cwd: pinnedCwd, isCurrent: false, unread: false },
+          ],
+        },
+      });
+    });
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const headers = page.locator(".sessionFolderHeader");
+    await expect(headers).toHaveCount(3);
+    await expect(headers.locator(".sessionFolderPath")).toHaveCount(0);
+    await expect(headers.nth(0).locator(".sessionFolderName")).toHaveText("projects/pi");
+    await expect(headers.nth(1).locator(".sessionFolderName")).toHaveText("archive/pi-web");
+    await expect(headers.nth(2).locator(".sessionFolderName")).toHaveText("projects/pi-web");
+    await expect(headers.nth(0).locator(".sessionFolderPinButton")).toHaveAttribute("aria-pressed", "true");
+
+    await headers.nth(2).locator(".sessionFolderPinButton").click();
+    await expect(headers.nth(0).locator(".sessionFolderName")).toHaveText("projects/pi");
+    await expect(headers.nth(1).locator(".sessionFolderName")).toHaveText("projects/pi-web");
+    await expect(headers.nth(2).locator(".sessionFolderName")).toHaveText("archive/pi-web");
+
+    const uiState = await (await page.request.get("/api/session-ui-state")).json();
+    expect(uiState.sessionUiState.pinnedFolders).toEqual([pinnedCwd, projectCwd]);
+  });
+
   test("opens, lists sessions, resumes an older session, and creates new session", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();
@@ -801,6 +976,40 @@ test.describe("slash commands", () => {
     await page.locator("#prompt").fill("/thinking low");
     await page.locator("#primaryButton").click();
     await expect(page.locator(".message.system", { hasText: "Thinking level set to low" })).toBeVisible();
+  });
+
+  test("sends leading-whitespace slash input as a normal prompt", async ({ page }) => {
+    let promptBody: any;
+    await page.route("**/api/prompt", async (route) => {
+      promptBody = route.request().postDataJSON();
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await page.locator("#prompt").fill(" /reload");
+    await expect(page.locator("#slashCommands")).toBeHidden();
+    await page.locator("#primaryButton").click();
+
+    await expect.poll(() => promptBody?.message).toBe("/reload");
+    await expect(page.locator(".message.user", { hasText: "/reload" })).toBeVisible();
+    await expect(page.locator(".message.system", { hasText: "› /reload" })).toHaveCount(0);
+    await expect(page.locator(".message.system", { hasText: "Reloaded pi resources" })).toHaveCount(0);
+  });
+
+  test("sends leading-whitespace shell escape input as a normal prompt", async ({ page }) => {
+    let promptBody: any;
+    await page.route("**/api/prompt", async (route) => {
+      promptBody = route.request().postDataJSON();
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await page.locator("#prompt").fill(" !echo hi");
+    await page.locator("#primaryButton").click();
+
+    await expect.poll(() => promptBody?.message).toBe("!echo hi");
+    await expect(page.locator(".message.user", { hasText: "!echo hi" })).toBeVisible();
+    await expect(page.locator(".message.system", { hasText: "› !echo hi" })).toHaveCount(0);
   });
 });
 
@@ -986,7 +1195,8 @@ test.describe("tool cards", () => {
     await card.locator(".toolCardExpandToggle").click();
     await expect(card).not.toHaveClass(/toolCard--compactCollapsed/);
     await expect(card.locator(".toolCardBody")).toBeVisible();
-    await expect(card.locator(".toolCardArgs")).toContainText('"path": "/some/file"');
+    await expect(card.locator(".toolCardArgKey")).toContainText("path");
+    await expect(card.locator(".toolCardArgValue")).toContainText("/some/file");
     await expect(card.locator(".toolCardExpandToggle")).toHaveAttribute("aria-expanded", "true");
 
     const expandedHeight = await card.evaluate((el) => el.getBoundingClientRect().height);
@@ -1224,10 +1434,44 @@ test.describe("context compaction", () => {
 test.describe("image rendering", () => {
   test.beforeAll(async () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
+    const htmlPreview = `<!doctype html><html><body>
+<h1>HTML artifact</h1>
+<p id="static">Rendered in a sandboxed iframe.</p>
+<p id="script-status">script did not run</p>
+<script>
+  const statuses = [];
+  document.getElementById("script-status").textContent = "script ran";
+  try {
+    parent.document.body.dataset.artifactAccess = "unexpected";
+    statuses.push("parent accessible");
+  } catch (error) {
+    statuses.push("parent blocked");
+  }
+  try {
+    localStorage.getItem("pi-web-token");
+    statuses.push("localStorage accessible");
+  } catch (error) {
+    statuses.push("localStorage blocked");
+  }
+  try {
+    statuses.push(document.cookie ? "cookies visible" : "cookies empty");
+  } catch (error) {
+    statuses.push("cookies blocked");
+  }
+  const list = document.createElement("ul");
+  list.id = "sandbox-status";
+  for (const status of statuses) {
+    const item = document.createElement("li");
+    item.textContent = status;
+    list.append(item);
+  }
+  document.body.append(list);
+</script>
+</body></html>`;
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
     await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n```ts\nconst preview = true;\n```\n");
-    await writeFile(join(artifactDir, "preview.html"), "<!doctype html><html><body><h1>HTML artifact</h1><p>Rendered in a sandboxed iframe.</p></body></html>");
+    await writeFile(join(artifactDir, "preview.html"), htmlPreview);
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
   });
 
@@ -1248,6 +1492,27 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewContent pre code")).toContainText("const preview = true;");
   });
 
+  test("opens markdown artifacts in a rendered preview page", async ({ page }) => {
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const open = page.locator(".artifactPreview--markdown").last().getByRole("link", { name: "Open" });
+    await expect(open).toHaveAttribute("href", /\/artifact-preview\.html\?src=%2Fapi%2Fartifacts%2Freport\.md/);
+
+    const href = await open.getAttribute("href");
+    expect(href).toBeTruthy();
+    await page.goto(href!);
+
+    await expect(page.locator("#artifactPreviewTitle")).toHaveText("report.md");
+    await expect(page.getByRole("button", { name: "Back" })).toHaveClass(/artifactPreviewPageAction/);
+    await expect(page.getByRole("link", { name: "Raw" })).toHaveClass(/artifactPreviewPageAction/);
+    await expect(page.locator("#artifactPreviewBody h1")).toHaveText("Artifact report");
+    await expect(page.locator("#artifactPreviewBody strong")).toHaveText("markdown");
+    await expect(page.locator("#artifactPreviewBody pre code")).toContainText("const preview = true;");
+    await expect(page.locator("html")).toHaveCSS("overflow-y", "auto");
+    await expect(page.locator("body")).toHaveCSS("overflow-y", "auto");
+  });
+
   test("renders html artifact links in a sandboxed iframe", async ({ page }) => {
     await page.locator("#prompt").fill("show html artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
@@ -1255,8 +1520,14 @@ test.describe("image rendering", () => {
     const preview = page.locator(".artifactPreview--html").last();
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("preview.html");
     const frame = preview.locator("iframe.artifactPreviewFrame");
-    await expect(frame).toHaveAttribute("sandbox", "");
+    await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
     await expect(frame).toHaveAttribute("src", "/api/artifacts/preview.html");
+    const artifactFrame = frame.contentFrame();
+    await expect(artifactFrame.locator("#script-status")).toHaveText("script ran");
+    await expect(artifactFrame.locator("#sandbox-status")).toContainText("parent blocked");
+    await expect(artifactFrame.locator("#sandbox-status")).toContainText("localStorage blocked");
+    await expect(artifactFrame.locator("#sandbox-status")).toContainText(/cookies (empty|blocked)/);
   });
 
   test("renders video artifact links inline", async ({ page }) => {

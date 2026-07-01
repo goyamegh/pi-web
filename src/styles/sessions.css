@@ -72,23 +72,26 @@
 }
 .sessionColorFilterButton {
   flex: 0 0 auto;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 3px;
   box-sizing: border-box;
+  width: 28px;
   height: 28px;
+  min-width: 28px;
   min-height: 28px;
-  max-width: 84px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel-2);
   color: var(--muted);
-  padding: 0 6px;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 26px;
+  padding: 0;
+}
+.sessionColorFilterButton svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.25;
 }
 .sessionColorFilterButton.active {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
@@ -99,23 +102,27 @@
   border-color: var(--accent);
   outline: none;
 }
-.sessionColorFilterButton > span:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .sessionColorFilterDots {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
   display: flex;
   align-items: center;
   gap: 1px;
   flex: 0 0 auto;
 }
 .sessionColorFilterDot {
-  width: 7px;
-  height: 7px;
+  width: 5px;
+  height: 5px;
   border-radius: 999px;
   background: var(--session-marker-color);
+}
+.sessionFilterUnreadDot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
 }
 .sessionMarkerPalette {
   flex: 0 0 auto;
@@ -272,9 +279,8 @@
   padding-top: 4px;
   border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
-.sessionFolderGroup.pinned {
-  border-left: 2px solid #f59e0b;
-  padding-left: 6px;
+.sessionFolderGroup.pinned .sessionFolderHeader {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .sessionFolderHeader {
   display: flex;
@@ -310,14 +316,12 @@
 .sessionFolderLabels {
   display: flex;
   min-width: 0;
-  flex-direction: column;
+  align-items: center;
 }
 .sessionFolderName {
   overflow: hidden;
   font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -330,6 +334,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sessionFolderPinButton,
 .sessionFolderNewButton {
   flex: 0 0 auto;
   width: 28px;
@@ -340,13 +345,24 @@
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
+}
+.sessionFolderNewButton {
   margin-right: 4px;
 }
+.sessionFolderPinButton {
+  color: color-mix(in srgb, var(--muted) 62%, transparent);
+}
+.sessionFolderPinButton.pinned {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.sessionFolderPinButton:hover,
 .sessionFolderNewButton:hover {
   border: none;
   background: var(--panel-2);
   color: var(--accent);
 }
+.sessionFolderPinButton svg,
 .sessionFolderNewButton svg {
   width: 13px;
   height: 13px;
@@ -825,6 +841,8 @@
 
 .sessionBarTab {
   --session-tab-accent: var(--accent);
+  position: relative;
+  overflow: hidden;
   flex: 1 1 0;
   min-width: 76px;
   display: flex;
@@ -832,24 +850,26 @@
   height: 28px;
   border-top: 2px solid transparent;
   color: var(--muted);
-  transition: color 0.12s ease, background-color 0.12s ease, border-color 0.12s ease;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
 }
 .sessionBarTab:hover {
   background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--muted);
 }
 .sessionBarTab.active {
-  border-top-color: var(--session-tab-accent);
-  color: color-mix(in srgb, var(--session-tab-accent) 88%, var(--text));
-  background: color-mix(in srgb, var(--session-tab-accent) 6%, transparent);
+  border-top-color: var(--accent);
+  color: var(--text);
+  background: #1f1f1f;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
 }
 .sessionBarTab.marked {
   --session-tab-accent: var(--session-marker-color);
-  border-top-color: color-mix(in srgb, var(--session-tab-accent) 55%, transparent);
-  background: color-mix(in srgb, var(--session-tab-accent) 11%, transparent);
+  color: color-mix(in srgb, var(--session-tab-accent) 68%, var(--text));
+  background: color-mix(in srgb, var(--session-tab-accent) 18%, transparent);
 }
 .sessionBarTab.marked:hover {
-  background: color-mix(in srgb, var(--session-tab-accent) 16%, transparent);
+  color: color-mix(in srgb, var(--session-tab-accent) 78%, var(--text));
+  background: color-mix(in srgb, var(--session-tab-accent) 24%, transparent);
 }
 .sessionBarTab.marked.active,
 .sessionBarTab.marked.running {
@@ -857,7 +877,7 @@
 }
 .sessionBarTab.marked.active {
   border-top-color: var(--session-tab-accent);
-  background: color-mix(in srgb, var(--session-tab-accent) 16%, transparent);
+  background: #1f1f1f;
 }
 .sessionBarTab + .sessionBarTab {
   border-left: 1px solid var(--border);
@@ -944,20 +964,77 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Pulsing top border when session is running */
-@keyframes sessionBarRunPulse {
-  0%, 100% { border-top-color: color-mix(in srgb, var(--session-tab-accent) 25%, transparent); }
-  50%       { border-top-color: var(--session-tab-accent); }
+/* Full-tab bottom flame glow when session is running */
+@keyframes sessionBarRunEmber {
+  0%, 100% {
+    opacity: .36;
+    transform: scaleX(.88) scaleY(.82);
+  }
+  50% {
+    opacity: .72;
+    transform: scaleX(1.08) scaleY(1);
+  }
 }
-@keyframes sessionBarRunPulseDim {
-  0%, 100% { border-top-color: color-mix(in srgb, var(--session-tab-accent) 12%, transparent); }
-  50%       { border-top-color: color-mix(in srgb, var(--session-tab-accent) 45%, transparent); }
+@keyframes sessionBarRunFlame {
+  0%, 100% {
+    opacity: .44;
+    transform: translateY(24%) scaleX(.92) scaleY(.68);
+    background-position: 50% 104%, 36% 112%, 64% 110%, 50% 118%;
+  }
+  22% {
+    opacity: .82;
+    transform: translateY(8%) scaleX(1.06) scaleY(1.02);
+    background-position: 49% 86%, 31% 99%, 68% 92%, 50% 108%;
+  }
+  43% {
+    opacity: .58;
+    transform: translateY(18%) scaleX(.96) scaleY(.78);
+    background-position: 52% 106%, 42% 116%, 60% 96%, 50% 114%;
+  }
+  67% {
+    opacity: .9;
+    transform: translateY(2%) scaleX(1) scaleY(1.12);
+    background-position: 51% 78%, 34% 91%, 71% 101%, 50% 104%;
+  }
+  84% {
+    opacity: .66;
+    transform: translateY(13%) scaleX(1.1) scaleY(.88);
+    background-position: 48% 97%, 29% 105%, 66% 90%, 50% 112%;
+  }
 }
-.sessionBarTab.running {
-  animation: sessionBarRunPulse 1s ease-in-out infinite;
+.sessionBarTab.running > * {
+  position: relative;
+  z-index: 1;
+}
+.sessionBarTab.running::before,
+.sessionBarTab.running::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+.sessionBarTab.running::before {
+  inset: auto 0 -16% 0;
+  height: 72%;
+  background: radial-gradient(ellipse at 50% 100%, color-mix(in srgb, var(--session-tab-accent) 44%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 24%, transparent) 28%, transparent 72%);
+  filter: blur(1px);
+  transform-origin: 50% 100%;
+  animation: sessionBarRunEmber 1.35s ease-in-out infinite;
+}
+.sessionBarTab.running::after {
+  inset: -36% 0 -8% 0;
+  background:
+    radial-gradient(ellipse at 50% 84%, color-mix(in srgb, var(--session-tab-accent) 64%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 34%, transparent) 22%, transparent 56%),
+    radial-gradient(ellipse at 36% 92%, color-mix(in srgb, var(--session-tab-accent) 44%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 18%, transparent) 24%, transparent 48%),
+    radial-gradient(ellipse at 66% 94%, color-mix(in srgb, var(--session-tab-accent) 48%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 18%, transparent) 26%, transparent 50%),
+    linear-gradient(0deg, color-mix(in srgb, var(--session-tab-accent) 38%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 18%, transparent) 34%, transparent 76%);
+  background-repeat: no-repeat;
+  background-size: 82% 98%, 48% 78%, 46% 76%, 100% 100%;
+  filter: saturate(1.08) blur(.15px);
+  transform-origin: 50% 100%;
+  animation: sessionBarRunFlame 1.45s ease-in-out infinite;
 }
 .sessionBarTab.running:not(.active) {
-  animation-name: sessionBarRunPulseDim;
   color: color-mix(in srgb, var(--muted) 76%, transparent);
   background: transparent;
 }

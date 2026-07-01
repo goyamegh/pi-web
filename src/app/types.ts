@@ -84,12 +84,15 @@ export type SessionStats = {
   contextUsage?: ContextUsage | null;
 };
 
+export const defaultAccentColor = "#e2b15f";
+
 export type PiWebSettings = {
   version: 1;
   appearance: {
     density: "comfortable" | "compact";
     navPinned: boolean;
     navWidth: number;
+    accentColor: string;
   };
   composer: {
     queueMode: QueueMode;
@@ -108,7 +111,7 @@ export type AttachedImage = {
   path?: string;
 };
 
-export type PinnedSession = { id: string; label: string; cwd?: string };
+export type PinnedSession = { id: string; cwd?: string };
 export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
 export type SessionMarkerColor = { id: SessionMarkerColorId; label: string };
 export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; note?: string; updatedAt: string };
@@ -120,6 +123,7 @@ export type SessionUiState = {
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
+  allowedMarkerColors: SessionMarkerColorId[];
 };
 
 export const sessionMarkerColors: SessionMarkerColor[] = [
@@ -137,6 +141,7 @@ export const defaultSessionUiState: SessionUiState = {
   sessionMarkers: [],
   sessionUnreadStates: [],
   selectedMarkerColor: "blue",
+  allowedMarkerColors: [],
 };
 
 const markerColorIds = new Set<SessionMarkerColorId>(sessionMarkerColors.map((color) => color.id));
@@ -178,11 +183,10 @@ export function normalizePinnedSessions(value: unknown): PinnedSession[] {
   const result: PinnedSession[] = [];
   for (const item of value) {
     const id = typeof item?.id === "string" ? item.id.trim() : "";
-    const label = typeof item?.label === "string" ? item.label.trim() : "";
-    if (!id || !label || seen.has(id)) continue;
+    if (!id || seen.has(id)) continue;
     seen.add(id);
     const cwd = typeof item?.cwd === "string" && item.cwd.trim() ? item.cwd.trim() : undefined;
-    result.push({ id, label, ...(cwd ? { cwd } : {}) });
+    result.push({ id, ...(cwd ? { cwd } : {}) });
   }
   return result;
 }
@@ -216,6 +220,19 @@ export function normalizeSessionUnreadStates(value: unknown): SessionUnreadState
   return result;
 }
 
+export function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<SessionMarkerColorId>();
+  const result: SessionMarkerColorId[] = [];
+  for (const item of value) {
+    const color = normalizeMarkerColor(item);
+    if (!color || seen.has(color)) continue;
+    seen.add(color);
+    result.push(color);
+  }
+  return result;
+}
+
 export function normalizeSessionUiState(value: unknown): SessionUiState {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   return {
@@ -225,6 +242,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
+    allowedMarkerColors: normalizeMarkerColors(raw.allowedMarkerColors),
   };
 }
 
@@ -274,6 +292,8 @@ export type SessionInfo = {
   unreadAt?: string;
 };
 
+export type SessionRecord = Partial<Omit<SessionInfo, "id">> & { id: string };
+
 export type AppState = {
   token: string;
   currentModelKey: string;
@@ -294,6 +314,7 @@ export type AppState = {
   connectionLostTimer: number | undefined;
   reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
+  sessionsById: Record<string, SessionRecord>;
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
@@ -331,7 +352,7 @@ export const sessionFolderPreviewLimit = 8;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
-  appearance: { density: "comfortable", navPinned: false, navWidth: 360 },
+  appearance: { density: "comfortable", navPinned: false, navWidth: 360, accentColor: defaultAccentColor },
   composer: { queueMode: "steer", expanded: false },
   defaults: {
     model: { provider: "amazon-bedrock", id: "us.anthropic.claude-opus-4-7" },
@@ -384,7 +405,7 @@ export function createAppState(): AppState {
   return {
     token: localStorage.getItem(tokenStorageKey) || "",
     currentModelKey: "",
-    currentModelDisplay: "No model",
+    currentModelDisplay: "",
     currentThinkingLevel: "off",
     currentSessionId: readActiveSessionIdFromUrl(),
     currentCwd: "",
@@ -402,6 +423,7 @@ export function createAppState(): AppState {
     reconnectedClearTimer: undefined,
     pinnedSessions: readLegacyPinnedSessions(),
     pinnedFolders: readLegacyPinnedFolders(),
+    sessionsById: {},
     sessionMarkers: readLegacySessionMarkers(),
     sessionUnreadStates: [],
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,

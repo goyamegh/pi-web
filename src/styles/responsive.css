@@ -77,6 +77,12 @@
   .statusPath {
     display: none;
   }
+  /* statusPath (the flex:1 spacer) is hidden on mobile, so nothing pushes the
+     right-side buttons to the edge. Absorb the free space before #headerActions
+     instead so the header actions + trailing buttons stay right-aligned. */
+  .headerActions {
+    margin-left: auto;
+  }
   .statusTitle {
     max-width: min(60vw, 240px);
   }
@@ -107,7 +113,16 @@
   }
 
   .modelSettingsThinking {
-    display: none;
+    display: inline-flex;
+  }
+
+  .modelSettingsThinkingText {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .modelSettingsPopover {
@@ -125,7 +140,13 @@
     height: 17px;
   }
 
+  .composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl {
+    flex: 0 1 auto;
+    width: clamp(150px, 42vw, 240px);
+  }
+
   .message { max-width: 96%; }
+  .messageActions { display: none; }
 
   .sessionDrawer {
     width: 100vw;

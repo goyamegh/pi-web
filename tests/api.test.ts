@@ -55,6 +55,15 @@ async function waitForServer(baseUrl: string) {
   throw new Error(`Server did not start: ${baseUrl}`);
 }
 
+async function waitForCondition(predicate: () => Promise<boolean> | boolean, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 describe("pi-web mock API", () => {
   let child: ChildProcess;
   let baseUrl: string;
@@ -163,6 +172,27 @@ describe("pi-web mock API", () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
   });
 
+  it("returns a very deep conversation tree without overflowing the stack", async () => {
+    const port = await freePort();
+    const deepChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", PI_WEB_MOCK_DEEP_TREE_DEPTH: "2500", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    deepChild.stderr?.on("data", (data) => process.stderr.write(data));
+    try {
+      const deepBaseUrl = `http://127.0.0.1:${port}`;
+      await waitForServer(deepBaseUrl);
+      const res = await fetch(`${deepBaseUrl}/api/session/tree`);
+      expect(res.status).toBe(200);
+      const tree = await res.json();
+      expect(tree.ok).toBe(true);
+      expect(tree.entryCount).toBe(2500);
+      expect(tree.nodes[0].id).toBe("mock-deep-0");
+    } finally {
+      deepChild.kill();
+    }
+  }, 25_000);
+
   it("accepts text and image prompts", async () => {
     const res = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",
@@ -182,12 +212,13 @@ describe("pi-web mock API", () => {
   it("persists and returns settings", async () => {
     const initial = await (await fetch(`${baseUrl}/api/settings`)).json();
     expect(initial.settings.composer.queueMode).toBe("steer");
+    expect(initial.settings.appearance.accentColor).toBe("#e2b15f");
 
     const patchedRes = await fetch(`${baseUrl}/api/settings`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        appearance: { density: "compact" },
+        appearance: { density: "compact", accentColor: "#ff00aa" },
         composer: { queueMode: "followUp", expanded: true },
         defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low" },
       }),
@@ -195,13 +226,14 @@ describe("pi-web mock API", () => {
     expect(patchedRes.status).toBe(200);
     const patched = await patchedRes.json();
     expect(patched.settings).toMatchObject({
-      appearance: { density: "compact" },
+      appearance: { density: "compact", accentColor: "#ff00aa" },
       composer: { queueMode: "followUp", expanded: true },
       defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low" },
     });
 
     const current = await (await fetch(`${baseUrl}/api/settings`)).json();
     expect(current.settings.composer.queueMode).toBe("followUp");
+    expect(current.settings.appearance.accentColor).toBe("#ff00aa");
   });
 
   it("persists and returns server session UI state", async () => {
@@ -211,26 +243,29 @@ describe("pi-web mock API", () => {
     expect(initial.sessionUiState.pinnedFolders).toEqual([]);
     expect(initial.sessionUiState.sessionUnreadStates).toEqual([]);
     expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
+    expect(initial.sessionUiState.allowedMarkerColors).toEqual([]);
 
     const patchedRes = await fetch(`${baseUrl}/api/session-ui-state`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+        pinnedSessions: [{ id: "mock-current", cwd: "." }],
         pinnedFolders: ["/work/repo-a", "/work/repo-b", "/work/repo-a", "", "  "],
         sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
         sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
         selectedMarkerColor: "green",
+        allowedMarkerColors: ["green", "yellow", "green", "invalid"],
       }),
     });
     expect(patchedRes.status).toBe(200);
     const patched = await patchedRes.json();
     expect(patched.sessionUiState).toMatchObject({
-      pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+      pinnedSessions: [{ id: "mock-current", cwd: "." }],
       pinnedFolders: ["/work/repo-a", "/work/repo-b"],
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z" }],
       selectedMarkerColor: "green",
+      allowedMarkerColors: ["green", "yellow"],
     });
 
     const readRes = await fetch(`${baseUrl}/api/session-ui-state/read`, {
@@ -245,6 +280,7 @@ describe("pi-web mock API", () => {
     const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(current.sessionUiState.selectedMarkerColor).toBe("green");
     expect(current.sessionUiState.pinnedFolders).toEqual(["/work/repo-a", "/work/repo-b"]);
+    expect(current.sessionUiState.allowedMarkerColors).toEqual(["green", "yellow"]);
     expect(current.sessionUiState.sessionUnreadStates).toEqual([]);
 
     // Reset for downstream tests.
@@ -342,6 +378,32 @@ describe("pi-web mock API", () => {
       body: JSON.stringify({ command: "/does-not-exist" }),
     });
     expect(invalidRes.status).toBe(500);
+  });
+
+  it("executes shell commands in the requested session cwd", async () => {
+    const res = await fetch(`${baseUrl}/api/shell`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", command: "printf shell-ok" }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.output).toContain("Mock bash output: printf shell-ok");
+    expect(data.exitCode).toBe(0);
+    expect(data.cwd).toBeTruthy();
+
+    const excludedRes = await fetch(`${baseUrl}/api/shell`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", command: "printf no-context", excludeFromContext: true }),
+    });
+    expect(excludedRes.status).toBe(200);
+    expect((await excludedRes.json()).excludeFromContext).toBe(true);
+
+    const messages = await (await fetch(`${baseUrl}/api/messages?sessionId=mock-current`)).json();
+    expect(messages.messages.some((message: any) => message.role === "bashExecution" && message.command === "printf shell-ok")).toBe(true);
+    expect(messages.messages.some((message: any) => message.role === "bashExecution" && message.command === "printf no-context" && message.excludeFromContext === true)).toBe(true);
   });
 
   it("keeps background sessions running when another session is opened", async () => {
@@ -510,7 +572,7 @@ describe("artifact serving", () => {
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
 
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -542,7 +604,7 @@ describe("artifact serving", () => {
   it("serves artifacts even when a token is configured", async () => {
     const port = await freePort();
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "secret" },
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "secret", PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
@@ -788,6 +850,112 @@ describe("additional API coverage", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).message).toContain("Aborted");
   });
+});
+
+describe("Live session lifecycle", () => {
+  let child: ChildProcess;
+  let baseUrl: string;
+  let settingsDir: string;
+
+  beforeAll(async () => {
+    settingsDir = await mkdtemp(join(tmpdir(), "pi-web-lifecycle-settings-"));
+    const port = await freePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: {
+        ...process.env,
+        PI_WEB_MOCK: "1",
+        PI_WEB_DEV: "1",
+        HOST: "127.0.0.1",
+        PORT: String(port),
+        PI_WEB_TOKEN: "",
+        PI_WEB_SESSION_IDLE_GRACE_MS: "120",
+        PI_WEB_VIEWER_LEASE_GRACE_MS: "80",
+        PI_WEB_WS_HEARTBEAT_MS: "50",
+        PI_WEB_WS_MAX_MISSED_HEARTBEATS: "1",
+        PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"),
+        PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr?.on("data", (data) => process.stderr.write(data));
+    await waitForServer(baseUrl);
+  }, 20_000);
+
+  afterAll(async () => {
+    child?.kill();
+    if (settingsDir) await rm(settingsDir, { recursive: true, force: true });
+  });
+
+  async function reset() {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+  }
+
+  async function lifecycleState() {
+    return (await (await fetch(`${baseUrl}/api/mock/live-sessions`)).json()) as {
+      liveSessions: Array<{ sessionId: string; viewerLeases: number }>;
+      viewerLeases: Array<{ clientId: string; sockets: number }>;
+      lifecycle: Array<{ sessionId: string; shutdowns: number; disposes: number }>;
+    };
+  }
+
+  it("disposes an idle session after its viewer lease is released", async () => {
+    await reset();
+    const res = await fetch(`${baseUrl}/api/sessions/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pi-web-client-id": "lease-test" },
+      body: JSON.stringify({ sessionId: "mock-older", clientId: "lease-test" }),
+    });
+    expect(res.status).toBe(200);
+
+    const leased = await lifecycleState();
+    expect(leased.liveSessions.some((item) => item.sessionId === "mock-older" && item.viewerLeases === 1)).toBe(true);
+
+    await waitForCondition(async () => {
+      const state = await lifecycleState();
+      const olderLive = state.liveSessions.some((item) => item.sessionId === "mock-older");
+      const lifecycle = state.lifecycle.find((item) => item.sessionId === "mock-older");
+      return !olderLive && Boolean(lifecycle && lifecycle.shutdowns >= 1 && lifecycle.disposes >= 1);
+    }, 3_000);
+
+    const state = await lifecycleState();
+    expect(state.liveSessions.some((item) => item.sessionId === "mock-current")).toBe(true);
+  }, 10_000);
+
+  it("terminates stale WebSockets with missed heartbeats and releases their session lease", async () => {
+    await reset();
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-older&clientId=heartbeat-test`, { autoPong: false });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.on("message", (data) => {
+          const msg = JSON.parse(String(data));
+          if (msg.type === "hello") resolve();
+        });
+        ws.on("error", reject);
+      });
+
+      const leased = await lifecycleState();
+      expect(leased.liveSessions.some((item) => item.sessionId === "mock-older" && item.viewerLeases === 1)).toBe(true);
+      expect(leased.viewerLeases.some((item) => item.clientId === "heartbeat-test" && item.sockets === 1)).toBe(true);
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("WebSocket was not closed by heartbeat")), 3_000);
+        ws.on("close", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+
+      await waitForCondition(async () => {
+        const state = await lifecycleState();
+        const olderLive = state.liveSessions.some((item) => item.sessionId === "mock-older");
+        const lifecycle = state.lifecycle.find((item) => item.sessionId === "mock-older");
+        return !olderLive && Boolean(lifecycle && lifecycle.shutdowns >= 1 && lifecycle.disposes >= 1);
+      }, 3_000);
+    } finally {
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.terminate();
+    }
+  }, 10_000);
 });
 
 describe("WebSocket authentication", () => {

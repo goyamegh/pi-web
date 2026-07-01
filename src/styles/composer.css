@@ -50,7 +50,7 @@
 }
 .contextMeter.normal .contextMeterFill { background: color-mix(in srgb, var(--muted) 24%, transparent); }
 .contextMeter.active .contextMeterTrack { background: color-mix(in srgb, var(--muted) 14%, transparent); }
-.contextMeter.active .contextMeterFill { background: color-mix(in srgb, var(--accent) 72%, var(--muted)); }
+.contextMeter.active .contextMeterFill { background: var(--accent); }
 .contextMeter.warning .contextMeterFill { background: #f59e0b; }
 .contextMeter.danger .contextMeterFill { background: var(--danger); }
 .contextMeter.unknown .contextMeterTrack { background: color-mix(in srgb, var(--muted) 8%, transparent); }
@@ -186,7 +186,7 @@ textarea:focus { border-bottom-color: var(--accent); }
 .expandButton svg { width: 14px; height: 14px; }
 .composer:hover .expandButton,
 .composer.expanded .expandButton { display: inline-grid; }
-.composer { position: relative; }
+.composer { position: relative; z-index: 2; }
 .composer.dragOver::after {
   content: "Drop images to attach";
   position: absolute;
@@ -388,6 +388,8 @@ select {
   white-space: nowrap;
 }
 .modelSettingsThinking {
+  --thinking-fill: 0%;
+  --thinking-accent: var(--accent);
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -397,12 +399,49 @@ select {
   font-weight: 700;
   white-space: nowrap;
 }
-.modelSettingsThinking svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 2.25;
+.modelSettingsThinkingIcon {
+  position: relative;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  place-items: center;
+  overflow: hidden;
 }
-.modelSettingsButton:not([data-thinking-level="off"]) .modelSettingsThinking { color: var(--accent); }
+.modelSettingsThinkingIcon::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 1px;
+  height: var(--thinking-fill, 0%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--thinking-accent) 40%, transparent);
+}
+.modelSettingsThinking[data-thinking-active="true"] .modelSettingsThinkingIcon::before { min-height: 2px; }
+.modelSettingsThinkingIcon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke-width: 2.35;
+}
+.modelSettingsThinkingIconBase {
+  z-index: 1;
+  color: var(--muted);
+  opacity: .78;
+}
+.modelSettingsThinkingIconFill {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 2;
+  color: var(--thinking-accent);
+  clip-path: inset(calc(100% - var(--thinking-fill, 0%)) 0 0 0);
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--thinking-accent) 45%, transparent));
+}
+.modelSettingsThinking[data-thinking-active="true"] .modelSettingsThinkingIconBase { opacity: .34; }
+.modelSettingsThinking[data-thinking-active="true"] .modelSettingsThinkingText { color: var(--thinking-accent); }
 .modelSettingsPopover {
   position: absolute;
   left: 0;
@@ -482,7 +521,109 @@ button:disabled:hover { border-color: var(--border); }
 }
 #queueToggle[aria-pressed="true"] { color: var(--accent); }
 #primaryButton { border-bottom-right-radius: 15px; }
-.primaryAction { background: #0f4c75; border-color: #256b97; }
+
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 46px;
+  isolation: isolate;
+  border: 1px solid rgba(255,255,255,.075);
+  border-radius: 999px;
+  background: linear-gradient(180deg, #1b1b1b, #111 58%, #0d0d0d);
+  box-shadow:
+    0 24px 62px rgba(0,0,0,.56),
+    inset 0 .5px 0 rgba(255,255,255,.055),
+    inset 0 -1px 0 rgba(0,0,0,.65);
+  padding: 3px;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 4px;
+  right: 4px;
+  bottom: -10px;
+  height: 68px;
+  border-radius: 999px;
+  background: radial-gradient(ellipse at center, rgba(255,255,255,.07), rgba(255,255,255,.022) 52%, transparent 72%);
+  filter: blur(10px);
+  opacity: .86;
+  pointer-events: none;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .contextMeter {
+  left: 18px;
+  right: 18px;
+  top: -5px;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) textarea {
+  min-height: 38px;
+  height: 38px;
+  resize: none;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  padding: 8px 12px 8px 14px;
+  overflow: hidden;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .expandButton,
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #queueToggle,
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #primaryButton {
+  display: none !important;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .composerFooter {
+  height: 38px;
+  align-items: center;
+  overflow: visible;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl,
+.composer:has(.modelSettingsButton[aria-expanded="true"]) .modelControl {
+  flex: 0 1 auto;
+  width: clamp(170px, 28vw, 320px);
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsButton {
+  height: 38px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255,255,255,.055);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.07);
+  gap: 8px;
+  padding: 0 10px 0 12px;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsPopover,
+.composer:has(.modelSettingsButton[aria-expanded="true"]) .modelSettingsPopover {
+  position: fixed;
+  left: 50%;
+  right: auto;
+  bottom: calc(72px + max(0px, env(safe-area-inset-bottom)));
+  width: min(560px, calc(100vw - 32px));
+  transform: translateX(-50%);
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #attachButton,
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #stopButton {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 999px;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #attachButton {
+  background: transparent;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #stopButton {
+  margin-left: 2px;
+}
+.primaryAction {
+  background: color-mix(in srgb, var(--accent) 44%, #051621);
+  border-color: color-mix(in srgb, var(--accent) 72%, #0b2432);
+  color: #fff;
+}
+.primaryAction:hover {
+  background: color-mix(in srgb, var(--accent) 52%, #061824);
+  border-color: var(--accent);
+}
 .dangerAction { background: #5f1824; border-color: #9f2a3d; }
 .dangerAction:hover { border-color: var(--danger); }
 .composerFooter .iconButton.dangerAction { background: #5f1824; border-color: #9f2a3d; }
