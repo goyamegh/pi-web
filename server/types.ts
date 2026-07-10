@@ -11,6 +11,7 @@ export interface PiWebSession {
   sessionId: string;
   sessionFile: string;
   isStreaming: boolean;
+  isRetrying?: boolean;
   isCompacting?: boolean;
   pendingMessageCount?: number;
   activeCwd?: string;
@@ -60,6 +61,7 @@ export interface PiWebSession {
   abortCompaction?(): void;
   executeBash?(command: string, onChunk?: (chunk: string) => void, options?: { excludeFromContext?: boolean; operations?: unknown }): Promise<{ output: string; exitCode: number | undefined; cancelled: boolean; truncated: boolean; fullOutputPath?: string }>;
   prompt(message: string, options?: { images?: unknown[]; streamingBehavior?: string }): Promise<void>;
+  retryFromFailure?(): Promise<void>;
   abort(): Promise<void>;
   clearQueue?(): void;
   subscribe?(listener: (event: unknown) => void): (() => void) | undefined;

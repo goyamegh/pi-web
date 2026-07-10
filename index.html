@@ -1,8 +1,8 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-loading-animation="fireworks">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
     <title>pi web</title>
     <meta name="theme-color" content="#1a1a1a" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -116,6 +116,14 @@
             <input id="settingNavPinnedCheckbox" type="checkbox" />
             <span>Keep navigation open</span>
           </label>
+          <label class="settingsField">
+            <span>Loading animation</span>
+            <select id="settingLoadingAnimationSelect">
+              <option value="fireworks">Micro fireworks</option>
+              <option value="glow">Ember glow</option>
+              <option value="pulse">Pulse</option>
+            </select>
+          </label>
           <div class="settingsField settingsAccentField">
             <span>Accent color</span>
             <div class="settingsAccentPicker">
@@ -213,12 +221,12 @@
         </section>
         <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
           <h3>Token sharing</h3>
-          <p class="settingsHint">Scan this QR on another device to open pi web with this browser’s saved token. Only share it with trusted devices.</p>
+          <p class="settingsHint">Use Show QR or Copy link to open pi web on another trusted device with this browser’s saved token.</p>
           <div id="tokenShareQr" class="tokenShareQr" aria-live="polite"></div>
           <input id="tokenShareUrl" class="tokenShareUrl" type="text" readonly aria-label="Token share link" />
           <div class="settingsActions">
-            <button id="tokenShareFullscreenButton" type="button">Show full screen</button>
-            <button id="tokenShareCopyButton" type="button">Copy token link</button>
+            <button id="tokenShareFullscreenButton" type="button">Show QR</button>
+            <button id="tokenShareCopyButton" type="button">Copy link</button>
           </div>
         </section>
         <span id="settingsStatus" class="settingsStatus" aria-live="polite"></span>

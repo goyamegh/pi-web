@@ -13,6 +13,37 @@ import type { CCContentBlock, CCMessage, CCTranscriptEntry } from "./types.js";
  * USER content block in CC but a top-level role in pi). We translate accordingly.
  */
 
+/**
+ * Normalize a Claude Code / Anthropic `stop_reason` into pi-web's stop-reason
+ * vocabulary. pi-web (server.ts + src/messages/content.ts) only treats `stop`
+ * and `toolUse` as "normal" terminations; any other value renders a
+ * "Response stopped unexpectedly: <reason>" notice AND flags the whole
+ * assistant message as an error card. Anthropic's natural completions
+ * (`end_turn`, `stop_sequence`, `pause_turn`) and its tool-call termination
+ * (`tool_use`) would otherwise be misreported as errors on every turn.
+ *
+ * Mapping:
+ *   end_turn | stop_sequence | pause_turn -> stop      (normal completion)
+ *   tool_use                              -> toolUse   (normal: invoking tools)
+ *   max_tokens                            -> length    (hit output limit)
+ *   refusal | anything else               -> unchanged (genuine abnormal stop)
+ */
+export function normalizeStopReason(reason: string | undefined): string | undefined {
+  if (!reason) return undefined;
+  switch (reason) {
+    case "end_turn":
+    case "stop_sequence":
+    case "pause_turn":
+      return "stop";
+    case "tool_use":
+      return "toolUse";
+    case "max_tokens":
+      return "length";
+    default:
+      return reason;
+  }
+}
+
 function flattenTextish(content: string | Array<{ type: string; text?: string; content?: unknown }>): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -120,7 +151,7 @@ export function translateCCMessage(
       content: piContent,
       ...(usage ? { usage } : {}),
       ...(message.model ? { model: message.model } : {}),
-      ...(message.stop_reason ? { stopReason: message.stop_reason } : {}),
+      ...(normalizeStopReason(message.stop_reason) ? { stopReason: normalizeStopReason(message.stop_reason) } : {}),
       timestamp,
     });
     return out;

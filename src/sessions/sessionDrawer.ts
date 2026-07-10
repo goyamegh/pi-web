@@ -2,6 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { iconElement, setIcon, type IconName } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
+import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 
@@ -73,7 +74,7 @@ function folderDisplayNames(cwds: string[]) {
 }
 
 function shouldCloseDrawerAfterSessionSwitch() {
-  return window.matchMedia("(max-width: 700px)").matches;
+  return window.matchMedia("(max-width: 640px), (max-height: 520px)").matches;
 }
 
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
@@ -116,6 +117,7 @@ export function createSessions(options: {
   state: AppState;
   elements: AppElements;
   api: ApiClient;
+  rightPanels?: RightPanelManager;
   updateMeta: (data: any) => void;
   updateThinkingOptions: (levels?: string[]) => void;
   refreshModels: () => Promise<void>;
@@ -129,6 +131,7 @@ export function createSessions(options: {
     state,
     elements,
     api,
+    rightPanels,
     updateMeta,
     updateThinkingOptions,
     refreshModels,
@@ -145,6 +148,7 @@ export function createSessions(options: {
   // refreshSessions() completes.
   const pinnedRuntimes = new Map<string, SessionInfo["runtime"]>();
   let closeSessionActionsMenu: (() => void) | undefined;
+  let sessionPanelHandle: RightPanelHandle | undefined;
   let currentSessionPinButton: HTMLButtonElement | undefined;
   let sessionSearchInput: HTMLInputElement | undefined;
   let sessionColorFilterButton: HTMLButtonElement | undefined;
@@ -315,17 +319,27 @@ export function createSessions(options: {
     }
   }
 
-  function setSessionDrawerOpen(open: boolean, skipRefresh?: boolean) {
-    if (open) blurActiveEditableOnMobile();
+  function applySessionDrawerOpen(open: boolean, skipRefresh?: boolean) {
     persistSessionDrawerOpen(open);
+    document.body.classList.toggle("sessionDrawerOpen", open);
     if (!open) {
       closeOpenSessionActionsMenu();
       closeOpenSessionColorFilterMenu();
+      return;
     }
+    if (skipRefresh) return;
+    return refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  }
+
+  function setSessionDrawerOpen(open: boolean, skipRefresh?: boolean) {
+    if (sessionPanelHandle) {
+      sessionPanelHandle.setOpen(open);
+      return;
+    }
+    if (open) blurActiveEditableOnMobile();
     elements.sessionDrawer.hidden = !open;
     elements.sessionBackdrop.hidden = !open;
-    document.body.classList.toggle("sessionDrawerOpen", open);
-    if (open && !skipRefresh) return refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+    return applySessionDrawerOpen(open, skipRefresh);
   }
 
   function scrollCurrentSessionIntoView() {
@@ -1113,6 +1127,14 @@ export function createSessions(options: {
       const tab = document.createElement("div");
       tab.className = `sessionBarTab${isActive ? " active" : ""}${unread ? " unread" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
       if (isActive) activeTab = tab;
+      if (options.running) {
+        for (let i = 1; i <= 12; i += 1) {
+          const spark = document.createElement("span");
+          spark.className = `sessionBarTabSpark s${i}`;
+          spark.setAttribute("aria-hidden", "true");
+          tab.append(spark);
+        }
+      }
 
       const open = document.createElement("button");
       open.type = "button";
@@ -1801,7 +1823,30 @@ export function createSessions(options: {
     footer.append(elements.settingsButton, elements.sessionNewButton);
     elements.sessionDrawer.append(footer);
 
-    elements.sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
+    sessionPanelHandle = rightPanels?.register({
+      id: "sessions",
+      side: "left",
+      panel: elements.sessionDrawer,
+      trigger: elements.sessionButton,
+      backdrop: elements.sessionBackdrop,
+      closeButton: elements.sessionCloseButton,
+      width: "360px",
+      minWidth: 280,
+      maxWidth: 560,
+      onOpen: () => { applySessionDrawerOpen(true); },
+      onClose: () => { applySessionDrawerOpen(false); },
+      // While a drawer popup (color filter / bucket / actions menu) or an inline
+      // rename is open, Escape should dismiss that overlay — not collapse the
+      // whole drawer. The panel manager's keydown listener runs before each
+      // menu's own (menus register on open), so the menu is still flagged here.
+      canCloseOnEscape: () =>
+        !closeSessionColorFilterMenu &&
+        !closeCurrentSessionBucketMenu &&
+        !closeSessionActionsMenu &&
+        activeRenameSessionId === null,
+      focusOnClose: elements.sessionButton,
+    });
+    if (!sessionPanelHandle) elements.sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
     elements.currentSessionBucketButton.addEventListener("click", () => openCurrentSessionBucketMenu(elements.currentSessionBucketButton));
     renderCurrentSessionBucketButton();
     elements.newSessionHeaderButton.addEventListener("click", async () => {
@@ -1811,8 +1856,10 @@ export function createSessions(options: {
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       }
     });
-    elements.sessionCloseButton.addEventListener("click", () => setSessionDrawerOpen(false));
-    elements.sessionBackdrop.addEventListener("click", () => setSessionDrawerOpen(false));
+    if (!sessionPanelHandle) {
+      elements.sessionCloseButton.addEventListener("click", () => setSessionDrawerOpen(false));
+      elements.sessionBackdrop.addEventListener("click", () => setSessionDrawerOpen(false));
+    }
     elements.sessionNewButton.addEventListener("click", async () => {
       try {
         await startNewSession();

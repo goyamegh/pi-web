@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { translateCCMessage, translateCCTranscript } from "../server/agent/claude-code/translator.js";
+import { normalizeStopReason, translateCCMessage, translateCCTranscript } from "../server/agent/claude-code/translator.js";
 import type { CCTranscriptEntry } from "../server/agent/claude-code/types.js";
 
 describe("Claude Code message translator", () => {
@@ -104,6 +104,44 @@ describe("Claude Code message translator", () => {
       { type: "thinking", text: "let me think about this carefully" },
       { type: "text", text: "Here's my answer." },
     ]);
+  });
+
+  it("normalizes Anthropic stop reasons into pi's vocabulary so normal turns aren't flagged as errors", () => {
+    expect(normalizeStopReason("end_turn")).toBe("stop");
+    expect(normalizeStopReason("stop_sequence")).toBe("stop");
+    expect(normalizeStopReason("pause_turn")).toBe("stop");
+    expect(normalizeStopReason("tool_use")).toBe("toolUse");
+    expect(normalizeStopReason("max_tokens")).toBe("length");
+    // Genuinely abnormal / unknown reasons pass through untouched.
+    expect(normalizeStopReason("refusal")).toBe("refusal");
+    expect(normalizeStopReason(undefined)).toBeUndefined();
+    expect(normalizeStopReason("")).toBeUndefined();
+  });
+
+  it("maps a normal Claude Code end_turn assistant message to stopReason 'stop' (not an error)", () => {
+    const out = translateCCMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "Everything from the plan is implemented and verified." }],
+      stop_reason: "end_turn",
+    });
+    expect(out[0]).toMatchObject({ role: "assistant", stopReason: "stop" });
+  });
+
+  it("maps a tool_use stop_reason to 'toolUse'", () => {
+    const out = translateCCMessage({
+      role: "assistant",
+      content: [{ type: "tool_use", id: "tu-1", name: "Bash", input: { command: "ls" } }],
+      stop_reason: "tool_use",
+    });
+    expect(out[0]).toMatchObject({ role: "assistant", stopReason: "toolUse" });
+  });
+
+  it("omits stopReason entirely when CC sends none", () => {
+    const out = translateCCMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "hi" }],
+    });
+    expect(out[0]).not.toHaveProperty("stopReason");
   });
 
   it("skips system messages and unknown roles", () => {

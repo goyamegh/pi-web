@@ -85,6 +85,9 @@ export type SessionStats = {
 };
 
 export const defaultAccentColor = "#e2b15f";
+export const defaultLoadingAnimation = "fireworks";
+
+export type LoadingAnimation = "fireworks" | "glow" | "pulse";
 
 export type PiWebSettings = {
   version: 1;
@@ -93,6 +96,7 @@ export type PiWebSettings = {
     navPinned: boolean;
     navWidth: number;
     accentColor: string;
+    loadingAnimation: LoadingAnimation;
   };
   composer: {
     queueMode: QueueMode;
@@ -283,6 +287,7 @@ export type SessionInfo = {
     loaded: boolean;
     isRunning: boolean;
     isStreaming: boolean;
+    isRetrying?: boolean;
     isCompacting: boolean;
     startedAt?: string;
     lastActivityAt?: string;
@@ -305,6 +310,7 @@ export type AppState = {
   currentSessionTitle: string;
   statusTitleEditing: boolean;
   isStreaming: boolean;
+  isRetrying: boolean;
   isCompacting: boolean;
   wsHasOpened: boolean;
   wsDisconnected: boolean;
@@ -352,7 +358,7 @@ export const sessionFolderPreviewLimit = 8;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
-  appearance: { density: "comfortable", navPinned: false, navWidth: 360, accentColor: defaultAccentColor },
+  appearance: { density: "comfortable", navPinned: false, navWidth: 360, accentColor: defaultAccentColor, loadingAnimation: defaultLoadingAnimation },
   composer: { queueMode: "steer", expanded: false },
   defaults: {
     model: { provider: "amazon-bedrock", id: "us.anthropic.claude-opus-4-7" },
@@ -413,6 +419,7 @@ export function createAppState(): AppState {
     currentSessionTitle: "New session",
     statusTitleEditing: false,
     isStreaming: false,
+    isRetrying: false,
     isCompacting: false,
     wsHasOpened: false,
     wsDisconnected: false,

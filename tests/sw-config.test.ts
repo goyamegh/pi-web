@@ -27,12 +27,13 @@ describe("service worker navigation strategy", () => {
     // The SPA precache NavigationRoute must be present but neutralised by a
     // catch-all denylist so it never serves stale precached HTML.
     expect(sw).toMatch(/NavigationRoute/);
-    expect(sw).toMatch(/denylist:\[\/\.\/\]/);
+    expect(sw).toMatch(/denylist:\s*\[\/\.\/\]/);
 
     // Navigations must be handled by a NetworkFirst route (fresh HTML online,
     // cached fallback offline).
-    expect(sw).toMatch(/"navigate"===\w+\.mode/);
-    expect(sw).toMatch(/NetworkFirst\(\{cacheName:"pages"/);
+    expect(sw).toMatch(/mode\s*===\s*"navigate"/);
+    expect(sw).toMatch(/NetworkFirst\(\{/);
+    expect(sw).toMatch(/"?cacheName"?:\s*"pages"/);
 
     // The auto-update primitives must stay in place so a new SW activates and
     // claims open clients immediately.

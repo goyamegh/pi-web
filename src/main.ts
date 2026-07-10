@@ -16,11 +16,11 @@ import { createContextMeter, type ContextMeterController } from "./composer/cont
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createRepoInfoBar, type RepoInfoBarController } from "./composer/repoInfoBar.js";
-import { initGitPanel } from "./git/panel.js";
+import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { createMarkdownRenderer } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
-import { createRealtime } from "./realtime/realtime.js";
+import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
 import { initSessionDrawerResize } from "./sessions/sessionDrawerResize.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
@@ -82,11 +82,14 @@ let sessions: SessionsController;
 let settings: SettingsController;
 let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
+let gitPanel: GitPanelController;
+let realtime: RealtimeController;
 async function submitPromptFromMessageAction(message: string) {
   const promptText = message.trim();
   if (!promptText) throw new Error("Message is empty.");
 
   state.isStreaming = true;
+  state.isRetrying = false;
   composer.updatePrimaryAction();
   messages.beginStreamFollow();
   messages.addMessage("user", promptText);
@@ -101,6 +104,7 @@ async function submitPromptFromMessageAction(message: string) {
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
   } catch (error) {
     state.isStreaming = false;
+    state.isRetrying = false;
     composer.updatePrimaryAction();
     messages.endStreamFollow();
     throw error;
@@ -108,7 +112,7 @@ async function submitPromptFromMessageAction(message: string) {
 }
 
 async function navigateMessageActionTarget(context: MessageActionContext) {
-  if (state.isStreaming) throw new Error("Wait for the current response to finish first.");
+  if (state.isStreaming || state.isRetrying) throw new Error("Wait for the current response to finish first.");
   if (state.isCompacting) throw new Error("Wait for compaction to finish first.");
 
   const res = await fetch("/api/session/tree/navigate", {
@@ -123,6 +127,7 @@ async function navigateMessageActionTarget(context: MessageActionContext) {
   if (data.state) {
     updateMeta(data.state);
     state.isStreaming = Boolean(data.state.isStreaming);
+    state.isRetrying = Boolean(data.state.isRetrying || data.state.runtime?.isRetrying);
     state.isCompacting = Boolean(data.state.isCompacting);
     composer.updatePrimaryAction();
   }
@@ -193,6 +198,7 @@ function updateMeta(data: any) {
   if ("stats" in data) contextMeter.update(data.stats);
   if ("webFooters" in data) renderWebFooters(elements.extensionFooterEl, data.webFooters);
   if ("webHeaderActions" in data) webHeaderActions.render(data.webHeaderActions);
+  if ("webGitTabs" in data) gitPanel?.setExtensionTabs(data.webGitTabs);
   if ("sessionTitle" in data) statusBar.setStatusTitle(data.sessionTitle?.trim() || "New session");
   else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
@@ -219,8 +225,9 @@ async function refreshMessages() {
     addPendingToolCard: tools.startTool,
     addRuntimeErrorCard: tools.addRuntimeErrorCard,
     clearActiveToolCards: tools.clearActiveToolCards,
-    isStreaming: state.isStreaming,
+    isStreaming: state.isStreaming || state.isRetrying,
     updateEmptyCwdChooser: () => sessions.updateEmptyCwdChooser(),
+    onTranscriptRuntimeState: (transcriptState) => realtime?.applyTranscriptRuntimeState(transcriptState),
   });
 }
 
@@ -236,9 +243,10 @@ async function refreshState() {
   const data = await res.json();
   updateMeta(data);
   state.isStreaming = Boolean(data.isStreaming);
+  state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
   state.isCompacting = Boolean(data.isCompacting);
-  if (state.isStreaming || state.isCompacting) statusBar.markActivityStart(
-    state.isCompacting ? "compacting" : "active",
+  if (state.isStreaming || state.isRetrying || state.isCompacting) statusBar.markActivityStart(
+    state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
     data.runtimeStartedAt || data.runtime?.startedAt,
     data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
   );
@@ -317,6 +325,7 @@ sessions = createSessions({
   state,
   elements,
   api,
+  rightPanels,
   updateMeta,
   updateThinkingOptions: (levels) => modelSettings.updateThinkingOptions(levels),
   refreshModels: () => modelSettings.refreshModels(),
@@ -356,7 +365,7 @@ conversationTree = createConversationTree({
   addMessage: messages.addMessage,
 });
 
-const realtime = createRealtime({
+realtime = createRealtime({
   state,
   elements,
   api,
@@ -400,7 +409,7 @@ initKeyboardShortcuts([
     allowInEditable: true,
     when: () => elements.tokenOverlay.hidden
       && elements.slashCommandsEl.hidden
-      && state.isStreaming,
+      && (state.isStreaming || state.isRetrying),
     run: () => composer.stopStreaming(),
   },
 ], {
@@ -420,7 +429,7 @@ initKeyboardShortcuts([
 initSessionDrawerResize({ elements, settings });
 repoInfoBar.init();
 composer.updateQueueToggle();
-initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
+gitPanel = initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 window.addEventListener("popstate", () => {
   const nextSessionId = readActiveSessionIdFromUrl();
   if (nextSessionId === state.currentSessionId) return;

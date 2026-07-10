@@ -302,8 +302,9 @@ export function createMockHarness(options: MockSessionOptions) {
         sessionFile: mockSession.sessionFile,
         runtime: {
           loaded: true,
-          isRunning: Boolean(mockSession.isStreaming) || Boolean(mockSession.isCompacting),
+          isRunning: Boolean(mockSession.isStreaming) || Boolean(mockSession.isRetrying) || Boolean(mockSession.isCompacting),
           isStreaming: Boolean(mockSession.isStreaming),
+          isRetrying: Boolean(mockSession.isRetrying),
           isCompacting: Boolean(mockSession.isCompacting),
           startedAt: runtimeStartedAt,
           lastActivityAt: runtimeLastActivityAt,
@@ -312,10 +313,54 @@ export function createMockHarness(options: MockSessionOptions) {
       });
     }
 
+    function isMockAssistantFailure(message: any) {
+      return message?.role === "assistant" && (message.stopReason === "error" || typeof message.errorMessage === "string");
+    }
+
+    function isMockAssistantAborted(message: any) {
+      return message?.role === "assistant" && message.stopReason === "aborted";
+    }
+
+    function isMockIncompleteToolResult(message: any) {
+      return message?.role === "toolResult";
+    }
+
+    function branchBeforeTrailingMockMessages(predicate: (message: any) => boolean) {
+      let removed = false;
+      while (mockLeafId) {
+        const entry = entryById(mockLeafId);
+        if (!entry || entry.type !== "message" || !predicate(entry.message)) break;
+        mockLeafId = typeof entry.parentId === "string" ? entry.parentId : null;
+        removed = true;
+      }
+      if (removed) syncMessagesToLeaf();
+      return removed;
+    }
+
+    async function runMockRetryFromFailure() {
+      const lastMessage = mockMessages[mockMessages.length - 1];
+      if (isMockAssistantFailure(lastMessage)) branchBeforeTrailingMockMessages(isMockAssistantFailure);
+      else if (isMockAssistantAborted(lastMessage)) branchBeforeTrailingMockMessages(isMockAssistantAborted);
+      else if (!isMockIncompleteToolResult(lastMessage)) throw new Error("There is no failed or incomplete response to retry.");
+      mockSession.isStreaming = true;
+      setRuntimeStartedAt();
+      broadcastRuntimeChanged();
+      broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeStartedAt);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      if (!mockSession.isStreaming) return;
+      appendMockMessage({ role: "assistant", content: isMockIncompleteToolResult(lastMessage) || isMockAssistantAborted(lastMessage) ? "Completed after manual continue." : "Recovered after manual continue.", timestamp: new Date().toISOString() });
+      mockSession.isStreaming = false;
+      clearRuntimeTimestamps();
+      broadcastRuntimeChanged();
+      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
+      if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+    }
+
     mockSession = {
       sessionId: mockSessions.find((info) => info.path === path)?.id || "mock-current",
       sessionFile: path,
       isStreaming: false,
+      isRetrying: false,
       model: mockModel,
       thinkingLevel: "medium",
       messages: mockMessages,
@@ -411,10 +456,10 @@ export function createMockHarness(options: MockSessionOptions) {
         const waitForMockRun = async (ms: number) => {
           const deadline = Date.now() + ms;
           while (Date.now() < deadline) {
-            if (!isCurrentMockRun() || (!mockSession.isStreaming && !mockSession.isCompacting)) return false;
+            if (!isCurrentMockRun() || (!mockSession.isStreaming && !mockSession.isRetrying && !mockSession.isCompacting)) return false;
             await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
           }
-          return isCurrentMockRun() && Boolean(mockSession.isStreaming || mockSession.isCompacting);
+          return isCurrentMockRun() && Boolean(mockSession.isStreaming || mockSession.isRetrying || mockSession.isCompacting);
         };
         appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
         const withCompaction = /compact|compaction/i.test(message);
@@ -425,6 +470,10 @@ export function createMockHarness(options: MockSessionOptions) {
         const slow = /slow|running/i.test(message);
         const withShowcase = /showcase/i.test(message);
         const withProviderError = /provider error|assistant error|usage limit/i.test(message);
+        const withRetryFailure = /retry failure|retry exhausted|throttle failure/i.test(message);
+        const withRetrySuccess = !withRetryFailure && /retry demo|retry success|throttle retry/i.test(message);
+        const withInterruptedTool = /incomplete tool|interrupted tool|timed out tool|timeout after tool/i.test(message);
+        const withAbortedAssistant = /aborted assistant|interrupted assistant/i.test(message);
         const withThinking = /thinking card/i.test(message);
         const withFlatEditTool = /flat edit/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
@@ -435,7 +484,7 @@ export function createMockHarness(options: MockSessionOptions) {
         const withoutAgentEnd = /missing agent end|no agent end/i.test(message);
         const withStaleRuntimeAfterEnd = /stale runtime after end/i.test(message);
         const withPendingToolRefresh = /pending tool refresh/i.test(message) || withProgressDemo;
-        const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
+        const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && !withInterruptedTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
         mockSession.isStreaming = true;
         if (withQuietRuntime) {
           setRuntimeStartedAt(new Date(Date.now() - 45_000).toISOString(), new Date(Date.now() - 31_000).toISOString());
@@ -455,11 +504,70 @@ export function createMockHarness(options: MockSessionOptions) {
             errorMessage: "Codex error: {\"type\":\"error\",\"error\":{\"type\":\"usage_limit_reached\",\"message\":\"The usage limit has been reached\",\"resets_in_seconds\":120},\"status_code\":429}",
             timestamp: new Date().toISOString(),
           });
+        } else if (withRetryFailure || withRetrySuccess) {
+          const retryDelayMs = /screenshot/i.test(message) ? 5_000 : 1_500;
+          const throttleRaw = "Throttling error: 429: {\"_events\":{\"close\":[null,null],\"error\":[null,null]},\"_readableState\":{\"highWaterMark\":65536}}";
+          const throttledMessage = {
+            role: "assistant",
+            content: [],
+            stopReason: "error",
+            errorMessage: throttleRaw,
+            timestamp: new Date().toISOString(),
+          };
+          appendMockMessage(throttledMessage);
+          broadcastPiEvent({ type: "message_end", message: throttledMessage });
+          mockSession.isStreaming = false;
+          mockSession.isRetrying = true;
+          broadcastPiEvent({ type: "agent_end", willRetry: true });
+          broadcastRuntimeChanged();
+          broadcastPiEvent({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: retryDelayMs, errorMessage: throttleRaw });
+          if (!(await waitForMockRun(retryDelayMs))) return;
+          mockSession.isRetrying = false;
+          mockSession.isStreaming = true;
+          broadcastRuntimeChanged();
+          broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
+          if (withRetryFailure) {
+            const unavailableRaw = "Service unavailable: 503: {\"socket\":true,\"_readableState\":{\"highWaterMark\":65536}}";
+            broadcastPiEvent({ type: "auto_retry_end", success: false, attempt: 3, maxAttempts: 3, finalError: unavailableRaw });
+            const failedMessage = {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: unavailableRaw,
+              timestamp: new Date().toISOString(),
+            };
+            appendMockMessage(failedMessage);
+            broadcastPiEvent({ type: "message_end", message: failedMessage });
+          } else {
+            broadcastPiEvent({ type: "auto_retry_end", success: true, attempt: 1, maxAttempts: 3 });
+            const recoveredMessage = { role: "assistant", content: "Recovered after retry.", timestamp: new Date().toISOString() };
+            appendMockMessage(recoveredMessage);
+            broadcastPiEvent({ type: "message_end", message: recoveredMessage });
+          }
+        } else if (withInterruptedTool) {
+          const toolCallId = "call-incomplete-read";
+          const assistantMessage = { role: "assistant", content: [
+            { type: "text", text: "I need to inspect a file first." },
+            { type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/some/file" } },
+          ], stopReason: "toolUse", timestamp: new Date().toISOString() };
+          appendMockMessage(assistantMessage);
+          broadcastPiEvent({ type: "message_end", message: assistantMessage });
+          broadcastPiEvent({ type: "tool_execution_start", toolName: "read", toolCallId, args: { path: "/some/file" } });
+          if (!(await waitForMockRun(80))) return;
+          broadcastPiEvent({ type: "tool_execution_end", toolName: "read", toolCallId, isError: false, result: "file contents here" });
+          appendMockMessage({ role: "toolResult", toolCallId, toolName: "read", content: "file contents here", timestamp: new Date().toISOString() });
+        } else if (withAbortedAssistant) {
+          const abortedMessage = { role: "assistant", content: "Partial response before interruption.", stopReason: "aborted", timestamp: new Date().toISOString() };
+          appendMockMessage(abortedMessage);
+          broadcastPiEvent({ type: "message_end", message: abortedMessage });
         } else if (withThinking) {
-          const thinking = "First I will inspect the request and decide what to answer.";
+          const thinkingHeading = "**Inspecting request**\n\n";
+          const thinkingBody = "First I will inspect the request and decide what to answer.";
+          const thinking = `${thinkingHeading}${thinkingBody}`;
           const finalText = "Final answer after thinking.";
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } });
-          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: thinking } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: thinkingHeading } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: thinkingBody } });
           if (!(await waitForMockRun(800))) return;
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: thinking } });
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: finalText } });
@@ -535,6 +643,7 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: `Mock response${promptOptions?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
         }
         mockSession.isStreaming = false;
+        mockSession.isRetrying = false;
         clearRuntimeTimestamps();
         broadcastRuntimeChanged();
         if (!withoutAgentEnd) {
@@ -556,7 +665,8 @@ export function createMockHarness(options: MockSessionOptions) {
           });
         }
       },
-      abort: async () => { mockSession.isStreaming = false; clearRuntimeTimestamps(); broadcastRuntimeChanged(); },
+      retryFromFailure: async () => runMockRetryFromFailure(),
+      abort: async () => { mockSession.isStreaming = false; mockSession.isRetrying = false; clearRuntimeTimestamps(); broadcastRuntimeChanged(); },
       abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,
       subscribe: () => undefined,

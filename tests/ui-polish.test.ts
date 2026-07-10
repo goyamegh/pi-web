@@ -163,6 +163,17 @@ describe("git status colors", () => {
   });
 });
 
+describe("tool card expand chevrons", () => {
+  const css = readFileSync(new URL("../src/styles/toolCards.css", import.meta.url), "utf8");
+
+  it("keeps tool and thinking expand/collapse chevrons white instead of accent-colored", () => {
+    const toggleBlock = css.match(/\.toolCardExpandToggle,\n\.toolCardCollapseToggle \{[\s\S]*?\n\}/)?.[0] || "";
+    expect(toggleBlock).toContain("color: #fff;");
+    expect(toggleBlock).not.toContain("color: var(--accent);");
+    expect(css).toContain(".toolCardCollapseToggle:focus-visible { color: #fff; border: none; }");
+  });
+});
+
 describe("configurable accent color", () => {
   const baseCss = readFileSync(new URL("../src/styles/base.css", import.meta.url), "utf8");
   const composerCss = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
@@ -202,12 +213,20 @@ describe("configurable accent color", () => {
     expect(sessionsCss).toContain(".sessionBarTab.active {\n  border-top-color: var(--accent);");
   });
 
-  it("uses a bottom-anchored flame glow for running session tabs", () => {
-    expect(sessionsCss).toContain("/* Full-tab bottom flame glow when session is running */");
-    expect(sessionsCss).toContain("@keyframes sessionBarRunEmber");
+  it("offers selectable running session tab loading animations", () => {
+    expect(settingsHtml).toContain('id="settingLoadingAnimationSelect"');
+    expect(settingsHtml).toContain('<option value="fireworks">Micro fireworks</option>');
+    expect(settingsHtml).toContain('<option value="glow">Ember glow</option>');
+    expect(settingsHtml).toContain('<option value="pulse">Pulse</option>');
+    expect(settingsTs).toContain('document.documentElement.dataset.loadingAnimation');
+    expect(settingsTs).toContain('patchSettings({ appearance: { loadingAnimation: elements.settingLoadingAnimationSelect.value } })');
+    expect(sessionsCss).toContain("/* Running session tab loading animations */");
+    expect(sessionsCss).toContain("@keyframes sessionBarRunFireworkSpark");
+    expect(sessionsCss).toContain("@keyframes sessionBarRunPulse");
     expect(sessionsCss).toContain("@keyframes sessionBarRunFlame");
-    expect(sessionsCss).toContain("transform-origin: 50% 100%;");
-    expect(sessionsCss).toContain("animation: sessionBarRunFlame 1.45s ease-in-out infinite;");
+    expect(sessionsCss).toContain(':root[data-loading-animation="fireworks"] .sessionBarTab.running .sessionBarTabSpark');
+    expect(sessionsCss).toContain(':root[data-loading-animation="pulse"] .sessionBarTab.running::before');
+    expect(sessionsCss).toContain(':root[data-loading-animation="glow"] .sessionBarTab.running::after');
     expect(sessionsCss).not.toContain("linear-gradient(\n    60deg,");
   });
 });

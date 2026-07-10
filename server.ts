@@ -24,7 +24,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { createSettingsStore } from "./server/settings.js";
-import type { PiWebFooter, PiWebHeaderAction, PiWebUi } from "./src/extensions.js";
+import type { PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebUi } from "./src/extensions.js";
 import type { PiWebSession } from "./server/types.js";
 import {
   type AgentAdapter,
@@ -803,17 +803,61 @@ function messageTextPreview(message: any) {
   return textFromContent(message?.content || "");
 }
 
+const assistantHttpErrorLabels: Record<string, string> = {
+  "429": "Throttling error",
+  "500": "Server error",
+  "502": "Bad gateway",
+  "503": "Service unavailable",
+  "504": "Gateway timeout",
+  "529": "Overloaded",
+};
+
+function isAssistantHttpErrorStatus(code: string) {
+  return code in assistantHttpErrorLabels || /^[45]\d\d$/.test(code);
+}
+
+function assistantStatusLabel(label: string | undefined, code: string) {
+  const clean = (label || "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean || /^(?:http|status|error|request failed|model request failed)$/i.test(clean)) return assistantHttpErrorLabels[code] || `HTTP ${code}`;
+  return clean;
+}
+
+function assistantStatusErrorPreview(text: string) {
+  const labelled = text.match(/^([A-Za-z][A-Za-z0-9 _/-]*?):\s*(\d{3})(?=$|[\s:,-])/);
+  if (labelled && isAssistantHttpErrorStatus(labelled[2])) return `${assistantStatusLabel(labelled[1], labelled[2])} (${labelled[2]})`;
+  const leading = text.match(/^(?:HTTP\s*)?(\d{3})(?=$|[\s:,-])/i);
+  if (leading && isAssistantHttpErrorStatus(leading[1])) return `${assistantStatusLabel(undefined, leading[1])} (${leading[1]})`;
+  const generic = text.match(/^(Error|Request failed|Model request failed)\s*:?\s*(\d{3})(?=$|[\s:,-])/i);
+  if (generic && isAssistantHttpErrorStatus(generic[2])) return `${assistantStatusLabel(generic[1], generic[2])} (${generic[2]})`;
+  return "";
+}
+
+function assistantParsedErrorDetail(parsed: any) {
+  if (typeof parsed === "string") return parsed.trim();
+  if (!parsed || typeof parsed !== "object") return "";
+  if (parsed.error && typeof parsed.error === "object") return parsed.error.message || parsed.error.type || "";
+  return parsed.message || parsed.detail || parsed.error_description || "";
+}
+
+function assistantJsonErrorPreview(text: string) {
+  const trimmed = text.trim();
+  if (!((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]")))) return "";
+  try {
+    const detail = assistantParsedErrorDetail(JSON.parse(trimmed));
+    return detail ? `Error: ${detail}` : "";
+  } catch {
+    return "";
+  }
+}
+
 function assistantErrorPreview(message: any) {
   const raw = String(message?.errorMessage || "").trim();
   if (!raw) return "";
-  const jsonText = raw.replace(/^Codex error:\s*/, "");
-  try {
-    const parsed = JSON.parse(jsonText);
-    const detail = parsed?.error?.message || parsed?.message || raw;
-    return `Error: ${detail}`;
-  } catch {
-    return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw;
-  }
+  const jsonText = raw.replace(/^Codex error:\s*/i, "").trim();
+  return assistantJsonErrorPreview(jsonText)
+    || assistantStatusErrorPreview(jsonText)
+    || assistantStatusErrorPreview(raw)
+    || (raw.length > 180 ? `${raw.slice(0, 179)}…` : raw);
 }
 
 function assistantStopReasonPreview(message: any) {
@@ -996,17 +1040,152 @@ function clearRuntimeStartedAt(targetSession: any, sessionFile = sessionPathKey(
   }
 }
 
-function runtimeForPath(path: string) {
+function messageRole(message: any) {
+  return String(message?.role || message?.raw?.role || "");
+}
+
+function messageStopReason(message: any) {
+  return String(message?.stopReason || message?.raw?.stopReason || "");
+}
+
+function messageErrorText(message: any) {
+  return typeof message?.errorMessage === "string"
+    ? message.errorMessage
+    : typeof message?.raw?.errorMessage === "string"
+      ? message.raw.errorMessage
+      : "";
+}
+
+function isAssistantFailureMessage(message: any) {
+  return messageRole(message) === "assistant" && (messageStopReason(message) === "error" || Boolean(messageErrorText(message).trim()));
+}
+
+function isAssistantAbortedMessage(message: any) {
+  return messageRole(message) === "assistant" && messageStopReason(message) === "aborted";
+}
+
+function isIncompleteToolResultMessage(message: any) {
+  return messageRole(message) === "toolResult";
+}
+
+type RetrySessionTarget =
+  | { kind: "failure"; messages: any[]; index: number; message: any }
+  | { kind: "aborted"; messages: any[]; index: number; message: any }
+  | { kind: "toolResult"; messages: any[]; index: number; message: any };
+
+function trailingRetryTarget(targetSession: PiWebSession): RetrySessionTarget | undefined {
+  const messages = Array.isArray(targetSession.agent?.state?.messages) ? targetSession.agent.state.messages as any[] : [];
+  const index = messages.length - 1;
+  const message = index >= 0 ? messages[index] : undefined;
+  if (isAssistantFailureMessage(message)) return { kind: "failure", messages, index, message };
+  if (isAssistantAbortedMessage(message)) return { kind: "aborted", messages, index, message };
+  if (isIncompleteToolResultMessage(message)) return { kind: "toolResult", messages, index, message };
+  return undefined;
+}
+
+function branchBeforeTrailingMessages(targetSession: PiWebSession, shouldBranchBefore: (message: any) => boolean) {
+  const manager = targetSession.sessionManager;
+  if (typeof manager.getBranch !== "function") return false;
+  let branch: any[];
+  try {
+    branch = manager.getBranch();
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(branch)) return false;
+
+  let lastMessageIndex = -1;
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    if (branch[index]?.type === "message") {
+      lastMessageIndex = index;
+      break;
+    }
+  }
+  if (lastMessageIndex < 0) return false;
+  const lastMessage = branch[lastMessageIndex]?.message;
+  if (!shouldBranchBefore(lastMessage)) return false;
+
+  let firstRemovedIndex = lastMessageIndex;
+  while (firstRemovedIndex > 0) {
+    const previous = branch[firstRemovedIndex - 1];
+    if (previous?.type !== "message" || !shouldBranchBefore(previous.message)) break;
+    firstRemovedIndex -= 1;
+  }
+
+  const firstRemoved = branch[firstRemovedIndex];
+  const parentId = typeof firstRemoved?.parentId === "string" ? firstRemoved.parentId : null;
+  if (parentId && typeof manager.branch === "function") manager.branch(parentId);
+  else if (!parentId && typeof manager.resetLeaf === "function") manager.resetLeaf();
+  else return false;
+  return true;
+}
+
+function syncAgentMessagesToSessionContext(targetSession: PiWebSession) {
+  const internal = targetSession as any;
+  if (typeof targetSession.sessionManager?.buildSessionContext !== "function") return false;
+  internal.agent.state.messages = targetSession.sessionManager.buildSessionContext().messages;
+  return true;
+}
+
+function assertCanRetryFromFailure(targetSession: PiWebSession) {
+  if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before retrying.");
+  if (targetSession.isCompacting) throw new Error("Wait for compaction to finish before retrying.");
+  if (!trailingRetryTarget(targetSession)) throw new Error("There is no failed or incomplete response to retry.");
+}
+
+async function retrySessionFromFailure(targetSession: PiWebSession) {
+  assertCanRetryFromFailure(targetSession);
+  if (typeof targetSession.retryFromFailure === "function") {
+    await targetSession.retryFromFailure();
+    return;
+  }
+
+  const target = trailingRetryTarget(targetSession);
+  if (!target) throw new Error("There is no failed or incomplete response to retry.");
+
+  const internal = targetSession as any;
+  if (!internal.agent || typeof internal.agent.continue !== "function") throw new Error("Continuing is not available in this session.");
+
+  if (target.kind === "failure") {
+    const branched = branchBeforeTrailingMessages(targetSession, isAssistantFailureMessage);
+    if (!branched || !syncAgentMessagesToSessionContext(targetSession)) {
+      while (target.messages.length > 0 && isAssistantFailureMessage(target.messages[target.messages.length - 1])) target.messages.pop();
+    }
+  } else if (target.kind === "aborted") {
+    const branched = branchBeforeTrailingMessages(targetSession, isAssistantAbortedMessage);
+    if (!branched || !syncAgentMessagesToSessionContext(targetSession)) {
+      if (isAssistantAbortedMessage(target.messages[target.messages.length - 1])) target.messages.pop();
+    }
+  }
+
+  try {
+    await internal.agent.continue();
+    while (typeof internal._handlePostAgentRun === "function" && await internal._handlePostAgentRun()) {
+      await internal.agent.continue();
+    }
+  } finally {
+    internal._systemPromptOverride = undefined;
+    if (typeof internal._flushPendingBashMessages === "function") internal._flushPendingBashMessages();
+  }
+}
+
+function sessionIsRetrying(live: PiWebSession | undefined) {
+  return Boolean((live as any)?.isRetrying);
+}
+
+function runtimeForPath(path: string, overrides: { isRetrying?: boolean } = {}) {
   const live = liveSessions.get(path)?.session;
   const isStreaming = Boolean(live?.isStreaming);
+  const isRetrying = overrides.isRetrying ?? sessionIsRetrying(live);
   const isCompacting = Boolean(live?.isCompacting);
-  const isRunning = isStreaming || isCompacting;
+  const isRunning = isStreaming || isRetrying || isCompacting;
   const startedAt = runtimeStartedAtForPath(path, isRunning);
   const lastActivityAt = runtimeLastActivityAtForPath(path, isRunning);
   return {
     loaded: Boolean(live),
     isRunning,
     isStreaming,
+    isRetrying,
     isCompacting,
     startedAt,
     lastActivityAt,
@@ -1021,6 +1200,7 @@ function stoppedRuntimeForPath(path: string) {
     loaded: Boolean(live),
     isRunning: false,
     isStreaming: false,
+    isRetrying: false,
     isCompacting: false,
     startedAt: undefined,
     lastActivityAt: undefined,
@@ -1030,6 +1210,9 @@ function stoppedRuntimeForPath(path: string) {
 }
 
 function runtimeForEvent(path: string, event: any) {
+  if ((event?.type === "agent_end" || event?.type === "compaction_end") && event?.willRetry) {
+    return runtimeForPath(path, { isRetrying: true });
+  }
   return event?.type === "agent_end" || event?.type === "compaction_end"
     ? stoppedRuntimeForPath(path)
     : runtimeForPath(path);
@@ -1045,6 +1228,8 @@ function isRuntimeActivityEvent(event: any) {
     case "tool_execution_start":
     case "tool_execution_update":
     case "tool_execution_end":
+    case "auto_retry_start":
+    case "auto_retry_end":
       return true;
     default:
       return false;
@@ -1201,7 +1386,8 @@ function sessionStats(targetSession: PiWebSession) {
 }
 
 function currentState(targetSession: AgentAdapter = session) {
-  const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+  const isRetrying = sessionIsRetrying(targetSession);
+  const isRunning = Boolean(targetSession.isStreaming || isRetrying || targetSession.isCompacting);
   const runtime = runtimeForPath(targetSession.sessionFile);
   return {
     cwd: sessionCwd(targetSession),
@@ -1211,6 +1397,7 @@ function currentState(targetSession: AgentAdapter = session) {
     sessionName: sessionDisplayName(targetSession),
     sessionTitle: liveSessionTitle(targetSession),
     isStreaming: targetSession.isStreaming,
+    isRetrying,
     isCompacting: Boolean(targetSession.isCompacting),
     runtimeStartedAt: typeof (targetSession as any).runtimeStartedAt === "string"
       ? (targetSession as any).runtimeStartedAt
@@ -1229,6 +1416,7 @@ function currentState(targetSession: AgentAdapter = session) {
     agent: targetSession.kind,
     capabilities: targetSession.getCapabilities(),
     webHeaderActions: webHeaderActionEntries(targetSession),
+    webGitTabs: webGitTabEntries(targetSession),
   };
 }
 
@@ -1610,8 +1798,10 @@ function noteRuntimeEventForUnreadRecovery(data: Record<string, any>) {
     }
     case "agent_end":
     case "compaction_end":
-      runtimeStartedAts.delete(sessionFile);
-      runtimeLastActivityAts.delete(sessionFile);
+      if (!event.willRetry) {
+        runtimeStartedAts.delete(sessionFile);
+        runtimeLastActivityAts.delete(sessionFile);
+      }
       return;
     default:
       if (isRuntimeActivityEvent(event)) runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event));
@@ -1637,7 +1827,7 @@ function shouldMarkSessionUnreadEvent(event: any) {
   // Unread means a background session completed and may need attention.
   // Do not mark on message_end: pi can emit it for the user's submitted
   // message before the assistant response has finished.
-  if (!event || event.aborted) return false;
+  if (!event || event.aborted || event.willRetry) return false;
   switch (event.type) {
     case "agent_end":
     case "compaction_end":
@@ -1698,8 +1888,13 @@ type WebHeaderActionState = {
   actions: Map<string, PiWebHeaderAction>;
 };
 
+type WebGitTabState = {
+  tabs: Map<string, PiWebGitTab>;
+};
+
 const webFooterStates = new WeakMap<object, WebFooterState>();
 const webHeaderActionStates = new WeakMap<object, WebHeaderActionState>();
+const webGitTabStates = new WeakMap<object, WebGitTabState>();
 
 function getWebFooterState(value: any): WebFooterState {
   const key = value as object;
@@ -1718,6 +1913,7 @@ function cleanFooterKey(value: unknown) {
 }
 
 const cleanHeaderActionKey = cleanFooterKey;
+const cleanGitTabKey = cleanFooterKey;
 
 function cleanHeaderActionText(value: unknown, maxLength = 200) {
   if (typeof value !== "string") return undefined;
@@ -1731,6 +1927,16 @@ function getWebHeaderActionState(value: any): WebHeaderActionState {
   if (!state) {
     state = { actions: new Map() };
     webHeaderActionStates.set(key, state);
+  }
+  return state;
+}
+
+function getWebGitTabState(value: any): WebGitTabState {
+  const key = value as object;
+  let state = webGitTabStates.get(key);
+  if (!state) {
+    state = { tabs: new Map() };
+    webGitTabStates.set(key, state);
   }
   return state;
 }
@@ -1794,6 +2000,25 @@ function broadcastWebHeaderActions(value: any) {
   return webHeaderActions;
 }
 
+function webGitTabEntries(value: any) {
+  return Array.from(getWebGitTabState(value).tabs.entries()).map(([key, tab]) => ({
+    key,
+    title: cleanHeaderActionText(tab.title) || key,
+    label: cleanHeaderActionText(tab.label, 80),
+  }));
+}
+
+function broadcastWebGitTabs(value: any) {
+  const webGitTabs = webGitTabEntries(value);
+  broadcast({
+    type: "web_git_tabs_changed",
+    sessionId: value.sessionId,
+    sessionFile: value.sessionFile,
+    webGitTabs,
+  });
+  return webGitTabs;
+}
+
 function createPiWebUi(value: any): PiWebUi {
   return {
     setFooter(key, footer) {
@@ -1815,6 +2040,17 @@ function createPiWebUi(value: any): PiWebUi {
         actionState.actions.delete(actionKey);
       }
       broadcastWebHeaderActions(value);
+    },
+    setGitTab(key, tab) {
+      const tabKey = cleanGitTabKey(key);
+      if (!tabKey) return;
+      const tabState = getWebGitTabState(value);
+      if (tab && typeof tab === "object" && typeof tab.render === "function") {
+        tabState.tabs.set(tabKey, tab);
+      } else {
+        tabState.tabs.delete(tabKey);
+      }
+      broadcastWebGitTabs(value);
     },
   };
 }
@@ -2207,7 +2443,7 @@ function registerLiveSession(rawSession: any): AgentAdapter {
       const startedAt = ensureRuntimeStartedAt(value, typeof e.startedAt === "string" ? e.startedAt : undefined);
       eventForClient = { ...e, startedAt };
     } else if (e?.type === "agent_end" || e?.type === "compaction_end") {
-      clearRuntimeStartedAt(value, eventSessionFile);
+      if (!e.willRetry) clearRuntimeStartedAt(value, eventSessionFile);
     }
 
     if (e?.type === "tool_execution_start") {
@@ -2679,6 +2915,34 @@ const server = createServer(async (req, res) => {
         }
       }
 
+      if (method === "POST" && url.pathname === "/api/web-git-tab/invoke") {
+        const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; repo?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const tabKey = cleanGitTabKey(body.key);
+        if (!tabKey) return sendJson(res, 400, { ok: false, error: "key is required" });
+        const tab = getWebGitTabState(targetSession).tabs.get(tabKey);
+        if (!tab) return sendJson(res, 404, { ok: false, error: "Git tab not found" });
+        try {
+          const repo = body.repo && typeof body.repo === "object" ? body.repo as Record<string, unknown> : undefined;
+          const result = await tab.render({
+            action: typeof body.action === "string" ? body.action : undefined,
+            payload: body.payload,
+            repo: repo ? {
+              path: typeof repo.path === "string" ? repo.path : undefined,
+              root: typeof repo.root === "string" ? repo.root : undefined,
+              branch: typeof repo.branch === "string" ? repo.branch : undefined,
+            } : undefined,
+          });
+          const html = cleanFooterText(result?.html, 500_000);
+          if (!html) return sendJson(res, 400, { ok: false, error: "Git tab returned no HTML" });
+          return sendJson(res, 200, { ok: true, title: cleanHeaderActionText(result?.title) || cleanHeaderActionText(tab.title) || tabKey, html });
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
       if (method === "GET" && url.pathname === "/api/session/stats") {
         const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
         const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
@@ -2933,6 +3197,49 @@ const server = createServer(async (req, res) => {
             const missedTerminalEvent = Boolean(promptSessionFile && runtimeStartedAts.has(promptSessionFile) && !isRunning);
             if (missedTerminalEvent) {
               clearRuntimeStartedAt(targetSession, promptSessionFile);
+              markSessionUnreadCompleted(targetSession.sessionId);
+            }
+            broadcast({
+              type: "session_runtime_changed",
+              sessionId: targetSession.sessionId,
+              sessionFile: targetSession.sessionFile,
+              runtime: runtimeForPath(targetSession.sessionFile),
+            });
+            releaseWorkLease();
+          });
+
+        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+      }
+
+      if (method === "POST" && url.pathname === "/api/session/retry") {
+        const body = await readBody(req) as { sessionId?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        try {
+          assertCanRetryFromFailure(targetSession);
+        } catch (error) {
+          return sendJson(res, 409, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+
+        ensureRuntimeStartedAt(targetSession);
+        const retrySessionFile = targetSession.sessionFile;
+        const releaseWorkLease = acquireWorkLease(targetSession);
+        void retrySessionFromFailure(targetSession)
+          .catch((error: unknown) => {
+            clearRuntimeStartedAt(targetSession, retrySessionFile);
+            broadcast({
+              type: "server_error",
+              sessionId: targetSession.sessionId,
+              sessionFile: targetSession.sessionFile,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          })
+          .finally(() => {
+            const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+            const missedTerminalEvent = Boolean(retrySessionFile && runtimeStartedAts.has(retrySessionFile) && !isRunning);
+            if (missedTerminalEvent) {
+              clearRuntimeStartedAt(targetSession, retrySessionFile);
               markSessionUnreadCompleted(targetSession.sessionId);
             }
             broadcast({

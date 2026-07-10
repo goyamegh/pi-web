@@ -7,7 +7,7 @@ export type ToolCards = {
   addToolCard: (toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => HTMLDivElement;
   updateToolCard: (card: HTMLDivElement, toolName: string, isError: boolean, result?: unknown) => void;
   addToolHistoryCard: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
-  addRuntimeErrorCard: (title: string, subtitle: string, body: string) => void;
+  addRuntimeErrorCard: (title: string, subtitle: string, body: string) => HTMLDivElement;
   startTool: (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
   updateToolProgress: (toolCallId: string | undefined, toolName: string, partialResult?: unknown, args?: Record<string, unknown>, startedAt?: string | number | Date) => void;
   endTool: (toolCallId: string | undefined, toolName: string, isError: boolean, result?: unknown) => void;
@@ -205,7 +205,7 @@ function parseJsonLikeResult(result: unknown): unknown {
   }
 }
 
-function textFromToolResult(result: unknown): string {
+export function textFromToolResult(result: unknown): string {
   result = parseJsonLikeResult(result);
   if (typeof result === "string") return result;
   if (!result || typeof result !== "object") return result == null ? "" : String(result);
@@ -219,7 +219,9 @@ function textFromToolResult(result: unknown): string {
     if (value.truncated) sections.push(typeof value.fullOutputPath === "string" ? `Output truncated. Full output: ${value.fullOutputPath}` : "Output truncated.");
     return sections.join("\n\n");
   }
-  return textFromRawContent(value.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
+  if (typeof value.text === "string") return value.text;
+  const raw = value.raw && typeof value.raw === "object" ? value.raw as Record<string, unknown> : undefined;
+  return textFromRawContent(value.content) || textFromRawContent(raw?.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
 }
 
 type ToolImage = { src: string; alt: string; needsAuth?: boolean };
@@ -457,6 +459,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     addCardHeader(card, title, subtitle);
     if (body) addToolResultBody(card, body);
     messagesEl.append(card);
+    return card;
   }
 
   function startedAtForCard(cardKey: string, startedAt?: string | number | Date) {

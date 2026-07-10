@@ -13,6 +13,11 @@ const sessionMarkerColors = new Set<SessionMarkerColorId>(["blue", "purple", "ye
 export type PiWebAgentKind = "pi" | "claude-code";
 
 export const defaultAccentColor = "#e2b15f";
+export const defaultLoadingAnimation = "fireworks";
+
+export type LoadingAnimation = "fireworks" | "glow" | "pulse";
+
+const loadingAnimations = new Set<LoadingAnimation>(["fireworks", "glow", "pulse"]);
 
 export type PiWebSettings = {
   version: 1;
@@ -21,6 +26,7 @@ export type PiWebSettings = {
     navPinned: boolean;
     navWidth: number;
     accentColor: string;
+    loadingAnimation: LoadingAnimation;
   };
   composer: {
     queueMode: "steer" | "followUp";
@@ -41,6 +47,7 @@ export type PiWebSettingsPatch = Partial<{
     navPinned: unknown;
     navWidth: unknown;
     accentColor: unknown;
+    loadingAnimation: unknown;
   }>;
   composer: Partial<{
     queueMode: unknown;
@@ -61,6 +68,7 @@ export const defaultPiWebSettings: PiWebSettings = {
     navPinned: false,
     navWidth: 360,
     accentColor: defaultAccentColor,
+    loadingAnimation: defaultLoadingAnimation,
   },
   composer: {
     queueMode: "steer",
@@ -104,6 +112,12 @@ export function normalizeAccentColor(value: unknown): string | undefined {
   return undefined;
 }
 
+export function normalizeLoadingAnimation(value: unknown): LoadingAnimation | undefined {
+  return typeof value === "string" && loadingAnimations.has(value as LoadingAnimation)
+    ? value as LoadingAnimation
+    : undefined;
+}
+
 export function normalizeSettings(value: unknown): PiWebSettings {
   const settings = cloneSettings(defaultPiWebSettings);
   if (!isRecord(value)) return settings;
@@ -117,6 +131,7 @@ export function normalizeSettings(value: unknown): PiWebSettings {
     settings.appearance.navWidth = Math.round(Math.max(240, Math.min(520, appearance.navWidth)));
   }
   settings.appearance.accentColor = normalizeAccentColor(appearance?.accentColor) || settings.appearance.accentColor;
+  settings.appearance.loadingAnimation = normalizeLoadingAnimation(appearance?.loadingAnimation) || settings.appearance.loadingAnimation;
 
   const composer = isRecord(value.composer) ? value.composer : undefined;
   if (composer?.queueMode === "followUp" || composer?.queueMode === "steer") {
@@ -153,6 +168,8 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
     }
     const accentColor = normalizeAccentColor(patch.appearance.accentColor);
     if (accentColor) next.appearance.accentColor = accentColor;
+    const loadingAnimation = normalizeLoadingAnimation(patch.appearance.loadingAnimation);
+    if (loadingAnimation) next.appearance.loadingAnimation = loadingAnimation;
   }
 
   if (isRecord(patch.composer)) {
