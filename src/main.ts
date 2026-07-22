@@ -226,7 +226,7 @@ async function refreshMessages() {
     addRuntimeErrorCard: tools.addRuntimeErrorCard,
     clearActiveToolCards: tools.clearActiveToolCards,
     isStreaming: state.isStreaming || state.isRetrying,
-    updateEmptyCwdChooser: () => sessions.updateEmptyCwdChooser(),
+    updateEmptyCwdChooser: () => sessions.finishTranscriptLoading(),
     onTranscriptRuntimeState: (transcriptState) => realtime?.applyTranscriptRuntimeState(transcriptState),
   });
 }
@@ -435,6 +435,7 @@ window.addEventListener("popstate", () => {
   if (nextSessionId === state.currentSessionId) return;
   state.currentSessionId = nextSessionId;
   tools.clearActiveToolCards();
+  sessions.beginTranscriptLoading();
   messages.clear();
   sessions.renderSessionBar();
   sessions.refreshSessions().catch(() => undefined);
