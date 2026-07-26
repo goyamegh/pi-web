@@ -30,27 +30,15 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Navigations must be NETWORK-FIRST so a reload always fetches fresh
-        // HTML (and therefore the current hashed asset names). vite-plugin-pwa
-        // always registers an SPA NavigationRoute bound to the *precached*
-        // index.html, and it is registered before runtimeCaching — so left
-        // alone it shadows the NetworkFirst route and a stale service worker
-        // keeps serving old HTML/JS forever (a deploy looks like it "did
-        // nothing", especially on iOS). Deny-list every navigation from that
-        // precache fallback so navigations fall through to the NetworkFirst
-        // route below, which serves fresh HTML online and the cached copy
-        // offline.
-        navigateFallback: "index.html",
-        navigateFallbackDenylist: [/./],
-        globPatterns: ["index.html", "artifact-preview.html", "assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
+        // Always send document navigations through the server. Serving cached HTML
+        // can bypass an auth proxy (such as Codespaces) after its session expires,
+        // leaving a visible app shell whose authenticated API requests all fail.
+        // Immutable assets remain precached, but HTML is deliberately excluded.
+        globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.mode === "navigate",
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "pages",
-              networkTimeoutSeconds: 3,
-            },
+            handler: "NetworkOnly",
           },
         ],
       },

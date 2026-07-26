@@ -198,6 +198,20 @@ export function createMockHarness(options: MockSessionOptions) {
     let compactionAbortRequested = false;
     let runtimeStartedAt: string | undefined;
     let runtimeLastActivityAt: string | undefined;
+    const steeringQueue: string[] = [];
+    const followUpQueue: string[] = [];
+
+    function broadcastQueueUpdate() {
+      broadcastPiEvent({ type: "queue_update", steering: [...steeringQueue], followUp: [...followUpQueue] });
+    }
+
+    function deliverQueuedMessage(queue: string[]) {
+      const message = queue.shift();
+      if (!message) return;
+      appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
+      broadcastQueueUpdate();
+      broadcastPiEvent({ type: "message_end", message: { role: "user", content: message } });
+    }
 
     function setRuntimeStartedAt(startedAt = new Date().toISOString(), lastActivityAt = startedAt) {
       runtimeStartedAt = startedAt;
@@ -366,9 +380,9 @@ export function createMockHarness(options: MockSessionOptions) {
       messages: mockMessages,
       agent: { state: { messages: mockMessages } },
       sessionManager: mockSessionManager,
-      modelRegistry: {
-        getAvailable: () => [mockModel],
-        find: (provider: string, id: string) => provider === mockModel.provider && id === mockModel.id ? mockModel : undefined,
+      modelRuntime: {
+        getAvailableSnapshot: () => [mockModel],
+        getModel: (provider: string, id: string) => provider === mockModel.provider && id === mockModel.id ? mockModel : undefined,
       },
       extensionRunner: {
         getRegisteredCommands: () => [{
@@ -450,7 +464,12 @@ export function createMockHarness(options: MockSessionOptions) {
         appendMockMessage({ role: "bashExecution", command, ...result, excludeFromContext: Boolean(options?.excludeFromContext), timestamp: new Date().toISOString() });
         return result;
       },
-      prompt: async (message: string, promptOptions?: { images?: unknown[] }) => {
+      prompt: async (message: string, promptOptions?: { images?: unknown[]; streamingBehavior?: string }) => {
+        if (mockSession.isStreaming && promptOptions?.streamingBehavior) {
+          (promptOptions.streamingBehavior === "followUp" ? followUpQueue : steeringQueue).push(message);
+          broadcastQueueUpdate();
+          return;
+        }
         const runGeneration = mockGeneration;
         const isCurrentMockRun = () => runGeneration === mockGeneration;
         const waitForMockRun = async (ms: number) => {
@@ -462,6 +481,7 @@ export function createMockHarness(options: MockSessionOptions) {
           return isCurrentMockRun() && Boolean(mockSession.isStreaming || mockSession.isRetrying || mockSession.isCompacting);
         };
         appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
+        broadcastPiEvent({ type: "message_end", message: { role: "user", content: message } });
         const withCompaction = /compact|compaction/i.test(message);
         if (withCompaction) {
           await runMockCompaction(undefined, /slow/i.test(message));
@@ -495,7 +515,7 @@ export function createMockHarness(options: MockSessionOptions) {
         broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
         if (withQuietRuntime) {
           if (!(await waitForMockRun(60_000))) return;
-        } else if (slow && !(await waitForMockRun(750))) return;
+        } else if (slow && !(await waitForMockRun(/queue demo/i.test(message) ? 2_500 : 750))) return;
         if (withProviderError) {
           appendMockMessage({
             role: "assistant",
@@ -577,6 +597,7 @@ export function createMockHarness(options: MockSessionOptions) {
           ], timestamp: new Date().toISOString() });
         } else if (withShowcase) {
           const editArgs = { path: "/Users/ashwin/projects/pi-web/src/style.css", edits: [{ oldText: ".sessionItem {\n  min-height: 40px;\n}", newText: ".sessionItem {\n  height: auto;\n  min-height: 0;\n}\n\n@media (max-width: 700px) {\n  .sessionDrawer { width: 100vw; }\n}" }] };
+          const editDetails = { diff: " 118 .sessionList { overflow-y: auto; }\n 119 \n 120 .sessionItem {\n-121   min-height: 40px;\n+121   height: auto;\n+122   min-height: 0;\n 123 }\n+124 \n+125 @media (max-width: 700px) {\n+126   .sessionDrawer { width: 100vw; }\n+127 }", firstChangedLine: 121 };
           appendMockMessage({ role: "assistant", content: [
             { type: "text", text: "## Mobile-first coding UI\n\nI reviewed the session drawer, checked the CSS, and tightened the responsive layout.\n\n```ts\nawait runVisualRegression({ projects: [\"mobile\", \"desktop\"] });\n```" },
             { type: "toolCall", id: "call-showcase-read", toolName: "read", arguments: { path: "/Users/ashwin/projects/pi-web/src/style.css" } },
@@ -585,18 +606,19 @@ export function createMockHarness(options: MockSessionOptions) {
             { type: "text", text: "Visual snapshots now cover the polished desktop and mobile states.\n\n![pi-web workflow](/api/artifacts/e2e-test.jpg)" },
           ], timestamp: new Date().toISOString() });
           appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-read", toolName: "read", content: "session drawer CSS and responsive composer styles", timestamp: new Date().toISOString() });
-          appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /Users/ashwin/projects/pi-web/src/style.css.", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /Users/ashwin/projects/pi-web/src/style.css.", details: editDetails, timestamp: new Date().toISOString() });
         } else if (withEditTool || withFlatEditTool || withMalformedEditTool) {
           const editArgs = withMalformedEditTool
             ? { path: "/some/file.ts", edits: [{ newText: "const answer = 42;" }, { oldText: "console.log(answer);" }] }
             : withFlatEditTool
               ? { path: "/some/file.ts", oldText: "const answer = 41;\nconsole.log(answer);", newText: "const answer = 42;\nconsole.info(answer);" }
               : { path: "/some/file.ts", edits: [{ oldText: "const answer = 41;\nconsole.log(answer);", newText: "const answer = 42;\nconsole.info(answer);" }] };
+          const editDetails = { diff: " 38 export function run() {\n 39   const ready = true;\n 40 \n-41   const answer = 41;\n+41   const answer = 42;\n-42   console.log(answer);\n+42   console.info(answer);\n 43 }", firstChangedLine: 41 };
           broadcastPiEvent({ type: "tool_execution_start", toolName: "edit", toolCallId: "call-edit", args: editArgs });
           if (!(await waitForMockRun(80))) return;
-          broadcastPiEvent({ type: "tool_execution_end", toolName: "edit", toolCallId: "call-edit", isError: false, result: "Successfully replaced 1 block(s) in /some/file.ts." });
+          broadcastPiEvent({ type: "tool_execution_end", toolName: "edit", toolCallId: "call-edit", isError: false, result: { content: [{ type: "text", text: "Successfully replaced 1 block(s) in /some/file.ts." }], details: editDetails } });
           appendMockMessage({ role: "assistant", content: [{ type: "toolCall", id: "call-edit", toolName: "edit", arguments: editArgs }], timestamp: new Date().toISOString() });
-          appendMockMessage({ role: "toolResult", toolCallId: "call-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /some/file.ts.", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /some/file.ts.", details: editDetails, timestamp: new Date().toISOString() });
         } else if (withTools) {
           const toolCallId = withPendingToolRefresh ? `call-pending-${Date.now()}` : "call-1";
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Let me check that for you. " } });
@@ -636,12 +658,13 @@ export function createMockHarness(options: MockSessionOptions) {
         } else if (/artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a screenshot:\n\n![e2e-test](/api/artifacts/e2e-test.png)", timestamp: new Date().toISOString() });
         } else if (/mermaid/i.test(message)) {
-          appendMockMessage({ role: "assistant", content: "Here is a Mermaid diagram:\n\n```mermaid\ngraph TD\n  A[Start] --> B[Rendered diagram]\n```", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "assistant", content: "Here is a Mermaid diagram:\n\n```mermaid\ngraph TD\n  A[Default dark node] --> B[Pastel node]\n  style B fill:#dbeafe\n```", timestamp: new Date().toISOString() });
         } else if (/markdown/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is **bold** markdown.\n\n- one\n- two\n\n```ts\nconst answer = 42;\n```", timestamp: new Date().toISOString() });
         } else {
           appendMockMessage({ role: "assistant", content: `Mock response${promptOptions?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
         }
+        while (steeringQueue.length) deliverQueuedMessage(steeringQueue);
         mockSession.isStreaming = false;
         mockSession.isRetrying = false;
         clearRuntimeTimestamps();
@@ -649,6 +672,7 @@ export function createMockHarness(options: MockSessionOptions) {
         if (!withoutAgentEnd) {
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
         }
+        while (followUpQueue.length) deliverQueuedMessage(followUpQueue);
         if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
         if (withStaleRuntimeAfterEnd) {
           broadcast({

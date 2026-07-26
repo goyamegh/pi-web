@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -9,11 +9,10 @@ import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
-  AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
-  ModelRegistry,
+  ModelRuntime,
   SessionManager,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -21,7 +20,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { createSettingsStore } from "./server/settings.js";
-import { findArtifactFile, isValidArtifactName, safeArtifactName } from "./server/shared/artifacts.js";
+import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { git, gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
 import type { PiWebSession } from "./server/types.js";
@@ -143,12 +142,11 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 
 function serveArtifact(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const rawName = decodeURIComponent(url.pathname.slice("/api/artifacts/".length));
-  const name = safeArtifactName(rawName);
-  if (!isValidArtifactName(rawName) || name !== rawName) return sendJson(res, 400, { ok: false, error: "Invalid artifact name" });
+  const artifactPath = decodeURIComponent(url.pathname.slice("/api/artifacts/".length));
+  if (!isValidArtifactPath(artifactPath)) return sendJson(res, 400, { ok: false, error: "Invalid artifact path" });
 
   const artifactRoots = new Set([piCwd, ...knownCwds]);
-  const resolvedFile = findArtifactFile(artifactRoots, name);
+  const resolvedFile = findArtifactFile(artifactRoots, artifactPath);
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
   res.writeHead(200, {
@@ -326,7 +324,7 @@ function copilotAllowedIdsFromSession(targetSession: PiWebSession = session): Se
 }
 
 function getAvailableModels(targetSession: PiWebSession = session) {
-  const all = targetSession.modelRegistry.getAvailable();
+  const all = targetSession.modelRuntime.getAvailableSnapshot();
   const allowed = copilotAllowedIdsFromSession(targetSession);
   return all.filter((m: any) => {
     if (blockedModelIds.has(m.id)) return false;
@@ -467,11 +465,16 @@ async function retrySessionFromFailure(targetSession: PiWebSession) {
   }
 }
 
+function rememberSessionLocation(info: { id: string; path: string; cwd?: string }, cwd = piCwd) {
+  if (info.id && info.path) sessionLocations.set(info.id, { path: resolve(info.path), cwd: resolve(info.cwd || cwd) });
+}
+
 function simplifySessionInfo(
   info: Awaited<ReturnType<typeof SessionManager.list>>[number] & { agent?: "pi" | "claude-code" },
   cwd = piCwd,
   agent: "pi" | "claude-code" = "pi",
 ) {
+  rememberSessionLocation(info, cwd);
   const resolvedAgent = info.agent === "pi" || info.agent === "claude-code" ? info.agent : agent;
   return {
     id: info.id,
@@ -496,6 +499,8 @@ function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessio
   });
 }
 
+const sessionListRequests = new Map<string, Promise<ReturnType<typeof simplifySessionInfo>[]>>();
+
 async function listSessionInfos(extraCwds: string[] = []) {
   if (noSession) return [];
   if (mockMode) return mockSessions.map((info) => simplifySessionInfo(info as any, info.cwd || piCwd));
@@ -504,34 +509,43 @@ async function listSessionInfos(extraCwds: string[] = []) {
     if (typeof cwd !== "string" || !cwd.trim()) continue;
     cwds.add(resolve(cwd));
   }
-  const groups = await Promise.all(Array.from(cwds).map(async (cwd) => {
-    // Pi sessions for this cwd — read from pi's session manager.
-    const piRows = await SessionManager.list(cwd).then(
-      (sessions) => sessions.map((info) => simplifySessionInfo(info, cwd, "pi")),
-      () => [],
-    );
-    // Claude Code sessions for this cwd — scan ~/.claude/projects/<slug>/.
-    const ccRows = await listCCSessions(cwd).then(
-      (sessions) => sessions.map((info) => simplifySessionInfo(
-        {
-          id: info.id,
-          path: info.path,
-          name: info.name,
-          firstMessage: info.firstMessage,
-          created: info.created,
-          modified: info.modified,
-          messageCount: info.messageCount,
-          allMessagesText: info.firstMessage,
-          cwd: info.cwd,
-        },
-        cwd,
-        "claude-code",
-      )),
-      () => [],
-    );
-    return [...piRows, ...ccRows];
-  }));
-  return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
+  const orderedCwds = Array.from(cwds).sort();
+  const key = orderedCwds.join("\n");
+  const existing = sessionListRequests.get(key);
+  if (existing) return existing;
+  const request = (async () => {
+    const groups = await Promise.all(orderedCwds.map(async (cwd) => {
+      // Pi sessions for this cwd — read from pi's session manager.
+      const piRows = await SessionManager.list(cwd).then(
+        (sessions) => sessions.map((info) => simplifySessionInfo(info, cwd, "pi")),
+        () => [],
+      );
+      // Claude Code sessions for this cwd — scan ~/.claude/projects/<slug>/.
+      const ccRows = await listCCSessions(cwd).then(
+        (sessions) => sessions.map((info) => simplifySessionInfo(
+          {
+            id: info.id,
+            path: info.path,
+            name: info.name,
+            firstMessage: info.firstMessage,
+            created: info.created,
+            modified: info.modified,
+            messageCount: info.messageCount,
+            allMessagesText: info.firstMessage,
+            cwd: info.cwd,
+          },
+          cwd,
+          "claude-code",
+        )),
+        () => [],
+      );
+      return [...piRows, ...ccRows];
+    }));
+    return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
+  })();
+  sessionListRequests.set(key, request);
+  try { return await request; }
+  finally { sessionListRequests.delete(key); }
 }
 
 function currentState(targetSession: PiWebSession = session) {
@@ -633,7 +647,7 @@ async function executeSlashCommand(input: string, targetSession: PiWebSession = 
       if (slashIndex <= 0) throw new Error("Usage: /model <provider/model-id>");
       const provider = args.slice(0, slashIndex);
       const id = args.slice(slashIndex + 1);
-      const model = targetSession.modelRegistry.find(provider, id);
+      const model = targetSession.modelRuntime.getModel(provider, id);
       if (!model) throw new Error(`Model not found: ${args}`);
       await targetSession.setModel(model);
       return { message: `Model set to ${provider}/${id}.`, state: currentStateWithThinkingLevels(targetSession) };
@@ -778,19 +792,91 @@ async function deleteSessionById(id: string, cwd?: string) {
   return { id, disposition: await trashOrRemoveSessionFile(info.path) };
 }
 
-async function getOrCreateLiveSessionById(id: string, cwd?: string) {
+function liveSessionById(id: string) {
   if (id === session.sessionId) return session;
-  for (const entry of liveSessions.values()) {
-    if (entry.session.sessionId === id) return entry.session;
+  return liveById.get(id);
+}
+
+function defaultSessionDir(cwd: string) {
+  const resolvedCwd = resolve(cwd);
+  const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+  return join(getAgentDir(), "sessions", safePath);
+}
+
+async function resolveSessionLocation(id: string, cwd = piCwd) {
+  if (!id || noSession) return undefined;
+  if (mockMode) {
+    const info = mockSessions.find((item) => item.id === id);
+    if (info) rememberSessionLocation(info as any, info.cwd || cwd);
+    return info ? sessionLocations.get(id) : undefined;
   }
-  const info = await findSessionInfoById(id, cwd);
-  if (!info) return undefined;
-  // Switch piCwd to the session's home cwd before constructing the adapter
-  // so the CC adapter's --add-dir and transcript path resolve correctly. No-op
-  // when the session lives in the active cwd.
-  const targetCwd = (info as { cwd?: string }).cwd;
-  if (targetCwd && targetCwd !== piCwd) await setPiCwd(targetCwd);
-  return getOrCreateLiveSession(info.path);
+
+  const candidateCwds = new Set([resolve(cwd), ...knownCwds]);
+  const suffix = `_${id}.jsonl`;
+  for (const resolvedCwd of candidateCwds) {
+    const directory = defaultSessionDir(resolvedCwd);
+    let names: string[];
+    try { names = await readdir(directory); } catch { continue; }
+    const name = names.find((entry) => entry.endsWith(suffix));
+    if (!name) continue;
+    const location = { path: join(directory, name), cwd: resolvedCwd };
+    sessionLocations.set(id, location);
+    knownCwds.add(resolvedCwd);
+    return location;
+  }
+
+  // Claude Code fallback: scan ~/.claude/projects/<slug>/ across candidate
+  // cwds so a CC session stays openable after the user switches cwd.
+  for (const resolvedCwd of candidateCwds) {
+    const ccSessions = await listCCSessions(resolvedCwd).catch(() => []);
+    const ccHit = ccSessions.find((info) => info.id === id);
+    if (!ccHit) continue;
+    const location = { path: resolve(ccHit.path), cwd: resolvedCwd };
+    sessionLocations.set(id, location);
+    knownCwds.add(resolvedCwd);
+    return location;
+  }
+  return undefined;
+}
+
+async function openSessionAtLocation(id: string, location: { path: string; cwd: string }) {
+  const resolvedPath = resolve(location.path);
+  const dir = dirname(resolvedPath);
+  const isCC = detectAgentForPath(resolvedPath) === "claude-code";
+  const validDir = isCC ? resolve(ccProjectDir(location.cwd)) : defaultSessionDir(location.cwd);
+  if (!mockMode && dir !== validDir) throw new Error("Invalid session location");
+  // The CC adapter binds --add-dir and its transcript path off piCwd at
+  // construction time; flip piCwd to the session's home cwd first so a new
+  // turn does not land in the wrong project slug. Pi sessions open in place
+  // without touching the global cwd.
+  if (isCC && resolve(location.cwd) !== resolve(piCwd)) await setPiCwd(location.cwd);
+  const target = await getOrCreateLiveSession(location.path);
+  if (target.sessionId !== id) {
+    if (target !== session) await disposeLiveSession(sessionPathKey(target), "reset", true);
+    throw new Error("Session location did not match requested ID");
+  }
+  sessionLocations.set(id, { path: resolvedPath, cwd: resolve(location.cwd) });
+  return target;
+}
+
+async function getOrCreateLiveSessionById(id: string, cwd?: string) {
+  const existing = liveSessionById(id);
+  if (existing) return existing;
+  const pending = openingById.get(id);
+  if (pending) return pending;
+
+  const opening = (async () => {
+    const remembered = sessionLocations.get(id);
+    if (remembered) {
+      try { return await openSessionAtLocation(id, remembered); }
+      catch { sessionLocations.delete(id); }
+    }
+    const resolved = await resolveSessionLocation(id, cwd);
+    return resolved ? openSessionAtLocation(id, resolved) : undefined;
+  })();
+  openingById.set(id, opening);
+  try { return await opening; }
+  finally { openingById.delete(id); }
 }
 
 async function switchToSessionId(id: string, cwd?: string) {
@@ -799,8 +885,7 @@ async function switchToSessionId(id: string, cwd?: string) {
   return target;
 }
 
-const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
+const modelRuntime = await ModelRuntime.create();
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
 
@@ -849,6 +934,9 @@ const viewerLeaseGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000
 const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 const liveSessions = new Map<string, LiveSessionEntry>();
+const liveById = new Map<string, PiWebSession>();
+const sessionLocations = new Map<string, { path: string; cwd: string }>();
+const openingById = new Map<string, Promise<PiWebSession | undefined>>();
 const viewerLeases = new Map<string, ViewerLease>();
 const sessionActivity = new SessionActivity((path) => liveSessions.get(path)?.session);
 let session: AgentAdapter;
@@ -966,6 +1054,7 @@ async function disposeLiveSession(key: string, reason: "idle" | "delete" | "rese
   }
 
   liveSessions.delete(key);
+  if (liveById.get(sessionId) === value) liveById.delete(sessionId);
   sessionActivity.clearSession(key, value);
 
   if (sessionId) {
@@ -1101,6 +1190,8 @@ function registerLiveSession(rawSession: any): AgentAdapter {
     }
   });
   liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: 0 });
+  liveById.set(value.sessionId, value);
+  if (value.sessionFile) sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: sessionCwd(value) });
   queueMicrotask(() => scheduleLiveSessionCleanup(key));
   return value;
 }
@@ -1169,8 +1260,7 @@ async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartE
   const result = await createAgentSession({
     cwd: resolvedCwd,
     sessionManager,
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     resourceLoader: loader,
     sessionStartEvent,
   });
@@ -1214,7 +1304,7 @@ async function applyDefaultSessionSettings(value: any) {
   const settings = await settingsStore.read();
   const modelSetting = settings.defaults.model;
   if (modelSetting) {
-    const model = value.modelRegistry.find(modelSetting.provider, modelSetting.id);
+    const model = value.modelRuntime.getModel(modelSetting.provider, modelSetting.id);
     if (model) await value.setModel(model);
   }
   const thinkingLevel = settings.defaults.thinkingLevel;
@@ -1401,6 +1491,7 @@ const sessionService = new LocalSessionService({
   retry: startSessionRetry,
   navigate: navigateSession,
   invokeHeaderAction: (value, key) => webUiBridge.invokeHeaderAction(value, key),
+  invokeArtifactAction: (value, input) => webUiBridge.invokeArtifactAction(value, input),
   invokeGitTab: (value, input) => webUiBridge.invokeGitTab(value, input),
   reportError: (value, error) => broadcast({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: error instanceof Error ? error.message : String(error) }),
 });
@@ -1600,13 +1691,24 @@ const server = createServer(async (req, res) => {
         }
       }
 
+      if (method === "POST" && url.pathname === "/api/web-artifact-action/invoke") {
+        const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
+        try {
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokeArtifactAction(typeof body.sessionId === "string" ? body.sessionId : undefined, body) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const status = error instanceof SessionServiceError ? error.status : message === "Artifact action not found" ? 404 : message === "Invalid artifact context" || message === "Artifact action does not match this artifact" || message === "key is required" || message === "Artifact action returned no result" ? 400 : 500;
+          return sendJson(res, status, { ok: false, error: message });
+        }
+      }
+
       if (method === "POST" && url.pathname === "/api/web-git-tab/invoke") {
         const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; repo?: unknown };
         try {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeGitTab(typeof body.sessionId === "string" ? body.sessionId : undefined, body) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Git tab returned no HTML" ? 400 : message === "Git tab not found" ? 404 : 500;
+          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Git tab returned no HTML or composer context" ? 400 : message === "Git tab not found" ? 404 : 500;
           return sendJson(res, status, { ok: false, error: message });
         }
       }
@@ -1825,7 +1927,7 @@ const server = createServer(async (req, res) => {
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
 
-        let targetSession: AgentAdapter | undefined;
+        let targetSession: PiWebSession | undefined;
         try {
           targetSession = await switchToSessionId(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
         } catch {

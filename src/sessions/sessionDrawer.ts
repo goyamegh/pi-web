@@ -125,6 +125,7 @@ export function createSessions(options: {
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  applyRuntimeState: (data: any) => void;
   refreshSessionTitle: () => Promise<void>;
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
@@ -139,12 +140,14 @@ export function createSessions(options: {
     refreshModels,
     refreshMessages,
     refreshState,
+    applyRuntimeState,
     refreshSessionTitle,
     clearMessages,
     addMessage,
   } = options;
 
   let cachedSessions: SessionInfo[] = [];
+  let sessionRefreshPromise: Promise<void> | undefined;
   // Tracks runtime state for pinned sessions independently of cachedSessions so
   // session_runtime_changed events can update the bar even before the first
   // refreshSessions() completes.
@@ -162,6 +165,9 @@ export function createSessions(options: {
   let transcriptLoading = true;
   let transcriptLoadGeneration = 0;
   let lastReplayedGeneration = -1;
+  let sessionBarGestureInFlight = false;
+  let sessionBarRenderQueued = false;
+  let suppressTabClickUntil = 0;
   type SessionRowTool = "pin" | SessionMarkerColorId;
   let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
   // When the user is inline-renaming a session, we must not rebuild the list
@@ -405,31 +411,43 @@ export function createSessions(options: {
       ?.scrollIntoView({ block: "nearest" });
   }
 
-  async function refreshSessions() {
-    rememberSessionCwd(state.currentCwd);
-    const params = new URLSearchParams();
-    for (const cwd of readKnownSessionCwds()) params.append("cwd", cwd);
-    const url = params.toString() ? `/api/sessions?${params}` : "/api/sessions";
-    const res = await fetch(url, { headers: api.headers() });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
-    for (const session of cachedSessions) state.sessionsById[session.id] = { ...state.sessionsById[session.id], ...session };
-    let pinnedCwdsChanged = false;
-    state.pinnedSessions = state.pinnedSessions.map((pinned) => {
-      const live = cachedSessions.find((s) => s.id === pinned.id);
-      if (live?.cwd && live.cwd !== pinned.cwd) {
-        pinnedCwdsChanged = true;
-        return { ...pinned, cwd: live.cwd };
-      }
-      return pinned;
-    });
-    if (pinnedCwdsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
-    // Skip list rebuild while inline-renaming so the focused input survives.
-    // The active rename's `finish` will re-render once it completes.
-    if (activeRenameSessionId === null) renderSessionList(cachedSessions);
-    renderSessionBar();
-    updateSessionButtonUnread();
+  function refreshSessions() {
+    if (sessionRefreshPromise) return sessionRefreshPromise;
+    sessionRefreshPromise = (async () => {
+      rememberSessionCwd(state.currentCwd);
+      const params = new URLSearchParams();
+      for (const cwd of readKnownSessionCwds()) params.append("cwd", cwd);
+      const url = params.toString() ? `/api/sessions?${params}` : "/api/sessions";
+      const res = await fetch(url, { headers: api.headers() });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
+      for (const session of cachedSessions) state.sessionsById[session.id] = { ...state.sessionsById[session.id], ...session };
+      let pinnedCwdsChanged = false;
+      state.pinnedSessions = state.pinnedSessions.map((pinned) => {
+        const live = cachedSessions.find((s) => s.id === pinned.id);
+        if (live?.cwd && live.cwd !== pinned.cwd) {
+          pinnedCwdsChanged = true;
+          return { ...pinned, cwd: live.cwd };
+        }
+        return pinned;
+      });
+      if (pinnedCwdsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
+      // Skip list rebuild while inline-renaming so the focused input survives.
+      // The active rename's `finish` will re-render once it completes.
+      if (activeRenameSessionId === null) renderSessionList(cachedSessions);
+      renderSessionBar();
+      updateSessionButtonUnread();
+    })().finally(() => { sessionRefreshPromise = undefined; });
+    return sessionRefreshPromise;
+  }
+
+  async function applyOpenedSession(openRes: Response) {
+    const data = await openRes.json();
+    updateMeta(data);
+    applyRuntimeState(data);
+    if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
+    await Promise.all([refreshModels(), refreshMessages()]);
   }
 
   function markCachedCurrentSession(sessionId: string, cwd: string) {
@@ -799,13 +817,11 @@ export function createSessions(options: {
     button.setAttribute("aria-expanded", String(Boolean(closeCurrentSessionBucketMenu)));
   }
 
-  function openCurrentSessionBucketMenu(anchor: HTMLButtonElement) {
-    if (!state.currentSessionId) return;
+  function openSessionTabMenu(sessionId: string, anchor: HTMLElement) {
     closeOpenSessionActionsMenu();
     closeOpenSessionColorFilterMenu();
     closeOpenCurrentSessionBucketMenu();
 
-    const sessionId = state.currentSessionId;
     const marker = markerForSession(sessionId);
     const menu = document.createElement("div");
     menu.className = "sessionColorFilterMenu sessionBucketMenu";
@@ -813,7 +829,7 @@ export function createSessions(options: {
 
     const title = document.createElement("div");
     title.className = "sessionColorFilterTitle";
-    title.textContent = "Session bucket";
+    title.textContent = "Session color";
     menu.append(title);
 
     const clearButton = document.createElement("button");
@@ -1110,12 +1126,11 @@ export function createSessions(options: {
         body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
       });
       if (!openRes.ok) throw new Error(await openRes.text());
+      await applyOpenedSession(openRes);
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
       markSessionReadBestEffort(sessionId);
-      await refreshState();
-      if (switchingSessions) await refreshMessages();
     } catch (error) {
       state.currentSessionId = previousSessionId;
       renderSessionBar();
@@ -1157,7 +1172,234 @@ export function createSessions(options: {
 
   // ── Session bar ────────────────────────────────────────────────────────────
 
+  function flushQueuedSessionBarRender(force = false) {
+    sessionBarGestureInFlight = false;
+    if (!force && !sessionBarRenderQueued) return;
+    sessionBarRenderQueued = false;
+    renderSessionBar();
+  }
+
+  function attachPinnedTabReorder(tab: HTMLElement) {
+    const bar = elements.sessionBarEl;
+    const holdDelayMs = 300;
+    const touchMoveTolerancePx = 10;
+    const mouseLiftDistancePx = 6;
+    const edgeZonePx = 48;
+    const maxScrollPerFrame = 14;
+    const settleDurationMs = 220;
+
+    tab.addEventListener("pointerdown", (downEvent) => {
+      if (sessionBarGestureInFlight || !downEvent.isPrimary) return;
+      if (downEvent.pointerType === "mouse" && downEvent.button !== 0) return;
+      if ((downEvent.target as Element | null)?.closest(".sessionBarTabAction")) return;
+
+      const pointerId = downEvent.pointerId;
+      const startX = downEvent.clientX;
+      const startY = downEvent.clientY;
+      let lastClientX = startX;
+      let lifted = false;
+      let pressActive = true;
+      let holdTimer: number | undefined;
+      let autoScrollFrame: number | undefined;
+      let tabs: HTMLElement[] = [];
+      let rects: DOMRect[] = [];
+      let others: Array<{ tab: HTMLElement; domIndex: number }> = [];
+      let originalIndex = -1;
+      let newIndex = -1;
+      let draggedWidth = 0;
+      let minDx = 0;
+      let maxDx = 0;
+      let scrollLeft0 = 0;
+      let maxScrollLeft = 0;
+      let barRect: DOMRect | undefined;
+
+      sessionBarGestureInFlight = true;
+
+      const clearListeners = () => {
+        if (holdTimer !== undefined) window.clearTimeout(holdTimer);
+        if (autoScrollFrame !== undefined) cancelAnimationFrame(autoScrollFrame);
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerCancel);
+      };
+
+      const finishPress = (delay = 0) => {
+        if (!pressActive) return;
+        pressActive = false;
+        clearListeners();
+        if (delay > 0) window.setTimeout(() => flushQueuedSessionBarRender(), delay);
+        else flushQueuedSessionBarRender();
+      };
+
+      const updateDrag = () => {
+        if (!lifted) return;
+        const previousIndex = newIndex;
+        const rawDx = (lastClientX - startX) + (bar.scrollLeft - scrollLeft0);
+        const dx = Math.min(maxDx, Math.max(minDx, rawDx));
+        const center = rects[originalIndex].left + draggedWidth / 2 + dx;
+        if (dx <= minDx + 0.5) newIndex = 0;
+        else if (dx >= maxDx - 0.5) newIndex = tabs.length - 1;
+        else newIndex = others.filter((item) => rects[item.domIndex].left + rects[item.domIndex].width / 2 < center).length;
+        if (newIndex !== previousIndex) navigator.vibrate?.(5);
+
+        tab.style.transform = `translateX(${dx}px) scale(1.06)`;
+        for (let position = 0; position < others.length; position += 1) {
+          const item = others[position];
+          let shift = 0;
+          if (item.domIndex > originalIndex && position < newIndex) shift = -draggedWidth;
+          else if (item.domIndex < originalIndex && position >= newIndex) shift = draggedWidth;
+          item.tab.style.transform = shift ? `translateX(${shift}px)` : "";
+        }
+      };
+
+      const runAutoScroll = () => {
+        if (!lifted || !barRect) return;
+        let velocity = 0;
+        if (lastClientX < barRect.left + edgeZonePx) {
+          velocity = -maxScrollPerFrame * Math.min(1, (barRect.left + edgeZonePx - lastClientX) / edgeZonePx);
+        } else if (lastClientX > barRect.right - edgeZonePx) {
+          velocity = maxScrollPerFrame * Math.min(1, (lastClientX - (barRect.right - edgeZonePx)) / edgeZonePx);
+        }
+        if (velocity !== 0) {
+          const nextScrollLeft = Math.min(maxScrollLeft, Math.max(0, bar.scrollLeft + velocity));
+          if (nextScrollLeft !== bar.scrollLeft) {
+            bar.scrollLeft = nextScrollLeft;
+            updateDrag();
+          }
+        }
+        autoScrollFrame = requestAnimationFrame(runAutoScroll);
+      };
+
+      const lift = () => {
+        if (!pressActive || lifted) return;
+        tabs = Array.from(bar.querySelectorAll<HTMLElement>(".sessionBarTab.pinned"));
+        originalIndex = tabs.indexOf(tab);
+        if (originalIndex < 0 || tabs.length < 2) {
+          finishPress();
+          return;
+        }
+
+        rects = tabs.map((item) => item.getBoundingClientRect());
+        others = tabs.flatMap((item, domIndex) => item === tab ? [] : [{ tab: item, domIndex }]);
+        newIndex = originalIndex;
+        draggedWidth = rects[originalIndex].width;
+        minDx = rects[0].left - rects[originalIndex].left;
+        maxDx = rects.at(-1)!.right - draggedWidth - rects[originalIndex].left;
+        scrollLeft0 = bar.scrollLeft;
+        maxScrollLeft = Math.max(0, bar.scrollWidth - bar.clientWidth);
+        barRect = bar.getBoundingClientRect();
+        lifted = true;
+        if (holdTimer !== undefined) window.clearTimeout(holdTimer);
+        try {
+          tab.setPointerCapture(pointerId);
+        } catch {
+          // The pointer may already have been released by the browser.
+        }
+        bar.classList.add("reordering");
+        tab.classList.add("dragging");
+        navigator.vibrate?.(10);
+        updateDrag();
+        if (maxScrollLeft > 0) autoScrollFrame = requestAnimationFrame(runAutoScroll);
+      };
+
+      const settle = (commit: boolean) => {
+        if (!pressActive) return;
+        pressActive = false;
+        clearListeners();
+        suppressTabClickUntil = performance.now() + 400;
+        bar.classList.remove("reordering");
+        tab.classList.remove("dragging");
+        tab.classList.add("settling");
+
+        let targetOffset = 0;
+        if (commit && newIndex > originalIndex) {
+          for (let index = originalIndex + 1; index <= newIndex; index += 1) targetOffset += rects[index].width;
+        } else if (commit && newIndex < originalIndex) {
+          for (let index = newIndex; index < originalIndex; index += 1) targetOffset -= rects[index].width;
+        }
+        tab.style.transform = `translateX(${targetOffset}px) scale(1)`;
+        if (!commit) {
+          for (const item of others) item.tab.style.transform = "";
+        }
+
+        window.setTimeout(() => {
+          if (commit && newIndex !== originalIndex) {
+            const visualIds = tabs.map((item) => item.dataset.sessionId).filter((id): id is string => Boolean(id));
+            const [draggedId] = visualIds.splice(originalIndex, 1);
+            if (draggedId) visualIds.splice(newIndex, 0, draggedId);
+            const entriesById = new Map(state.pinnedSessions.map((entry) => [entry.id, entry]));
+            const reordered = visualIds.flatMap((id) => {
+              const entry = entriesById.get(id);
+              if (!entry) return [];
+              entriesById.delete(id);
+              return [entry];
+            });
+            state.pinnedSessions = [...reordered, ...entriesById.values()];
+            persistSessionUiState({ pinnedSessions: state.pinnedSessions });
+          }
+          flushQueuedSessionBarRender(true);
+        }, settleDurationMs);
+      };
+
+      function onPointerMove(event: PointerEvent) {
+        if (!pressActive || event.pointerId !== pointerId) return;
+        lastClientX = event.clientX;
+        const distance = Math.hypot(event.clientX - startX, event.clientY - startY);
+        if (!lifted) {
+          if (downEvent.pointerType === "mouse" && distance > mouseLiftDistancePx) lift();
+          else if (downEvent.pointerType !== "mouse" && distance >= touchMoveTolerancePx) finishPress();
+        }
+        if (lifted) {
+          event.preventDefault();
+          updateDrag();
+        }
+      }
+
+      function onPointerUp(event: PointerEvent) {
+        if (!pressActive || event.pointerId !== pointerId) return;
+        lastClientX = event.clientX;
+        if (lifted) {
+          updateDrag();
+          settle(true);
+        } else {
+          // Keep the old tab alive until the synthetic click following pointerup.
+          finishPress(250);
+        }
+      }
+
+      function onPointerCancel(event: PointerEvent) {
+        if (!pressActive || event.pointerId !== pointerId) return;
+        if (lifted) settle(false);
+        else finishPress();
+      }
+
+      window.addEventListener("pointermove", onPointerMove, { passive: false });
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("pointercancel", onPointerCancel);
+      if (downEvent.pointerType !== "mouse") {
+        holdTimer = window.setTimeout(() => {
+          if (!pressActive) return;
+          suppressTabClickUntil = performance.now() + 400;
+          navigator.vibrate?.(10);
+          finishPress();
+          openSessionTabMenu(tab.dataset.sessionId!, tab);
+        }, holdDelayMs);
+      }
+    });
+
+    tab.addEventListener("touchmove", (event) => {
+      if (tab.classList.contains("dragging")) event.preventDefault();
+    }, { passive: false });
+    tab.addEventListener("contextmenu", (event) => {
+      if (sessionBarGestureInFlight || tab.classList.contains("dragging")) event.preventDefault();
+    });
+  }
+
   function renderSessionBar() {
+    if (sessionBarGestureInFlight) {
+      sessionBarRenderQueued = true;
+      return;
+    }
     const bar = elements.sessionBarEl;
     const pinned = state.pinnedSessions;
     updateSessionButtonUnread();
@@ -1185,6 +1427,15 @@ export function createSessions(options: {
       const markerColor = colorForMarker(markerForSession(sessionId)?.color);
       const tab = document.createElement("div");
       tab.className = `sessionBarTab${isActive ? " active" : ""}${unread ? " unread" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
+      tab.dataset.sessionId = sessionId;
+      if (options.pinned) attachPinnedTabReorder(tab);
+      if (options.pinned) {
+        tab.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          if (tab.classList.contains("dragging")) return;
+          openSessionTabMenu(sessionId, tab);
+        });
+      }
       if (isActive) activeTab = tab;
       if (options.running) {
         for (let i = 1; i <= 12; i += 1) {
@@ -1212,7 +1463,14 @@ export function createSessions(options: {
         unreadDot.setAttribute("aria-hidden", "true");
         open.append(unreadDot);
       }
-      open.addEventListener("click", () => void openSessionTab(sessionId, cwd));
+      open.addEventListener("click", (event) => {
+        if (performance.now() < suppressTabClickUntil) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        void openSessionTab(sessionId, cwd);
+      });
       tab.append(open);
 
       if (options.pinned) {
@@ -1779,13 +2037,12 @@ export function createSessions(options: {
           body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
         });
         if (!openRes.ok) throw new Error(await openRes.text());
+        await applyOpenedSession(openRes);
         writeActiveSessionIdToUrl(item.id);
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         markSessionReadBestEffort(item.id);
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
-        await refreshState();
-        if (switchingSessions) await refreshMessages();
       } catch (error) {
         if (switchingSessions) {
           state.currentSessionId = previousSessionId;
@@ -1907,7 +2164,9 @@ export function createSessions(options: {
       focusOnClose: elements.sessionButton,
     });
     if (!sessionPanelHandle) elements.sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
-    elements.currentSessionBucketButton.addEventListener("click", () => openCurrentSessionBucketMenu(elements.currentSessionBucketButton));
+    elements.currentSessionBucketButton.addEventListener("click", () => {
+      if (state.currentSessionId) openSessionTabMenu(state.currentSessionId, elements.currentSessionBucketButton);
+    });
     renderCurrentSessionBucketButton();
     elements.newSessionHeaderButton.addEventListener("click", async () => {
       try {

@@ -17,7 +17,7 @@ import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createRepoInfoBar, type RepoInfoBarController } from "./composer/repoInfoBar.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
-import { createMarkdownRenderer } from "./markdown/render.js";
+import { configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
@@ -71,6 +71,7 @@ const elements = getAppElements();
 const state = createAppState();
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
+configureArtifactPreviewActions({ headers: api.headers, getSessionId: () => state.currentSessionId });
 const markdown = createMarkdownRenderer(elements.messagesEl);
 
 let messages: MessageList;
@@ -165,6 +166,53 @@ const webHeaderActions = createWebHeaderActions({
   markdown,
 });
 
+function setSessionInfoOpen(open: boolean) {
+  elements.sessionInfoPopover.hidden = !open;
+  elements.sessionInfoButton.setAttribute("aria-expanded", String(open));
+}
+
+async function copySessionInfo(value: string, button: HTMLButtonElement) {
+  if (!value) return;
+  await navigator.clipboard.writeText(value);
+  const label = button.querySelector("small");
+  const previous = label?.textContent;
+  if (label) label.textContent = "Copied";
+  window.setTimeout(() => { if (label) label.textContent = previous || ""; }, 1200);
+}
+
+elements.sessionInfoButton.addEventListener("click", () => setSessionInfoOpen(elements.sessionInfoPopover.hidden));
+elements.sessionInfoId.addEventListener("click", () => void copySessionInfo(state.currentSessionId, elements.sessionInfoId));
+elements.sessionInfoCwd.addEventListener("click", () => void copySessionInfo(state.currentCwd, elements.sessionInfoCwd));
+elements.sessionInfoGit.addEventListener("click", () => { setSessionInfoOpen(false); elements.gitButton.click(); });
+document.addEventListener("pointerdown", (event) => {
+  if (!elements.sessionInfoPopover.hidden && !elements.sessionInfoPopover.contains(event.target as Node) && !elements.sessionInfoButton.contains(event.target as Node)) setSessionInfoOpen(false);
+});
+
+async function refreshSessionGitCount() {
+  try {
+    const query = state.currentSessionId ? `?sessionId=${encodeURIComponent(state.currentSessionId)}` : "";
+    const res = await fetch(`/api/git/status${query}`, { headers: api.headers() });
+    const data = await res.json();
+    const stats = data.diffStats as { staged?: { files?: number; additions?: number; deletions?: number }; unstaged?: { files?: number; additions?: number; deletions?: number } } | undefined;
+    elements.sessionInfoGitCount.textContent = "";
+    for (const [label, values] of [["Staged", stats?.staged], ["Unstaged", stats?.unstaged]] as const) {
+      const group = document.createElement("span");
+      group.className = "sessionInfoDiffGroup";
+      const name = document.createElement("span");
+      name.className = "sessionInfoDiffLabel";
+      name.textContent = `${label} ${values?.files || 0}`;
+      const added = document.createElement("span");
+      added.className = "sessionInfoAdditions";
+      added.textContent = `+${values?.additions || 0}`;
+      const deleted = document.createElement("span");
+      deleted.className = "sessionInfoDeletions";
+      deleted.textContent = `−${values?.deletions || 0}`;
+      group.append(name, added, deleted);
+      elements.sessionInfoGitCount.append(group);
+    }
+  } catch { elements.sessionInfoGitCount.textContent = "—"; }
+}
+
 function showSystemError(error: unknown) {
   messages.addMessage("system", error instanceof Error ? error.message : String(error), "error");
 }
@@ -198,10 +246,16 @@ function updateMeta(data: any) {
   if ("stats" in data) contextMeter.update(data.stats);
   if ("webFooters" in data) renderWebFooters(elements.extensionFooterEl, data.webFooters);
   if ("webHeaderActions" in data) webHeaderActions.render(data.webHeaderActions);
+  if ("webArtifactActions" in data) setArtifactPreviewActions(data.webArtifactActions);
   if ("webGitTabs" in data) gitPanel?.setExtensionTabs(data.webGitTabs);
   if ("sessionTitle" in data) statusBar.setStatusTitle(data.sessionTitle?.trim() || "New session");
   else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
+  const idValue = elements.sessionInfoId.querySelector("strong");
+  const cwdValue = elements.sessionInfoCwd.querySelector("strong");
+  if (idValue) idValue.textContent = state.currentSessionId || "Not started";
+  if (cwdValue) cwdValue.textContent = state.currentCwd || "Not set";
+  void refreshSessionGitCount();
   modelSettings.updateSummary();
   if (sessions) {
     if (data.sessionUiState) sessions.applySessionUiState(data.sessionUiState);
@@ -231,6 +285,19 @@ async function refreshMessages() {
   });
 }
 
+function applyRuntimeState(data: any) {
+  state.isStreaming = Boolean(data.isStreaming || data.runtime?.isStreaming);
+  state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
+  state.isCompacting = Boolean(data.isCompacting || data.runtime?.isCompacting);
+  if (state.isStreaming || state.isRetrying || state.isCompacting) statusBar.markActivityStart(
+    state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
+    data.runtimeStartedAt || data.runtime?.startedAt,
+    data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
+  );
+  else statusBar.markActivityEnd();
+  composer.updatePrimaryAction();
+}
+
 async function refreshState() {
   const query = state.currentSessionId ? `?sessionId=${encodeURIComponent(state.currentSessionId)}` : "";
   const res = await fetch(`/api/state${query}`, { headers: api.headers() });
@@ -242,17 +309,8 @@ async function refreshState() {
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   updateMeta(data);
-  state.isStreaming = Boolean(data.isStreaming);
-  state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
-  state.isCompacting = Boolean(data.isCompacting);
-  if (state.isStreaming || state.isRetrying || state.isCompacting) statusBar.markActivityStart(
-    state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
-    data.runtimeStartedAt || data.runtime?.startedAt,
-    data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
-  );
-  else statusBar.markActivityEnd();
+  applyRuntimeState(data);
   contextMeter.update(state.stats);
-  composer.updatePrimaryAction();
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
@@ -274,6 +332,7 @@ function initStaticIcons() {
   setIcon(elements.primaryButton, "send-horizontal");
   setIcon(elements.expandButton, "maximize-2");
   setIcon(elements.gitButton, "git-branch");
+  setIcon(elements.sessionInfoButton, "info");
   setIcon(elements.currentSessionBucketButton, "flag");
   setIcon(elements.settingsButton, "settings");
   setIcon(elements.stopButton, "square");
@@ -331,6 +390,7 @@ sessions = createSessions({
   refreshModels: () => modelSettings.refreshModels(),
   refreshMessages,
   refreshState,
+  applyRuntimeState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
   clearMessages: () => {
     tools.clearActiveToolCards();
@@ -350,6 +410,7 @@ composer = createComposer({
   refreshModels: () => modelSettings.refreshModels(),
   refreshMessages,
   refreshState,
+  beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,
 });
@@ -381,6 +442,7 @@ realtime = createRealtime({
   updateSessionStats,
   refreshMessages,
   refreshState,
+  applyRuntimeState,
   addMessage: messages.addMessage,
 });
 
@@ -429,7 +491,14 @@ initKeyboardShortcuts([
 initSessionDrawerResize({ elements, settings });
 repoInfoBar.init();
 composer.updateQueueToggle();
-gitPanel = initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
+gitPanel = initGitPanel({
+  button: elements.gitButton,
+  panel: elements.gitPanel,
+  rightPanels,
+  apiHeaders: api.headers,
+  getSessionId: () => state.currentSessionId,
+  onComposerContext: (context) => composer.addContextAttachment(context),
+});
 window.addEventListener("popstate", () => {
   const nextSessionId = readActiveSessionIdFromUrl();
   if (nextSessionId === state.currentSessionId) return;

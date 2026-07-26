@@ -244,7 +244,12 @@ export function collectToolImages(result: unknown): ToolImage[] {
       const url = typeof obj.url === "string" ? obj.url : typeof source?.url === "string" ? source.url : undefined;
       if (data) images.push({ src: `data:${mimeType};base64,${data}`, alt });
       else if (url) images.push({ src: url, alt, needsAuth: url.startsWith("/") });
-      else if (typeof obj.path === "string") images.push({ src: `/api/artifacts/${encodeURIComponent(obj.path.split("/").pop() || obj.path)}`, alt, needsAuth: true });
+      else if (typeof obj.path === "string") {
+        const marker = "/.pi/web/artifacts/";
+        const normalized = obj.path.replaceAll("\\", "/");
+        const artifactPath = normalized.includes(marker) ? normalized.slice(normalized.indexOf(marker) + marker.length) : normalized.replace(/^\/+/, "");
+        images.push({ src: `/api/artifacts/${artifactPath.split("/").map(encodeURIComponent).join("/")}`, alt, needsAuth: true });
+      }
     } else if (obj.type === "image_url" && obj.image_url && typeof obj.image_url === "object") {
       const imageUrl = obj.image_url as Record<string, unknown>;
       if (typeof imageUrl.url === "string") images.push({ src: imageUrl.url, alt: "tool result image", needsAuth: imageUrl.url.startsWith("/") });
@@ -429,6 +434,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
 
     card.querySelector(".toolCardBadge")?.remove();
 
+    if (toolName === "edit" && !isError) renderEditDiff(card, {}, result);
     const resultStr = textFromToolResult(result);
     if (resultStr && (isError || card.dataset.toolName !== "edit")) {
       removePartialToolOutput(card);
@@ -447,7 +453,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     if (toolName === "bash") addBashHeader(card, result, args);
     else addToolHeader(card, toolName, args);
     const resultStr = textFromToolResult(result);
-    if (toolName === "edit" && args) renderEditDiff(card, args);
+    if (toolName === "edit" && args) renderEditDiff(card, args, result);
     else if (resultStr) addToolResultBody(card, resultStr);
     addToolImagePreviews(card, result, apiHeaders);
     messagesEl.append(card);

@@ -14,7 +14,7 @@ function fixtureSession(): PiWebSession {
     sessionId: "current", sessionFile: "/tmp/current.jsonl", isStreaming: false, isCompacting: false,
     model, thinkingLevel: "medium", messages: entries.map((entry) => entry.message), agent: { state: { messages: entries.map((entry) => entry.message) } },
     sessionManager: { newSession() {}, getBranch: () => entries, getLeafId: () => "result", getTree: () => [{ entry: entries[0], children: [{ entry: entries[1], children: [] }] }] },
-    modelRegistry: { getAvailable: () => [model], find: () => model },
+    modelRuntime: { getAvailableSnapshot: () => [model], getModel: () => model },
     extensionRunner: { getRegisteredCommands: () => [] }, promptTemplates: [], resourceLoader: { getSkills: () => ({ skills: [] }) },
     getAvailableThinkingLevels: () => ["off", "medium"], getSessionName: () => "Fixture", getContextUsage: () => ({ tokens: 1, contextWindow: 1000, percent: 0.1 }),
     setModel: vi.fn(async () => undefined), setThinkingLevel: vi.fn(), prompt: async () => undefined, abort: async () => undefined,
@@ -30,7 +30,7 @@ function fixtureService() {
     decorateMessageContent: (content) => content, availableModels: () => [session.model], webCommands: [{ name: "web", source: "web" }],
     list: async () => [], create: async (cwd, previous) => { creates.push({ cwd, previous }); return session; }, open: async () => session,
     delete: async () => ({}), switchCwd: async () => ({}), executeCommand: async () => ({ message: "ok", state: {} }), prompt: async () => undefined,
-    retry: async () => undefined, navigate: async () => ({ finish() {} }), invokeHeaderAction: async () => ({}), invokeGitTab: async () => ({}), reportError: () => undefined,
+    retry: async () => undefined, navigate: async () => ({ finish() {} }), invokeHeaderAction: async () => ({}), invokeArtifactAction: async (_session, input) => input, invokeGitTab: async () => ({}), reportError: () => undefined,
   };
   return { service: new LocalSessionService(deps), session, creates };
 }
@@ -41,6 +41,12 @@ describe("LocalSessionService contract", () => {
     for (const result of await Promise.all([service.state(), service.stats(), service.tree(), service.messages(), service.models(), service.commands()])) {
       expect(jsonRoundTrip(result)).toStrictEqual(result);
     }
+  });
+
+  it("delegates artifact action invocation for the resolved session", async () => {
+    const { service } = fixtureService();
+    await expect(service.invokeArtifactAction(undefined, { key: "download", path: "/api/artifacts/report.md" }))
+      .resolves.toEqual({ key: "download", path: "/api/artifacts/report.md" });
   });
 
   it("maps unavailable conversation trees to the legacy 400 status", async () => {

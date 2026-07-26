@@ -121,6 +121,43 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).not.toHaveClass(/\bactive\b/);
   });
 
+  test("mouse drag reorders pinned tabs and persists the order", async ({ page }) => {
+    await seedServerPinned(
+      page,
+      { id: "mock-current" },
+      { id: "mock-older" },
+    );
+    await page.goto("/");
+
+    const tabs = page.locator(".sessionBarTab.pinned");
+    const draggedTab = tabs.filter({ hasText: "Current mock session" });
+    const targetTab = tabs.filter({ hasText: "Older mock session" });
+    await expect(tabs).toHaveCount(2);
+    await expect(draggedTab).toBeVisible();
+    await expect(targetTab).toBeVisible();
+    let firstBox = await draggedTab.boundingBox();
+    let secondBox = await targetTab.boundingBox();
+    await expect.poll(async () => {
+      firstBox = await draggedTab.boundingBox();
+      secondBox = await targetTab.boundingBox();
+      return Boolean(firstBox && secondBox);
+    }).toBe(true);
+
+    await page.mouse.move(firstBox!.x + firstBox!.width / 2, firstBox!.y + firstBox!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(firstBox!.x + firstBox!.width / 2 + 12, firstBox!.y + firstBox!.height / 2, { steps: 2 });
+    await expect(draggedTab).toHaveClass(/\bdragging\b/);
+    await page.mouse.move(secondBox!.x + secondBox!.width * 0.75, secondBox!.y + secondBox!.height / 2, { steps: 6 });
+    await page.mouse.up();
+
+    await expect(tabs.nth(0)).toContainText("Older mock session");
+    await expect(tabs.nth(1)).toContainText("Current mock session");
+    await expect.poll(async () => {
+      const uiState = await (await page.request.get("/api/session-ui-state")).json();
+      return uiState.sessionUiState.pinnedSessions.map((entry: { id: string }) => entry.id);
+    }).toEqual(["mock-older", "mock-current"]);
+  });
+
   test("shows unread indicators in tabs and session drawer rows", async ({ page }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [
@@ -170,6 +207,30 @@ test.describe("session quick bar", () => {
     await other.close();
   });
 
+  test("/clear returns to the new-session animation and current folder picker", async ({ page }) => {
+    await page.goto("/");
+    const statusPath = page.locator("#statusPath");
+    await expect(statusPath).not.toHaveText("");
+    const currentCwd = await statusPath.innerText();
+
+    await page.locator("#prompt").fill("/clear");
+    await page.locator("#primaryButton").click();
+
+    await expect(page.locator("#statusTitle")).toHaveText("New session");
+    await expect(page.getByText("Cleared tab. Previous session remains in history.")).toHaveCount(0);
+    const emptyState = page.locator("#emptyCwdChooser");
+    await expect(emptyState).toBeVisible();
+    const animation = emptyState.locator(".newChatLoadingAnimation");
+    await expect(animation).toBeVisible();
+    await expect(animation).not.toHaveClass(/resetting/);
+    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+
+    const folderButton = emptyState.getByRole("button", { name: "Change working directory" });
+    await expect(folderButton.locator(".emptyCwdPath")).toHaveText(currentCwd);
+    await folderButton.click();
+    await expect(page.locator(".folderPickerInput")).toHaveValue(currentCwd);
+  });
+
   test("/clear reuses the current tab pin and marker while releasing the old session", async ({ page }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [
@@ -189,7 +250,6 @@ test.describe("session quick bar", () => {
     await page.locator("#primaryButton").click();
 
     await expect(page.locator("#statusTitle")).toHaveText("New session");
-    await expect(page.getByText("Cleared tab. Previous session remains in history.")).toBeVisible();
 
     const activeAfter = page.locator(".sessionBarTab.active");
     await expect(activeAfter).toContainText("New session");
@@ -208,33 +268,30 @@ test.describe("session quick bar", () => {
     ]);
   });
 
-  test("current session bucket menu sets and unsets marker colors", async ({ page }) => {
+  test("pinned tab context menu sets and unsets session colors", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" });
     await page.goto("/");
-    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
 
-    const bucketButton = page.locator("#currentSessionBucketButton");
-    await expect(bucketButton).toHaveAttribute("title", "Set current session bucket");
-
-    await bucketButton.click();
+    await expect(page.locator("#currentSessionBucketButton")).toBeHidden();
+    const tab = page.locator(".sessionBarTab.pinned").filter({ hasText: "Current mock session" });
+    await tab.click({ button: "right" });
     const menu = page.locator(".sessionBucketMenu");
     await expect(menu).toBeVisible();
-    await expect(menu).toContainText("Session bucket");
+    await expect(menu).toContainText("Session color");
     await expect(menu.locator(".sessionColorFilterMenuItem")).toHaveCount(6);
 
     await menu.locator(".sessionColorFilterMenuItem.marker-green").click();
-    await expect(bucketButton).toHaveClass(/\bmarked\b/);
-    await expect(bucketButton).toHaveClass(/marker-green/);
-    await expect(bucketButton).toHaveAttribute("title", /Green/);
+    await expect(tab).toHaveClass(/\bmarked\b/);
+    await expect(tab).toHaveClass(/marker-green/);
 
     let uiState = await (await page.request.get("/api/session-ui-state")).json();
     expect(uiState.sessionUiState.sessionMarkers).toEqual([
       expect.objectContaining({ sessionId: "mock-current", color: "green" }),
     ]);
 
-    await bucketButton.click();
+    await tab.click({ button: "right" });
     await page.locator(".sessionBucketMenu .sessionColorFilterMenuItem", { hasText: "No bucket" }).click();
-    await expect(bucketButton).not.toHaveClass(/\bmarked\b/);
-    await expect(bucketButton).toHaveAttribute("title", "Set current session bucket");
+    await expect(tab).not.toHaveClass(/\bmarked\b/);
 
     uiState = await (await page.request.get("/api/session-ui-state")).json();
     expect(uiState.sessionUiState.sessionMarkers).toEqual([]);

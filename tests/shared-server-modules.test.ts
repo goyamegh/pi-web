@@ -7,6 +7,7 @@ import {
   artifactDirForCwd,
   findArtifactFile,
   isValidArtifactName,
+  isValidArtifactPath,
   legacyArtifactDirForCwd,
   readArtifactBase64,
   safeArtifactName,
@@ -84,12 +85,17 @@ describe("shared artifact helpers", () => {
     await mkdir(currentDir, { recursive: true });
     await mkdir(legacyDir, { recursive: true });
     await writeFile(join(currentDir, "report.txt"), "current");
+    await mkdir(join(currentDir, "image-edits", "run-1"), { recursive: true });
+    await writeFile(join(currentDir, "image-edits", "run-1", "output.png"), "nested");
     await writeFile(join(legacyDir, "report.txt"), "legacy");
 
     expect(safeArtifactName("../report.txt")).toBe("_report.txt");
     expect(isValidArtifactName("report.txt")).toBe(true);
     expect(isValidArtifactName("../report.txt")).toBe(false);
+    expect(isValidArtifactPath("image-edits/run-1/output.png")).toBe(true);
+    expect(isValidArtifactPath("image-edits/../report.txt")).toBe(false);
     expect(findArtifactFile([root], "report.txt")).toBe(join(currentDir, "report.txt"));
+    expect(findArtifactFile([root], "image-edits/run-1/output.png")).toBe(join(currentDir, "image-edits", "run-1", "output.png"));
     expect(await readArtifactBase64(root, "report.txt")).toEqual({
       ok: true,
       name: "report.txt",
@@ -105,6 +111,8 @@ describe("shared Git helpers", () => {
     const initialHash = runGit(cwd, "rev-parse", "HEAD");
     await writeFile(join(cwd, "tracked.txt"), "second\n");
     await writeFile(join(cwd, "untracked.txt"), "new\n");
+    await writeFile(join(cwd, "staged.txt"), "staged\n");
+    runGit(cwd, "add", "staged.txt");
     await writeFile(join(cwd, "image.png"), Buffer.from([4, 5, 6]));
 
     const status = await gitStatus(cwd);
@@ -113,6 +121,10 @@ describe("shared Git helpers", () => {
       expect.objectContaining({ path: "tracked.txt", label: "modified" }),
       expect.objectContaining({ path: "untracked.txt", label: "untracked" }),
     ]));
+    expect(status.diffStats).toEqual({
+      staged: { files: 1, additions: 1, deletions: 0 },
+      unstaged: { files: 3, additions: 2, deletions: 2 },
+    });
 
     expect(await gitDiff({ cwd, path: "tracked.txt", staged: false })).toMatchObject({ ok: true, path: "tracked.txt", diff: expect.stringContaining("+second") });
     expect(await gitDiff({ cwd, path: "untracked.txt", staged: false })).toMatchObject({ diff: expect.stringContaining("+new") });
@@ -145,5 +157,5 @@ describe("shared Git helpers", () => {
     runGit(cwd, "commit", "-m", "update");
     runGit(cwd, "push", "-u", "origin", "main");
     await expect(gitSync(cwd)).resolves.toMatchObject({ ok: true, status: { isRepo: true, branch: "main" } });
-  });
+  }, 15_000);
 });

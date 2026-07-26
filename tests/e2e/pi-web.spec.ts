@@ -74,7 +74,10 @@ test.describe("composer layout", () => {
     const readLayout = () =>
       page.locator("#statusBar").evaluate((bar) => {
         const rect = bar.getBoundingClientRect();
-        const lastActionRect = bar.querySelector("#currentSessionBucketButton")?.getBoundingClientRect();
+        const visibleActions = Array.from(bar.querySelectorAll<HTMLElement>(".statusBarButton"))
+          .map((element) => element.getBoundingClientRect())
+          .filter((actionRect) => actionRect.width > 0);
+        const lastActionRect = visibleActions.at(-1);
         return {
           scrollWidth: bar.scrollWidth,
           clientWidth: bar.clientWidth,
@@ -204,6 +207,31 @@ test.describe("composer layout", () => {
     expect(messagesRequestCount).toBe(1);
     await page.clock.runFor(1_500);
     await expect(page.locator("#connectionStatus")).toBeHidden();
+  });
+
+  test("connection warning badges refresh the page by click and keyboard", async ({ page }) => {
+    await page.goto("/");
+
+    const showWarning = async (kind: "offline" | "syncRequired", text: string) => {
+      await page.evaluate(({ kind, text }) => {
+        const badge = document.querySelector<HTMLElement>("#connectionStatus")!;
+        badge.className = `connectionStatus ${kind}`;
+        badge.textContent = text;
+        badge.hidden = false;
+      }, { kind, text });
+    };
+
+    await showWarning("offline", "Live updates unavailable");
+    const clickReload = page.waitForEvent("framenavigated");
+    await page.locator("#connectionStatus").click();
+    await clickReload;
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+
+    await showWarning("syncRequired", "Sync needed");
+    const keyboardReload = page.waitForEvent("framenavigated");
+    await page.locator("#connectionStatus").press("Enter");
+    await keyboardReload;
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
   });
 
   test("restores unsent composer draft after page refresh", async ({ page }) => {
@@ -724,7 +752,8 @@ test.describe("composer layout", () => {
   test("model settings popover changes reasoning level explicitly", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("#modelSettingsButton")).toContainText("mock/model");
+    await expect(page.locator("#modelSettingsButton")).toContainText("Mock Model");
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/model/);
     await expect(page.locator("#modelSettingsThinking")).toContainText("medium");
     await expect(page.locator("#modelSettingsThinking")).not.toContainText("reasoning");
 
@@ -778,7 +807,8 @@ test.describe("composer layout", () => {
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();
     await expect(page.locator("#modelSettingsButton")).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
-    await expect(page.locator("#modelSettingsButton")).toContainText("mock/other");
+    await expect(page.locator("#modelSettingsButton")).toContainText("Other Mock Model");
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/other/);
 
     await page.mouse.click(5, 5);
     await expect(page.locator("#modelSettingsPopover")).toBeHidden();
@@ -1241,7 +1271,7 @@ test.describe("tool cards", () => {
     expect(expandedHeight).toBeGreaterThan(collapsedHeight);
   });
 
-  test("renders edit tool calls as a side-by-side intraline diff with an icon layout toggle", async ({ page }) => {
+  test("renders edit tool calls as a responsive intraline diff with an icon layout toggle", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("edit diff");
     await page.locator("#primaryButton").click();
@@ -1250,8 +1280,9 @@ test.describe("tool cards", () => {
     await expect(card).toBeVisible();
     await expect(card.locator(".toolCardName")).toHaveText("edit");
     await expect(card.locator(".toolCardSubtitle")).toHaveText("/some/file.ts");
-    await expect(card.locator(".diffContainer")).toHaveClass(/diffContainer--sideBySide/);
-    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", "Switch to top/bottom diff view");
+    const startsStacked = (page.viewportSize()?.width || 0) <= 700;
+    await expect(card.locator(".diffContainer")).toHaveClass(startsStacked ? /diffContainer--stacked/ : /diffContainer--sideBySide/);
+    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", startsStacked ? "Switch to side-by-side diff view" : "Switch to top/bottom diff view");
     await expect(card.locator(".diffLayoutToggle svg")).toHaveCount(1);
     await expect(card.locator(".diffLine--changed")).toHaveCount(2);
     await expect(card.locator(".diffWord--del", { hasText: "41" })).toBeVisible();
@@ -1261,8 +1292,8 @@ test.describe("tool cards", () => {
     await expect(card.locator(".toolCardBody")).toHaveCount(0);
 
     await card.locator(".diffLayoutToggle").click();
-    await expect(card.locator(".diffContainer")).toHaveClass(/diffContainer--stacked/);
-    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", "Switch to side-by-side diff view");
+    await expect(card.locator(".diffContainer")).toHaveClass(startsStacked ? /diffContainer--sideBySide/ : /diffContainer--stacked/);
+    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", startsStacked ? "Switch to top/bottom diff view" : "Switch to side-by-side diff view");
   });
 
   test("renders edit diffs for flat oldText/newText args", async ({ page }) => {
@@ -1315,8 +1346,81 @@ test.describe("assistant markdown rendering", () => {
     await page.locator("#primaryButton").click();
 
     const latestAssistant = page.locator(".message.assistant", { hasText: "Here is a Mermaid diagram" }).last();
-    await expect(latestAssistant.locator(".mermaidDiagram svg")).toBeVisible({ timeout: 10_000 });
+    const diagram = latestAssistant.locator(".mermaidDiagram > svg");
+    await expect(diagram).toBeVisible({ timeout: 10_000 });
     await expect(latestAssistant.locator("pre > code.language-mermaid")).toHaveCount(0);
+    await expect(latestAssistant.getByRole("button", { name: "Open diagram viewer" })).toBeVisible();
+
+    const labelColor = async (text: string) => diagram.locator("g.node", { hasText: text }).locator(".label").evaluate((label) => {
+      const content = label.querySelector("text, p");
+      if (!content) throw new Error("Mermaid node has no label content");
+      const style = getComputedStyle(content);
+      return content instanceof SVGElement ? style.fill : style.color;
+    });
+    expect(await labelColor("Default dark node")).toBe("rgb(242, 242, 242)");
+    expect(await labelColor("Pastel node")).toBe("rgb(17, 24, 39)");
+  });
+
+  test("opens and operates the full-screen Mermaid viewer", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return mermaid");
+    await page.locator("#primaryButton").click();
+
+    const latestAssistant = page.locator(".message.assistant", { hasText: "Here is a Mermaid diagram" }).last();
+    const trigger = latestAssistant.getByRole("button", { name: "Open diagram viewer" });
+    await expect(trigger).toBeVisible({ timeout: 10_000 });
+    await trigger.click();
+
+    const viewer = page.getByRole("dialog", { name: "Diagram viewer" });
+    const canvas = viewer.locator(".diagramViewerCanvas");
+    const layer = viewer.locator(".diagramViewerLayer");
+    const zoom = viewer.locator(".diagramViewerZoom");
+    await expect(viewer).toBeVisible();
+    await expect(latestAssistant.locator(".mermaidDiagram > svg")).toHaveCount(0);
+    await expect(layer.locator(":scope > svg")).toHaveCount(1);
+    await expect(zoom).toHaveText("100%");
+
+    const viewerBox = await viewer.boundingBox();
+    expect(viewerBox?.width).toBe(page.viewportSize()?.width);
+    expect(viewerBox?.height).toBe(page.viewportSize()?.height);
+
+    await viewer.getByRole("button", { name: "Zoom in" }).click();
+    await expect(zoom).toHaveText("125%");
+    await viewer.getByRole("button", { name: "Zoom out" }).click();
+    await expect(zoom).toHaveText("100%");
+
+    const canvasBox = await canvas.boundingBox();
+    if (!canvasBox) throw new Error("Diagram canvas has no bounds");
+    await canvas.dispatchEvent("wheel", {
+      deltaY: -120,
+      clientX: canvasBox.x + canvasBox.width / 2,
+      clientY: canvasBox.y + canvasBox.height / 2,
+    });
+    await expect(zoom).not.toHaveText("100%");
+    await viewer.getByRole("button", { name: "Fit diagram" }).click();
+    await expect(zoom).toHaveText("100%");
+    await viewer.getByRole("button", { name: "Zoom in" }).click();
+    await viewer.getByRole("button", { name: "Zoom in" }).click();
+
+    const transformBeforePan = await layer.evaluate((element) => getComputedStyle(element).transform);
+    await canvas.dispatchEvent("pointerdown", { pointerId: 1, pointerType: "mouse", clientX: 200, clientY: 200 });
+    await canvas.dispatchEvent("pointermove", { pointerId: 1, pointerType: "mouse", clientX: 230, clientY: 220 });
+    await canvas.dispatchEvent("pointerup", { pointerId: 1, pointerType: "mouse", clientX: 230, clientY: 220 });
+    await expect.poll(() => layer.evaluate((element) => getComputedStyle(element).transform)).not.toBe(transformBeforePan);
+
+    await canvas.dispatchEvent("pointerdown", { pointerId: 11, pointerType: "touch", clientX: 200, clientY: 300 });
+    await canvas.dispatchEvent("pointerdown", { pointerId: 12, pointerType: "touch", clientX: 300, clientY: 300 });
+    await canvas.dispatchEvent("pointermove", { pointerId: 12, pointerType: "touch", clientX: 400, clientY: 300 });
+    await canvas.dispatchEvent("pointerup", { pointerId: 11, pointerType: "touch", clientX: 200, clientY: 300 });
+    await canvas.dispatchEvent("pointerup", { pointerId: 12, pointerType: "touch", clientX: 400, clientY: 300 });
+    await expect(zoom).not.toHaveText("100%");
+
+    await page.keyboard.press("0");
+    await expect(zoom).toHaveText("100%");
+    await page.keyboard.press("Escape");
+    await expect(viewer).toHaveCount(0);
+    await expect(latestAssistant.locator(".mermaidDiagram > svg")).toHaveCount(1);
+    await expect(trigger).toBeFocused();
   });
 
   test("renders collapsed long assistant messages as markdown before and after show more", async ({ page }) => {

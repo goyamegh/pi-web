@@ -25,6 +25,7 @@ export interface LocalSessionServiceDependencies {
   retry(session: PiWebSession): Promise<void>;
   navigate(session: PiWebSession, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
   invokeHeaderAction(session: PiWebSession, key: unknown): Promise<Record<string, unknown>>;
+  invokeArtifactAction(session: PiWebSession, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokeGitTab(session: PiWebSession, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   reportError(session: PiWebSession, error: unknown): void;
 }
@@ -92,7 +93,7 @@ export class LocalSessionService implements SessionService {
 
   async setModel(sessionId: string | undefined, provider: string, id: string, thinkingLevel?: string) {
     const session = await this.require(sessionId);
-    const model = session.modelRegistry.find(provider, id);
+    const model = session.modelRuntime.getModel(provider, id);
     if (!model) throw new SessionServiceError("Model not found", 404);
     await session.setModel(model);
     if (thinkingLevel !== undefined) session.setThinkingLevel(thinkingLevel);
@@ -153,6 +154,10 @@ export class LocalSessionService implements SessionService {
 
   async invokeHeaderAction(sessionId: string | undefined, key: unknown) {
     return this.deps.invokeHeaderAction(await this.require(sessionId), key);
+  }
+
+  async invokeArtifactAction(sessionId: string | undefined, input: Record<string, unknown>) {
+    return this.deps.invokeArtifactAction(await this.require(sessionId), input);
   }
 
   async invokeGitTab(sessionId: string | undefined, input: Record<string, unknown>) {

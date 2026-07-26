@@ -1,8 +1,8 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
-import type { AppState, ImageAttachment, SlashCommand } from "../app/types.js";
-import { setIcon } from "../app/icons.js";
+import type { AppState, ComposerContextAttachment, ImageAttachment, SlashCommand } from "../app/types.js";
+import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
@@ -15,11 +15,14 @@ type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => Barc
 
 export type ComposerController = {
   init: () => void;
+  addContextAttachment: (context: ComposerContextAttachment) => void;
   renderAttachments: () => void;
   setPromptText: (text: string) => void;
   stopStreaming: () => Promise<void>;
   updatePrimaryAction: () => void;
   updateQueueToggle: () => void;
+  updatePendingQueue: (steering: unknown, followUp: unknown) => void;
+  handleUserMessage: (text: string, images?: any[]) => boolean;
 };
 
 function fileToImageAttachment(file: File): Promise<ImageAttachment> {
@@ -46,10 +49,11 @@ export function createComposer(options: {
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
 }): ComposerController {
-  const { state, elements, api, addMessage, addToolHistoryCard, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginStreamFollow, endStreamFollow } = options;
+  const { state, elements, api, addMessage, addToolHistoryCard, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow } = options;
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
@@ -61,9 +65,59 @@ export function createComposer(options: {
   let tokenScanStream: MediaStream | undefined;
   let tokenScanFrame = 0;
   let tokenScanActive = false;
+  let contextAttachments: ComposerContextAttachment[] = [];
+  let pendingSteering: string[] = [];
+  let pendingFollowUp: string[] = [];
+  const optimisticUserMessages = new Map<string, number>();
+
+  function renderPendingQueue() {
+    const entries = [
+      ...pendingSteering.map((text) => ({ text, mode: "steer" as const })),
+      ...pendingFollowUp.map((text) => ({ text, mode: "followUp" as const })),
+    ];
+    elements.pendingMessagesEl.replaceChildren();
+    elements.pendingMessagesEl.hidden = entries.length === 0;
+    let previousMode: typeof entries[number]["mode"] | undefined;
+    for (const entry of entries) {
+      if (previousMode && previousMode !== entry.mode) {
+        const separator = document.createElement("div");
+        separator.className = "pendingMessageSeparator";
+        separator.setAttribute("role", "separator");
+        elements.pendingMessagesEl.append(separator);
+      }
+      const item = document.createElement("article");
+      item.className = `pendingMessage ${entry.mode}`;
+      item.dataset.mode = entry.mode;
+      item.setAttribute("aria-label", `${entry.mode === "steer" ? "Steering" : "Follow up"}: ${entry.text}`);
+      const icon = iconElement(entry.mode === "steer" ? "route" : "corner-down-right");
+      const text = document.createElement("span");
+      text.className = "pendingMessageText";
+      text.textContent = entry.text;
+      item.append(icon, text);
+      elements.pendingMessagesEl.append(item);
+      previousMode = entry.mode;
+    }
+  }
+
+  function updatePendingQueue(steering: unknown, followUp: unknown) {
+    pendingSteering = Array.isArray(steering) ? steering.filter((item): item is string => typeof item === "string") : [];
+    pendingFollowUp = Array.isArray(followUp) ? followUp.filter((item): item is string => typeof item === "string") : [];
+    renderPendingQueue();
+  }
+
+  function handleUserMessage(text: string, images: any[] = []) {
+    const optimisticCount = optimisticUserMessages.get(text) || 0;
+    if (optimisticCount > 0) {
+      if (optimisticCount === 1) optimisticUserMessages.delete(text);
+      else optimisticUserMessages.set(text, optimisticCount - 1);
+      return true;
+    }
+    addMessage("user", text, "", images);
+    return true;
+  }
 
   function updatePrimaryAction() {
-    const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0;
+    const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0;
     const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
     elements.primaryButton.disabled = !hasInput || !initialRealtimeReady;
     elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
@@ -128,7 +182,7 @@ export function createComposer(options: {
 
   function slashCommandQuery() {
     const value = elements.promptEl.value;
-    if (!value.startsWith("/") || state.attachedImages.length > 0) return undefined;
+    if (!value.startsWith("/") || state.attachedImages.length > 0 || contextAttachments.length > 0) return undefined;
     const withoutSlash = value.slice(1);
     if (/\s/.test(withoutSlash) || withoutSlash.includes("\n")) return undefined;
     return withoutSlash.toLowerCase();
@@ -282,9 +336,56 @@ export function createComposer(options: {
     elements.formEl.classList.toggle("dragOver", active);
   }
 
+  function addContextAttachment(context: ComposerContextAttachment) {
+    const existingIndex = context.id
+      ? contextAttachments.findIndex((attachment) => attachment.id === context.id)
+      : -1;
+    if (existingIndex >= 0) contextAttachments[existingIndex] = context;
+    else contextAttachments.push(context);
+    renderAttachments();
+    updatePrimaryAction();
+    hideSlashCommands();
+    focusIfKeyboardFriendly(elements.promptEl);
+  }
+
   function renderAttachments() {
     elements.attachmentsEl.textContent = "";
-    elements.attachmentsEl.hidden = state.attachedImages.length === 0;
+    elements.attachmentsEl.hidden = state.attachedImages.length === 0 && contextAttachments.length === 0;
+    contextAttachments.forEach((context, index) => {
+      const chip = document.createElement("div");
+      chip.className = "attachmentChip contextAttachmentChip";
+      chip.title = context.title ? `${context.label}: ${context.title}` : context.label;
+
+      const sourceIcon = document.createElement("span");
+      sourceIcon.className = "contextAttachmentIcon";
+      sourceIcon.append(iconElement("git-branch"));
+
+      const text = document.createElement("span");
+      text.className = "contextAttachmentText";
+      const label = document.createElement("strong");
+      label.textContent = context.label;
+      text.append(label);
+      if (context.title) {
+        const title = document.createElement("small");
+        title.textContent = context.title;
+        text.append(title);
+      }
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "removeAttachment";
+      remove.title = `Remove ${context.label}`;
+      remove.setAttribute("aria-label", remove.title);
+      remove.addEventListener("click", () => {
+        contextAttachments.splice(index, 1);
+        renderAttachments();
+        updatePrimaryAction();
+      });
+      setIcon(remove, "x");
+
+      chip.append(sourceIcon, text, remove);
+      elements.attachmentsEl.append(chip);
+    });
     state.attachedImages.forEach((image, index) => {
       const chip = document.createElement("div");
       chip.className = "attachmentChip";
@@ -311,6 +412,16 @@ export function createComposer(options: {
       chip.append(preview, name, remove);
       elements.attachmentsEl.append(chip);
     });
+  }
+
+  function messageWithAttachedContext(message: string, contexts: ComposerContextAttachment[]) {
+    if (contexts.length === 0) return message;
+    const attachedContext = contexts.map((context) => [
+      `--- Attached context: ${context.label} ---`,
+      context.content,
+      `--- End attached context: ${context.label} ---`,
+    ].join("\n")).join("\n\n");
+    return message ? `${attachedContext}\n\n${message}` : attachedContext;
   }
 
   function isShellError(data: { exitCode?: unknown; cancelled?: unknown }) {
@@ -462,9 +573,11 @@ export function createComposer(options: {
     const text = await res.text();
     const data = text ? JSON.parse(text) : {};
     if (!res.ok || data.ok === false) throw new Error(data.error || text);
+    const resetsSession = name === "new" || name === "clear";
+    if (resetsSession) beginTranscriptLoading?.();
     if (data.state) {
       updateMeta(data.state);
-      if ((name === "new" || name === "clear") && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
+      if (resetsSession && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
       state.isStreaming = Boolean(data.state.isStreaming);
       state.isRetrying = Boolean(data.state.isRetrying || data.state.runtime?.isRetrying);
       updatePrimaryAction();
@@ -472,21 +585,23 @@ export function createComposer(options: {
     }
     await refreshModels();
     if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);
-    if (name === "new" || name === "clear") await refreshMessages();
-    if (data.message) addMessage("system", data.message);
+    if (resetsSession) await refreshMessages();
+    if (data.message && !resetsSession) addMessage("system", data.message);
   }
 
   function init() {
     elements.formEl.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if ((state.isStreaming || state.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0) return;
+      if ((state.isStreaming || state.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0) return;
 
       const rawMessage = elements.promptEl.value;
-      const message = rawMessage.trim();
+      const promptMessage = rawMessage.trim();
+      const contexts = [...contextAttachments];
+      const message = messageWithAttachedContext(promptMessage, contexts);
       const images = state.attachedImages.map(({ type, data, mimeType, name }) => ({ type, data, mimeType, name }));
       if (!message && images.length === 0) return;
 
-      if (rawMessage.startsWith("!") && images.length === 0) {
+      if (rawMessage.startsWith("!") && images.length === 0 && contexts.length === 0) {
         elements.promptEl.value = "";
         clearDraft();
         hideSlashCommands();
@@ -501,13 +616,13 @@ export function createComposer(options: {
         return;
       }
 
-      if (rawMessage.startsWith("/") && images.length === 0) {
+      if (rawMessage.startsWith("/") && images.length === 0 && contexts.length === 0) {
         let commandInfo: SlashCommand | undefined;
         try {
-          commandInfo = await commandInfoForMessage(message);
+          commandInfo = await commandInfoForMessage(promptMessage);
         } catch {
-          commandInfo = webSlashCommandNames.has(slashCommandName(message))
-            ? { name: slashCommandName(message), source: "web" }
+          commandInfo = webSlashCommandNames.has(slashCommandName(promptMessage))
+            ? { name: slashCommandName(promptMessage), source: "web" }
             : undefined;
         }
 
@@ -516,9 +631,9 @@ export function createComposer(options: {
           clearDraft();
           hideSlashCommands();
           updatePrimaryAction();
-          addMessage("system", `› ${message}`);
+          addMessage("system", `› ${promptMessage}`);
           try {
-            await runSlashCommand(message);
+            await runSlashCommand(promptMessage);
           } catch (error) {
             addMessage("system", error instanceof Error ? error.message : String(error), "error");
           } finally {
@@ -532,12 +647,17 @@ export function createComposer(options: {
       clearDraft();
       hideSlashCommands();
       state.attachedImages = [];
+      contextAttachments = [];
       renderAttachments();
+      const submittedWhileRunning = state.isStreaming || state.isRetrying;
       state.isStreaming = true;
       state.isRetrying = false;
       updatePrimaryAction();
       beginStreamFollow?.();
-      addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
+      if (!submittedWhileRunning) {
+        optimisticUserMessages.set(message, (optimisticUserMessages.get(message) || 0) + 1);
+        addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
+      }
 
       try {
         const res = await fetch("/api/prompt", {
@@ -695,10 +815,13 @@ export function createComposer(options: {
 
   return {
     init,
+    addContextAttachment,
     renderAttachments,
     setPromptText,
     stopStreaming,
     updatePrimaryAction,
     updateQueueToggle,
+    updatePendingQueue,
+    handleUserMessage,
   };
 }

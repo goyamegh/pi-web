@@ -5,6 +5,7 @@ export type AppElements = {
   activityStatusEl: HTMLSpanElement;
   connectionStatusEl: HTMLSpanElement;
   formEl: HTMLFormElement;
+  pendingMessagesEl: HTMLElement;
   extensionFooterEl: HTMLDivElement;
   contextMeterEl: HTMLButtonElement;
   contextMeterFillEl: HTMLSpanElement;
@@ -46,6 +47,12 @@ export type AppElements = {
   modelSelectEl: HTMLSelectElement;
   thinkingSelectEl: HTMLSelectElement;
   headerActionsEl: HTMLSpanElement;
+  sessionInfoButton: HTMLButtonElement;
+  sessionInfoPopover: HTMLDivElement;
+  sessionInfoId: HTMLButtonElement;
+  sessionInfoCwd: HTMLButtonElement;
+  sessionInfoGit: HTMLButtonElement;
+  sessionInfoGitCount: HTMLSpanElement;
   newSessionHeaderButton: HTMLButtonElement;
   conversationTreeButton: HTMLButtonElement;
   gitButton: HTMLButtonElement;
@@ -100,6 +107,7 @@ export function getAppElements(): AppElements {
     activityStatusEl: requiredElement<HTMLSpanElement>("#activityStatus"),
     connectionStatusEl: requiredElement<HTMLSpanElement>("#connectionStatus"),
     formEl: requiredElement<HTMLFormElement>("#promptForm"),
+    pendingMessagesEl: requiredElement<HTMLElement>("#pendingMessages"),
     extensionFooterEl: requiredElement<HTMLDivElement>("#extensionFooter"),
     contextMeterEl: requiredElement<HTMLButtonElement>("#contextMeter"),
     contextMeterFillEl: requiredElement<HTMLSpanElement>("#contextMeterFill"),
@@ -141,6 +149,12 @@ export function getAppElements(): AppElements {
     modelSelectEl: requiredElement<HTMLSelectElement>("#modelSelect"),
     thinkingSelectEl: requiredElement<HTMLSelectElement>("#thinkingSelect"),
     headerActionsEl: requiredElement<HTMLSpanElement>("#headerActions"),
+    sessionInfoButton: requiredElement<HTMLButtonElement>("#sessionInfoButton"),
+    sessionInfoPopover: requiredElement<HTMLDivElement>("#sessionInfoPopover"),
+    sessionInfoId: requiredElement<HTMLButtonElement>("#sessionInfoId"),
+    sessionInfoCwd: requiredElement<HTMLButtonElement>("#sessionInfoCwd"),
+    sessionInfoGit: requiredElement<HTMLButtonElement>("#sessionInfoGit"),
+    sessionInfoGitCount: requiredElement<HTMLSpanElement>("#sessionInfoGitCount"),
     newSessionHeaderButton: requiredElement<HTMLButtonElement>("#newSessionHeaderButton"),
     conversationTreeButton: requiredElement<HTMLButtonElement>("#conversationTreeButton"),
     gitButton: requiredElement<HTMLButtonElement>("#gitButton"),

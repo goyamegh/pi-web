@@ -2,6 +2,7 @@ import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
 import { Check, Copy, createElement } from "lucide";
 import { attachImageActions } from "../components/imageActions.js";
+import { attachDiagramViewer } from "../components/diagramViewer.js";
 
 marked.setOptions({
   async: false,
@@ -21,6 +22,23 @@ const allowedMarkdownTags = new Set([
   "li", "ol", "p", "pre", "span", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
 ]);
 const allowedMarkdownAttributes = new Set(["alt", "class", "href", "rel", "src", "target", "title"]);
+
+type ArtifactPreviewAction = { key?: unknown; title?: unknown; label?: unknown; kinds?: unknown; extensions?: unknown };
+let artifactPreviewActions: ArtifactPreviewAction[] = [];
+let artifactActionHeaders: () => Record<string, string> = () => ({ "content-type": "application/json" });
+let artifactActionSessionId = () => "";
+
+export function configureArtifactPreviewActions(options: { headers: () => Record<string, string>; getSessionId: () => string }) {
+  artifactActionHeaders = options.headers;
+  artifactActionSessionId = options.getSessionId;
+}
+
+export function setArtifactPreviewActions(value: unknown) {
+  artifactPreviewActions = Array.isArray(value) ? value : [];
+  for (const card of document.querySelectorAll<HTMLElement>(".artifactPreview[data-artifact-path]")) {
+    renderArtifactActions(card, card.dataset.artifactName || "artifact", card.dataset.artifactPath || "", card.dataset.artifactKind || "");
+  }
+}
 
 export type MarkdownRenderer = {
   renderAssistantMarkdown: (body: HTMLElement, text: string) => void;
@@ -122,11 +140,60 @@ async function loadMermaid() {
     mod.default.initialize({
       startOnLoad: false,
       securityLevel: "strict",
+      theme: "dark",
+      themeVariables: {
+        background: "#18181b",
+        primaryColor: "#27272a",
+        primaryTextColor: "#f2f2f2",
+        primaryBorderColor: "#71717a",
+        lineColor: "#a1a1aa",
+        secondaryColor: "#3f3f46",
+        tertiaryColor: "#27272a",
+        textColor: "#f2f2f2",
+        edgeLabelBackground: "#18181b",
+      },
       flowchart: { htmlLabels: false },
     });
     return mod;
   });
   return mermaidImportPromise;
+}
+
+function parseRgb(color: string): [number, number, number] | null {
+  const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+  return values?.length === 3 ? values as [number, number, number] : null;
+}
+
+function relativeLuminance(rgb: [number, number, number]) {
+  const channels = rgb.map((value) => {
+    const channel = value / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(first: [number, number, number], second: [number, number, number]) {
+  const [lighter, darker] = [relativeLuminance(first), relativeLuminance(second)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function ensureMermaidNodeContrast(svg: SVGSVGElement) {
+  const dark: [number, number, number] = [17, 24, 39];
+  const light: [number, number, number] = [248, 250, 252];
+  for (const node of svg.querySelectorAll<SVGGElement>("g.node")) {
+    const shape = node.querySelector<SVGElement>("rect, polygon, ellipse, circle, path");
+    const labels = Array.from(node.querySelectorAll<HTMLElement | SVGElement>(".label text, .label tspan, .label foreignObject *"));
+    if (!shape || labels.length === 0) continue;
+    const background = parseRgb(getComputedStyle(shape).fill);
+    const labelStyle = getComputedStyle(labels[0]);
+    const foreground = parseRgb(labels[0] instanceof SVGElement ? labelStyle.fill : labelStyle.color);
+    if (!background || !foreground || contrastRatio(background, foreground) >= 4.5) continue;
+    const replacement = contrastRatio(background, dark) >= contrastRatio(background, light) ? "#111827" : "#f8fafc";
+    for (const label of labels) {
+      label.style.setProperty("fill", replacement, "important");
+      label.style.setProperty("color", replacement, "important");
+    }
+  }
 }
 
 function scheduleMermaidRender(container: HTMLElement, render: () => void) {
@@ -157,12 +224,20 @@ function enhanceMermaid(root: ParentNode) {
     container.textContent = "Rendering diagram…";
     pre.replaceWith(container);
 
+    const setSvg = (svg: string) => {
+      container.innerHTML = svg;
+      const renderedSvg = container.querySelector<SVGSVGElement>("svg");
+      if (renderedSvg) {
+        ensureMermaidNodeContrast(renderedSvg);
+        attachDiagramViewer(container, renderedSvg);
+      }
+    };
     const render = async () => {
       if (!container.isConnected) return;
       try {
         const cached = mermaidCachedSvg(source);
         if (cached !== undefined) {
-          container.innerHTML = cached;
+          setSvg(cached);
           return;
         }
 
@@ -170,7 +245,7 @@ function enhanceMermaid(root: ParentNode) {
         const id = `mermaid-${++mermaidRenderCounter}`;
         const { svg } = await mermaid.default.render(id, source);
         cacheMermaidSvg(source, svg);
-        if (container.isConnected) container.innerHTML = svg;
+        if (container.isConnected) setSvg(svg);
       } catch {
         if (!container.isConnected) return;
         container.replaceWith(pre);
@@ -244,6 +319,80 @@ function isStandalonePwa() {
     (navigator as Navigator & { standalone?: boolean }).standalone === true;
 }
 
+function matchingArtifactActions(name: string, kind: string) {
+  return artifactPreviewActions.flatMap((raw) => {
+    if (typeof raw.key !== "string" || !raw.key) return [];
+    if (Array.isArray(raw.kinds) && raw.kinds.length && !raw.kinds.includes(kind)) return [];
+    if (Array.isArray(raw.extensions) && raw.extensions.length && !raw.extensions.some((extension) => typeof extension === "string" && name.toLowerCase().endsWith(extension.toLowerCase()))) return [];
+    return [{ key: raw.key, title: typeof raw.title === "string" ? raw.title : raw.key, label: typeof raw.label === "string" ? raw.label : undefined }];
+  });
+}
+
+async function downloadArtifact(path: string, filename: string) {
+  const response = await fetch(path, { headers: artifactActionHeaders() });
+  if (!response.ok) throw new Error(`Download failed (${response.status})`);
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename || "artifact";
+  anchor.hidden = true;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+}
+
+function renderArtifactActions(card: HTMLElement, name: string, path: string, kind: string) {
+  card.querySelector(".artifactPreviewActions")?.remove();
+  const actions = matchingArtifactActions(name, kind);
+  if (!actions.length) return;
+  const container = document.createElement("span");
+  container.className = "artifactPreviewActions";
+  for (const action of actions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "artifactPreviewAction";
+    button.textContent = action.label || action.title;
+    button.title = action.title;
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "Working…";
+      try {
+        const res = await fetch("/api/web-artifact-action/invoke", { method: "POST", headers: artifactActionHeaders(), body: JSON.stringify({ sessionId: artifactActionSessionId(), key: action.key, name, path, kind }) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
+        if (data.download && typeof data.download.path === "string") {
+          await downloadArtifact(data.download.path, typeof data.download.filename === "string" ? data.download.filename : name);
+          if (typeof data.markdown !== "string" && typeof data.message !== "string") {
+            card.querySelector(".artifactPreviewActionResult")?.remove();
+            button.textContent = "Downloaded";
+            window.setTimeout(() => { if (button.isConnected) button.textContent = original; }, 1_500);
+            return;
+          }
+        }
+        let result = card.querySelector<HTMLElement>(".artifactPreviewActionResult");
+        if (!result) {
+          result = document.createElement("div");
+          result.className = "artifactPreviewActionResult markdownBody";
+          card.querySelector(".artifactPreviewHeader")?.insertAdjacentElement("afterend", result);
+        }
+        if (typeof data.markdown === "string") result.innerHTML = markdownHtml(data.markdown);
+        else result.textContent = String(data.message || (data.download ? `Downloaded ${data.download.filename || name}` : "Done"));
+      } catch (error) {
+        button.title = error instanceof Error ? error.message : String(error);
+        button.textContent = "Failed";
+        return;
+      } finally {
+        button.disabled = false;
+      }
+      button.textContent = original;
+    });
+    container.append(button);
+  }
+  card.querySelector(".artifactPreviewHeader")?.append(container);
+}
+
 function enhanceArtifactLinks(root: ParentNode) {
   for (const link of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="/api/artifacts/"]'))) {
     if (link.dataset.artifactPreviewEnhanced) continue;
@@ -270,11 +419,18 @@ function enhanceArtifactLinks(root: ParentNode) {
       open.rel = "noopener noreferrer";
     }
     open.textContent = "Open";
-    header.append(title, open);
+    const builtInActions = document.createElement("span");
+    builtInActions.className = "artifactPreviewBuiltInActions";
+    builtInActions.append(open);
+    header.append(title, builtInActions);
     const content = document.createElement("div");
     content.className = "artifactPreviewContent";
     content.textContent = "Loading preview…";
     card.append(header, content);
+    card.dataset.artifactName = title.textContent;
+    card.dataset.artifactPath = url.pathname;
+    card.dataset.artifactKind = kind;
+    renderArtifactActions(card, title.textContent, url.pathname, kind);
 
     const container = link.closest("p") || link;
     container.insertAdjacentElement("afterend", card);

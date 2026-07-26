@@ -43,6 +43,29 @@ export type PiWebHeaderAction = {
   invoke: () => Promise<{ markdown: string }> | { markdown: string };
 };
 
+export type PiWebArtifactContext = {
+  name: string;
+  path: string;
+  kind: "markdown" | "html" | "video";
+};
+
+export type PiWebArtifactAction = {
+  title: string;
+  label?: string;
+  /** Limit the action to these preview kinds. Omit to match every kind. */
+  kinds?: PiWebArtifactContext["kind"][];
+  /** Limit the action to filenames ending in one of these extensions (for example, ".html"). */
+  extensions?: string[];
+  invoke: (artifact: PiWebArtifactContext) => Promise<PiWebArtifactActionResult> | PiWebArtifactActionResult;
+};
+
+export type PiWebArtifactActionResult = {
+  markdown?: string;
+  message?: string;
+  /** Download the current artifact in the browser, optionally with a different filename. */
+  download?: { filename?: string };
+};
+
 export type PiWebGitTabEvent = {
   action?: string;
   payload?: unknown;
@@ -53,9 +76,22 @@ export type PiWebGitTabEvent = {
   };
 };
 
+export type PiWebComposerContext = {
+  /** Stable identity used to avoid adding the same context more than once. */
+  id?: string;
+  /** Short source label shown in the composer attachment pill. */
+  label: string;
+  /** Optional detail shown alongside the label, such as an issue title. */
+  title?: string;
+  /** Plain-text content included with the next prompt. */
+  content: string;
+};
+
 export type PiWebGitTabView = {
   title?: string;
-  html: string;
+  /** Omit HTML for actions that only add composer context and keep the current tab view. */
+  html?: string;
+  composerContext?: PiWebComposerContext;
 };
 
 export type PiWebGitTab = {
@@ -78,6 +114,9 @@ export type PiWebUi = {
 
   /** Set or clear a status-bar icon button contributed by a pi-web extension. */
   setHeaderAction(key: string, action: PiWebHeaderAction | undefined): void;
+
+  /** Set or clear an action shown on matching inline artifact preview cards. */
+  setArtifactAction(key: string, action: PiWebArtifactAction | undefined): void;
 
   /** Set or clear a provider-specific tab in the built-in Git panel. */
   setGitTab(key: string, tab: PiWebGitTab | undefined): void;

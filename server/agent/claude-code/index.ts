@@ -156,9 +156,11 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
 
   const toolNamesById = new Map<string, string>();
 
-  const modelRegistry = {
-    getAvailable: () => resolveModels(),
-    find: (provider: string, id: string) => resolveModels().find((m) => m.provider === provider && m.id === id),
+  // Matches PiWebSession.modelRuntime's surface (getAvailableSnapshot/getModel)
+  // so upstream session services can query CC models transparently.
+  const modelRuntime = {
+    getAvailableSnapshot: () => resolveModels(),
+    getModel: (provider: string, id: string) => resolveModels().find((m) => m.provider === provider && m.id === id),
   };
 
   // Minimal sessionManager. Tree/branch features are unsupported (capabilities
@@ -473,7 +475,7 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
     messages,
     agent: { state: { messages } },
     sessionManager,
-    modelRegistry,
+    modelRuntime,
     promptTemplates: [] as unknown[],
     resourceLoader: {
       getPrompts: () => ({ prompts: [] }),
@@ -506,7 +508,7 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
     },
     async setModel(next: unknown) {
       const m = next as PiWebModel;
-      const found = modelRegistry.find(m.provider, m.id);
+      const found = modelRuntime.getModel(m.provider, m.id);
       if (!found) throw new Error(`Model not available in Claude Code: ${m.provider}/${m.id}`);
       model = found;
     },

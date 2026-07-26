@@ -3,6 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
+import { messageText } from "../messages/content.js";
 import type { MessageList, TranscriptRuntimeState, TranscriptIncomplete } from "../messages/messageList.js";
 import type { ModelSettings } from "../models/modelSettings.js";
 import type { SessionsController } from "../sessions/sessionDrawer.js";
@@ -45,9 +46,10 @@ export function createRealtime(options: {
   updateSessionStats: (stats: any) => void;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  applyRuntimeState: (data: any) => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, applyRuntimeState, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -72,6 +74,12 @@ export function createRealtime(options: {
   // is idempotent and bails out when the rendered transcript already matches.
   let liveRefreshTimer: number | undefined;
   function scheduleLiveRefresh() {
+    // Only Claude Code sessions need mid-turn transcript refreshes (the CC
+    // adapter streams no message_update deltas — completed messages landing in
+    // its store are the only render signal). Pi/mock stream deltas, and a
+    // mid-turn refresh there would materialize transcript-derived state early
+    // (final answers, retry cards), fighting the live streaming pipeline.
+    if (state.currentAgent !== "claude-code") return;
     if (liveRefreshTimer !== undefined) return;
     liveRefreshTimer = window.setTimeout(() => {
       liveRefreshTimer = undefined;
@@ -605,9 +613,6 @@ export function createRealtime(options: {
         status.markActivityProgress(deltaEvent?.type?.startsWith("thinking") ? "thinking" : "responding", event.lastActivityAt);
         break;
       }
-      case "message_end":
-        if (!isReplay) scheduleLiveRefresh();
-        break;
       case "tool_execution_start":
         messages.invalidateRefreshes();
         tools.startTool(event.toolCallId, event.toolName || "tool", event.args || {}, event.startedAt);
@@ -624,7 +629,16 @@ export function createRealtime(options: {
         status.markActivityProgress("waiting for assistant", event.lastActivityAt);
         if (!isReplay) scheduleLiveRefresh();
         break;
+      case "queue_update":
+        composer.updatePendingQueue(event.steering, event.followUp);
+        break;
       case "message_end": {
+        // CC live-refresh: see scheduleLiveRefresh — no-op for pi/mock agents.
+        if (!isReplay) scheduleLiveRefresh();
+        const deliveredMessage = messageFromEvent(event.message);
+        if (String(deliveredMessage?.role || deliveredMessage?.raw?.role || "") === "user") {
+          composer.handleUserMessage(messageText(deliveredMessage));
+        }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {
           lastAssistantError = errorInfo;
@@ -744,17 +758,8 @@ export function createRealtime(options: {
       if (data.type === "hello" || data.type === "state_changed") {
         if (data.sessionId && state.currentSessionId && data.sessionId !== state.currentSessionId) return;
         updateMeta(data);
-        state.isStreaming = Boolean(data.isStreaming);
-        state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
-        state.isCompacting = Boolean(data.isCompacting);
-        if (state.isStreaming || state.isRetrying || state.isCompacting) status.markActivityStart(
-          state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
-          data.runtimeStartedAt || data.runtime?.startedAt,
-          data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
-        );
-        else status.markActivityEnd();
+        applyRuntimeState(data);
         updateSessionStats(state.stats);
-        composer.updatePrimaryAction();
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
         if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
@@ -832,6 +837,10 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "web_header_actions_changed") {
+        if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
+        return;
+      }
+      if (data.type === "web_artifact_actions_changed") {
         if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
         return;
       }
