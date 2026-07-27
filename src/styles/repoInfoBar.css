@@ -1,5 +1,8 @@
 .repoInfoBar {
-  grid-row: 4;
+  /* Row 6 of the .app grid — upstream renumbered rows in v0.5.0 (pending
+     messages row 3, composer 4, extension footer 5); the repo bar sits between
+     the footer and the session tabs (7). */
+  grid-row: 6;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
