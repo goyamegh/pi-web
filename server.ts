@@ -1815,6 +1815,10 @@ const server = createServer(async (req, res) => {
         const id = String(body.id || "").trim();
         if (!provider || !id) return sendJson(res, 400, { ok: false, error: "provider and id are required" });
         const state = await sessionService.setModel(typeof body.sessionId === "string" ? body.sessionId : undefined, provider, id, typeof body.thinkingLevel === "string" ? body.thinkingLevel : undefined);
+        // Persist the pick as the default for future sessions (same last-used
+        // pattern as defaults.agent). Cross-agent picks are benign: each agent's
+        // apply path validates against its own registry and no-ops on a miss.
+        await settingsStore.patch({ defaults: { model: { provider, id }, ...(typeof body.thinkingLevel === "string" ? { thinkingLevel: body.thinkingLevel } : {}) } });
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }

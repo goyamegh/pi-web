@@ -802,6 +802,19 @@ describe("additional API coverage", () => {
     expect(data.thinkingLevel).toBe("high");
   });
 
+  it("persists the model pick as the default for future sessions", async () => {
+    const res = await fetch(`${baseUrl}/api/model`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "mock", id: "model", thinkingLevel: "high" }),
+    });
+    expect(res.status).toBe(200);
+
+    const settings = await (await fetch(`${baseUrl}/api/settings`)).json();
+    expect(settings.settings.defaults.model).toMatchObject({ provider: "mock", id: "model" });
+    expect(settings.settings.defaults.thinkingLevel).toBe("high");
+  });
+
   it("rejects /api/model with missing provider or id", async () => {
     const noProvider = await fetch(`${baseUrl}/api/model`, {
       method: "POST",
