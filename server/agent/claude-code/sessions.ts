@@ -66,16 +66,22 @@ function firstUserMessage(entries: CCTranscriptEntry[]): string {
     if ((entry as { type?: string })?.type !== "user") continue;
     const e = entry as Extract<CCTranscriptEntry, { type: "user" | "assistant" }>;
     if (e.isSidechain || e.isMeta) continue;
+    // Compaction summaries are synthetic user entries ("This session is being
+    // continued from a previous conversation...") — never the user's own words,
+    // so never a session name or preview. Same for transcript-only entries.
+    const flags = entry as { isCompactSummary?: unknown; isVisibleInTranscriptOnly?: unknown };
+    if (flags.isCompactSummary || flags.isVisibleInTranscriptOnly) continue;
     const message = e.message as CCMessage | undefined;
     if (!message) continue;
-    if (typeof message.content === "string") return message.content;
-    if (Array.isArray(message.content)) {
-      for (const block of message.content) {
-        if (block?.type === "text" && typeof (block as { text?: unknown }).text === "string") {
-          return (block as { text: string }).text;
-        }
-      }
-    }
+    const text = typeof message.content === "string"
+      ? message.content
+      : Array.isArray(message.content)
+        ? (message.content.find((block) => block?.type === "text" && typeof (block as { text?: unknown }).text === "string") as { text?: string } | undefined)?.text ?? ""
+        : "";
+    // CC records slash-command invocations as unflagged user entries wrapped
+    // in command markup; they are bookkeeping, not the user's own words.
+    if (text.trimStart().startsWith("<command-name>") || text.trimStart().startsWith("<local-command-")) continue;
+    if (text) return text;
   }
   return "";
 }
@@ -107,6 +113,8 @@ function countTurns(entries: CCTranscriptEntry[]): number {
     if (entry?.type !== "user" && entry?.type !== "assistant") continue;
     const e = entry as Extract<CCTranscriptEntry, { type: "user" | "assistant" }>;
     if (e.isSidechain || e.isMeta) continue;
+    // Compaction summaries are bookkeeping CC injects, not turns the user took.
+    if ((entry as { isCompactSummary?: unknown }).isCompactSummary) continue;
     const content = (e.message as CCMessage | undefined)?.content;
     if (Array.isArray(content) && content.every((b) => b?.type === "tool_result")) continue;
     count++;

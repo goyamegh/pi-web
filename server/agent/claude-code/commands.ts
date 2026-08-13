@@ -27,8 +27,14 @@ import type { AgentSlashCommand } from "../types.js";
  * frontmatter (`description: "..."`) when present; otherwise the first non-empty
  * body line is used as a fallback so files without frontmatter still get a
  * useful one-liner in the picker.
+ *
+ * `extraNames` carries the command names the running CC process reported in
+ * its init frame — the authoritative list, including built-ins and surfaces
+ * disk discovery cannot see. Names already discovered on disk keep their disk
+ * entry (it has a real path and description); the rest are appended with no
+ * description so the picker still offers everything CC would accept.
  */
-export function discoverCCSlashCommands(cwd: string): AgentSlashCommand[] {
+export function discoverCCSlashCommands(cwd: string, extraNames?: readonly string[]): AgentSlashCommand[] {
   const out: AgentSlashCommand[] = [];
 
   const userCommandsDir = join(homedir(), ".claude", "commands");
@@ -85,11 +91,25 @@ export function discoverCCSlashCommands(cwd: string): AgentSlashCommand[] {
   // the first occurrence so user-level shadows nothing and plugins lose to
   // explicit user/project commands of the same name.
   const seen = new Set<string>();
-  return out.filter((c) => {
+  const commands = out.filter((c) => {
     if (seen.has(c.name)) return false;
     seen.add(c.name);
     return true;
   });
+
+  // Live-reported names fill in only what disk discovery missed (exact-name
+  // match, case-sensitive) so richer disk descriptions always win.
+  for (const name of extraNames ?? []) {
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    commands.push({
+      name,
+      description: undefined,
+      source: "claude-code",
+      sourceInfo: { path: "<claude-code>", source: "claude-code", scope: "agent", origin: "top-level" },
+    });
+  }
+  return commands;
 }
 
 /**

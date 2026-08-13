@@ -40,17 +40,20 @@ test.describe("agent UI", () => {
     await expect(agentSelect.locator("option").nth(1)).toHaveAttribute("value", "claude-code");
   });
 
-  test("composer footer label shows '<agent> · <model>' for the active session", async ({ page }) => {
+  test("composer footer label shows the agent and model for the active session", async ({ page }) => {
     await page.goto("/");
-    // The mock session boots as agent=mock; the dropdown still displays the
-    // correct prefix in the composer footer button label so the active agent
-    // is visible without opening the popover.
+    // The mock session boots as agent=mock; the composer footer button label
+    // still names the active agent so it is visible without opening the
+    // popover. The label stacks agent over model in a two-line grid, so the
+    // "·" separator only appears in the tooltip/aria-label, not the text.
     const label = page.locator("#modelSettingsLabel");
     await expect(label).toBeVisible();
-    await expect(label).toContainText("·");
-    // The label is "<agent> · <model>"; we don't pin the model name here
-    // (the mock provider varies), but we do pin the dataset.agent attribute
-    // which the UI sets from state.currentAgent.
+    await expect(label.locator(".modelSettingsAgentName")).toHaveText(/pi|claude-code|mock/);
+    // We don't pin the model name (the mock provider varies), only that one is
+    // rendered and that the accessible label joins both with "·".
+    await expect(label.locator(".modelSettingsModelName")).not.toBeEmpty();
+    await expect(label).toHaveAttribute("title", /·/);
+    // dataset.agent is set from state.currentAgent.
     await expect(page.locator("#modelSettingsButton")).toHaveAttribute("data-agent", /pi|claude-code|mock/);
   });
 

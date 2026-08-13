@@ -127,7 +127,10 @@ export function createMockHarness(options: MockSessionOptions) {
     return entries;
   }
 
-  function createMockSession(path = mockSessions[0].path): PiWebSession {
+  function createMockSession(path = mockSessions[0].path, cwd?: string): PiWebSession {
+    // Honor an explicit cwd (new-session-in-folder, folder picker) so e2e
+    // tests can exercise the real folder-selection flow; default to piCwd.
+    const sessionHomeCwd = cwd || piCwd;
     let mockEntries = createInitialEntries(path);
     let mockLeafId: string | null = "mock-a1";
     let entrySequence = 2;
@@ -286,7 +289,7 @@ export function createMockHarness(options: MockSessionOptions) {
         resetMockEntries(path);
       },
       buildSessionContext() { return { messages: mockMessages }; },
-      getCwd() { return piCwd; },
+      getCwd() { return sessionHomeCwd; },
       getSessionDir() { return join(piCwd, ".mock-sessions"); },
       getLeafId() { return mockLeafId; },
       getEntry(id: string) { return entryById(id); },

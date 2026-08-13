@@ -65,6 +65,8 @@ export interface PiWebSession {
   abort(): Promise<void>;
   clearQueue?(): void;
   subscribe?(listener: (event: unknown) => void): (() => void) | undefined;
+  /** Release live resources (e.g. a persistent agent subprocess); called by disposeLiveSession(). */
+  dispose?(): void;
 }
 
 export interface PiWebSessionInfo {

@@ -1230,7 +1230,7 @@ async function makeClaudeCodeAdapter(sessionId?: string, cwd: string = piCwd): P
 }
 
 async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent, cwd = piCwd) {
-  if (mockMode) return { session: createMockSession(path), modelFallbackMessage: undefined };
+  if (mockMode) return { session: createMockSession(path, cwd), modelFallbackMessage: undefined };
 
   const targetCwd = await assertDirectory(cwd, piCwd);
   const sessionManager = noSession

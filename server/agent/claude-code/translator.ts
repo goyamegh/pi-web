@@ -162,19 +162,87 @@ export function translateCCMessage(
 }
 
 /**
+ * Compaction-related transcript fields, narrowed structurally here because the
+ * shared CCTranscriptEntry type in types.ts also serves the live-runtime
+ * surface (being reworked concurrently) and must not be widened from this file.
+ */
+type CCCompactionFields = {
+  subtype?: unknown;
+  isCompactSummary?: unknown;
+  compactMetadata?: { preTokens?: unknown };
+};
+
+/**
+ * CC records slash-command invocations in the transcript as unflagged user
+ * entries wrapped in command markup (`<command-name>/compact</command-name>`,
+ * `<local-command-stdout>...`). CC's own UI hides them; rendered verbatim in
+ * pi-web they appear as user messages the user never typed.
+ */
+function isLocalCommandRecord(content: CCMessage["content"]): boolean {
+  const text = firstTextOf(content).trimStart();
+  return text.startsWith("<command-name>")
+    || text.startsWith("<command-message>")
+    || text.startsWith("<local-command-stdout>")
+    || text.startsWith("<local-command-caveat>");
+}
+
+/** The summary body is either a plain string or led by a single text block. */
+function firstTextOf(content: CCMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  for (const block of content) {
+    if (block?.type === "text" && typeof (block as { text?: unknown }).text === "string") {
+      return (block as { text: string }).text;
+    }
+  }
+  return "";
+}
+
+/**
  * Replay a complete CC JSONL transcript into pi-shaped messages. Skips
  * sidechain entries (subagent activity) and meta entries (CC's own internal
  * notes), preserving the linear ordering the user actually saw.
+ *
+ * Compaction (manual /compact or automatic) leaves two entries behind: a
+ * `system`/`compact_boundary` marker carrying token accounting, then a user
+ * entry flagged `isCompactSummary` whose body is the multi-KB summary text.
+ * Translated verbatim, the summary renders as a giant message the user never
+ * typed; instead we fold the pair into pi's `compactionSummary` role — the
+ * exact shape server/mock.ts appends after a mock compaction, which the
+ * frontend renders as a compaction card and the live adapter's compact()
+ * re-reads to build its compaction_end event. Keep the shape stable.
  */
 export function translateCCTranscript(entries: CCTranscriptEntry[]): unknown[] {
   const messages: unknown[] = [];
   const toolNamesById = new Map<string, string>();
+  // Token accounting lives on the boundary marker, not the summary entry that
+  // follows it. Track the most recent boundary so a summary with no marker
+  // (seen with some auto-compactions) still maps, just without tokensBefore.
+  let lastBoundaryPreTokens: number | undefined;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
+    const c = entry as CCCompactionFields;
+    if (entry.type === "system" && c.subtype === "compact_boundary") {
+      const pre = c.compactMetadata?.preTokens;
+      lastBoundaryPreTokens = typeof pre === "number" ? pre : undefined;
+      continue;
+    }
     if (entry.type !== "user" && entry.type !== "assistant") continue;
     const e = entry as Extract<CCTranscriptEntry, { type: "user" | "assistant" }>;
     if (e.isSidechain || e.isMeta) continue;
     if (!e.message) continue;
+    if (entry.type === "user" && isLocalCommandRecord(e.message.content)) continue;
+    if (c.isCompactSummary) {
+      const summary = firstTextOf(e.message.content);
+      messages.push({
+        role: "compactionSummary",
+        content: summary,
+        ...(lastBoundaryPreTokens !== undefined ? { tokensBefore: lastBoundaryPreTokens } : {}),
+        summary,
+        timestamp: e.timestamp || new Date().toISOString(),
+      });
+      continue;
+    }
     const piMessages = translateCCMessage(e.message, { timestamp: e.timestamp, toolNamesById });
     for (const m of piMessages) messages.push(m);
   }

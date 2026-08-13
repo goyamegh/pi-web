@@ -234,3 +234,64 @@ describe("Claude Code slash command discovery", () => {
     expect(cmds).toEqual([]);
   });
 });
+
+/**
+ * Merging the command names the running CC process reports in its init frame
+ * (built-ins, plugin commands, skills — the authoritative list) with the
+ * disk-based discovery above, which stays the source of descriptions and file
+ * paths for the entries it can see.
+ */
+describe("Claude Code slash command discovery — merging live-reported names", () => {
+  async function writeUserCommand(name: string, description: string) {
+    await writeCommand(
+      join(homeDir, ".claude", "commands", `${name}.md`),
+      `---\ndescription: ${description}\n---\nBody text.\n`,
+    );
+  }
+
+  it("appends live-reported names missing from disk as description-less claude-code entries", async () => {
+    await writeUserCommand("deploy", "Deploy the app");
+
+    const cmds = discoverCCSlashCommands(projectDir, ["compact", "cost", "superpowers:brainstorming"]);
+    expect(cmds.map((c) => c.name)).toEqual(["deploy", "compact", "cost", "superpowers:brainstorming"]);
+
+    const compact = cmds.find((c) => c.name === "compact");
+    expect(compact).toEqual({
+      name: "compact",
+      description: undefined,
+      source: "claude-code",
+      sourceInfo: { path: "<claude-code>", source: "claude-code", scope: "agent", origin: "top-level" },
+    });
+  });
+
+  it("keeps the disk entry when a live-reported name collides", async () => {
+    await writeUserCommand("deploy", "Deploy the app");
+
+    const matches = discoverCCSlashCommands(projectDir, ["deploy"]).filter((c) => c.name === "deploy");
+    expect(matches).toHaveLength(1);
+    // Disk entries carry real descriptions and paths; the live name must not
+    // clobber them into a bare `<claude-code>` stub.
+    expect(matches[0].description).toBe("Deploy the app");
+    expect((matches[0].sourceInfo as { origin?: string }).origin).toBe("user-commands");
+  });
+
+  it("de-dupes repeated live names, matching case-sensitively", async () => {
+    await writeUserCommand("deploy", "Deploy the app");
+
+    const names = discoverCCSlashCommands(projectDir, ["compact", "compact", "Compact", "Deploy"])
+      .map((c) => c.name);
+    expect(names.filter((n) => n === "compact")).toHaveLength(1);
+    // Exact-name matching: differently cased names are distinct commands.
+    expect(names).toContain("Compact");
+    expect(names).toContain("deploy");
+    expect(names).toContain("Deploy");
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("behaves as before when no live names are supplied", async () => {
+    await writeUserCommand("deploy", "Deploy the app");
+
+    expect(discoverCCSlashCommands(projectDir).map((c) => c.name)).toEqual(["deploy"]);
+    expect(discoverCCSlashCommands(projectDir, []).map((c) => c.name)).toEqual(["deploy"]);
+  });
+});
