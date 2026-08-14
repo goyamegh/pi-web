@@ -42,6 +42,43 @@ test("selecting a folder from the picker switches the working directory", async 
   await expect(page.locator("#statusPath")).toHaveText(target);
 });
 
+test("repo info bar follows the session folder after a switch", async ({ page }) => {
+  // Regression: fetchInfo() used state.activeCwd (CC-only) and fell back to
+  // the server-global cwd, so after a folder switch the bar kept showing the
+  // boot repo forever.
+  const cwdParams: string[] = [];
+  await page.route("**/api/repo-info**", async (route) => {
+    const cwd = new URL(route.request().url()).searchParams.get("cwd");
+    if (cwd) cwdParams.push(cwd);
+    await route.continue();
+  });
+
+  const target = mkdtempSync(join(tmpdir(), "pi-web-folder-select-"));
+  await page.goto("/");
+  // Boot cwd is the pi-web repo — the bar starts visible.
+  await expect(page.locator("#repoInfoBar")).toBeVisible();
+
+  await page.locator("#prompt").fill("/clear");
+  await page.locator("#primaryButton").click();
+  await expect(page.locator("#statusTitle")).toHaveText("New session");
+  const emptyState = page.locator("#emptyCwdChooser");
+  await expect(emptyState).toBeVisible();
+  await emptyState.getByRole("button", { name: "Change working directory" }).click();
+  const input = page.locator(".folderPickerInput");
+  await expect(page.locator(".folderPickerRow").first()).toBeVisible();
+  await input.fill(target);
+  await input.press("Enter");
+  await page.getByRole("button", { name: "Select folder" }).click();
+  await expect(page.locator("#statusPath")).toHaveText(target);
+
+  // The bar must query and reflect the session's new folder — a temp dir
+  // with no git repo renders the notRepo state showing that path — instead
+  // of continuing to show the boot repo.
+  await expect(page.locator("#repoInfoBar")).toHaveClass(/notRepo/);
+  await expect(page.locator("#repoInfoBar .repoInfoPath")).toHaveText(target);
+  await expect.poll(() => cwdParams.at(-1)).toBe(target);
+});
+
 test("new-session button on a drawer folder starts a session in that folder", async ({ page }) => {
   const target = mkdtempSync(join(tmpdir(), "pi-web-folder-select-"));
   await page.request.patch("/api/session-ui-state", { data: { pinnedFolders: [target] } });

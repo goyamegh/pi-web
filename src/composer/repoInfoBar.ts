@@ -32,7 +32,6 @@ export function createRepoInfoBar(options: {
   const { state, elements, api } = options;
   const bar = elements.repoInfoBarEl;
 
-  let lastCwd: string | undefined;
   let inFlight: Promise<void> | undefined;
   let pendingTimer: number | undefined;
 
@@ -107,7 +106,11 @@ export function createRepoInfoBar(options: {
 
   async function fetchInfo(): Promise<RepoInfo | undefined> {
     try {
-      const cwd = state.activeCwd || "";
+      // activeCwd is the CC "agent cd'd elsewhere" override; otherwise use the
+      // session's own folder. Never fall back to the server-global cwd — after
+      // a folder switch the bar must follow the session (fork bug: it kept
+      // showing the boot repo forever).
+      const cwd = state.activeCwd || state.currentCwd || "";
       const url = cwd ? `/api/repo-info?cwd=${encodeURIComponent(cwd)}` : "/api/repo-info";
       const res = await fetch(url, { headers: api.headers() });
       if (!res.ok) return undefined;
@@ -137,15 +140,12 @@ export function createRepoInfoBar(options: {
     if (pendingTimer !== undefined) return;
     pendingTimer = window.setTimeout(() => {
       pendingTimer = undefined;
-      const cwd = state.currentCwd || "";
       // Always refresh — branch/PR/hash may have changed even if cwd didn't.
-      lastCwd = cwd;
       void refresh();
     }, 200);
   }
 
   function init() {
-    lastCwd = state.currentCwd || "";
     void refresh();
   }
 
