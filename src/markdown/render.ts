@@ -46,6 +46,10 @@ export type MarkdownRenderer = {
   unobserve: (body: HTMLElement) => void;
 };
 
+export function isAllowedMarkdownHref(href: string) {
+  return /^(https?:|mailto:|vscode:|#|\/)/i.test(href);
+}
+
 function sanitizeMarkdownHtml(html: string) {
   const template = document.createElement("template");
   template.innerHTML = html;
@@ -65,8 +69,7 @@ function sanitizeMarkdownHtml(html: string) {
       }
 
       if (name === "href") {
-        const href = attribute.value.trim();
-        if (!/^(https?:|mailto:|#|\/)/i.test(href)) element.removeAttribute(attribute.name);
+        if (!isAllowedMarkdownHref(attribute.value.trim())) element.removeAttribute(attribute.name);
       }
 
       if (name === "src") {

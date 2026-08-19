@@ -1340,6 +1340,18 @@ test.describe("assistant markdown rendering", () => {
     await expect(latestAssistant.locator(".body")).not.toContainText("**bold**");
   });
 
+  test("keeps vscode:// deep links clickable but strips javascript: links", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return a vscode link");
+    await page.locator("#primaryButton").click();
+
+    const latestAssistant = page.locator(".message.assistant", { hasText: "Open it in" }).last();
+    await expect(latestAssistant.locator('.markdownBody a[href^="vscode://"]'))
+      .toHaveAttribute("href", "vscode://vscode-remote/ssh-remote+devbox/home/user/project");
+    await expect(latestAssistant.locator(".markdownBody")).toContainText("evil");
+    await expect(latestAssistant.locator('.markdownBody a[href^="javascript:"]')).toHaveCount(0);
+  });
+
   test("renders Mermaid code fences as diagrams", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("please return mermaid");
