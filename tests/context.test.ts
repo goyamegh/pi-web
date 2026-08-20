@@ -17,6 +17,9 @@ describe("agent context organization", () => {
     expect(context).toContain(".pi/web/artifacts/");
     expect(context).toContain("/api/artifacts/<path>/<filename>");
     expect(context).toContain("Markdown image syntax");
+    expect(context).toContain("pi-web-attachments-v2");
+    expect(context).toContain("Reference attachments are pointers rather than embedded content");
+    expect(context).toContain("`gh issue view`");
   });
 
   it("keeps pi-web project instructions in AGENTS.md", async () => {
@@ -33,16 +36,29 @@ describe("agent context organization", () => {
     expect(existsSync(join(root, "contexts/pi-web-development.md"))).toBe(false);
   });
 
-  it("server injects only generic web UI context and relies on Pi to load AGENTS.md", async () => {
-    const server = await text("server.ts");
+  it("the self-contained session service injects only generic web UI context and relies on Pi to load AGENTS.md", async () => {
+    const service = await text("server/session/service.ts");
 
-    expect(server).toContain('const webUiContextFile = join(appDir, "contexts", "web-ui.md")');
-    expect(server).toContain("appendSystemPromptOverride");
-    expect(server).toContain("webUiContext");
+    expect(service).toContain('new URL("../../contexts/web-ui.md", import.meta.url)');
+    expect(service).toContain("appendSystemPromptOverride");
+    expect(service).toContain("webUiContext");
+    expect(service).toContain("pi-web extension documentation (read when asked to build pi-web extensions or browser UI)");
+    expect(service).toContain('join(appDir, "docs/pi-web-extensions.md")');
+    expect(service).toContain('join(appDir, "examples/pi-web-extensions")');
+    expect(service).toContain("notepad.ts shows the current contribute() API");
 
-    expect(server).not.toContain("piWebDevelopmentContextFile");
-    expect(server).not.toContain("pi-web-development.md");
-    expect(server).not.toContain("piCwd === appDir ?");
-    expect(server).not.toContain("pi-web-agent-context.md");
+    expect(service).not.toContain("piWebDevelopmentContextFile");
+    expect(service).not.toContain("pi-web-development.md");
+    expect(service).not.toContain("piCwd === appDir ?");
+    expect(service).not.toContain("pi-web-agent-context.md");
+  });
+
+  it("teaches the canonical contribution API throughout the first-party UI examples", async () => {
+    const uiExamples = ["git-footer.ts", "recap.ts", "download-artifact.ts", "github-repo-panel.ts", "notepad.ts"];
+    for (const filename of uiExamples) {
+      const example = await text(`examples/pi-web-extensions/${filename}`);
+      expect(example).toContain(".contribute(");
+      expect(example).not.toMatch(/\.set(?:Footer|HeaderAction|ArtifactAction|GitTab|Panel|FabAction)\(/);
+    }
   });
 });

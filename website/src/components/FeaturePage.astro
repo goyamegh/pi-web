@@ -1,0 +1,40 @@
+---
+import type { FeatureRoute } from '../data/features';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import BottomCTA from './BottomCTA.astro';
+import ButtonLink from './ButtonLink.astro';
+import MarketingHero from './MarketingHero.astro';
+import Section from './Section.astro';
+
+interface Link { label: string; href: string; }
+interface Props {
+  feature: FeatureRoute;
+  description: string;
+  primary: Link;
+  secondary: Link;
+  technicalLinks: readonly Link[];
+}
+
+const { feature, description, primary, secondary, technicalLinks } = Astro.props;
+---
+
+<BaseLayout title={feature.eyebrow} description={description}>
+  <MarketingHero eyebrow={feature.eyebrow} title={feature.title} lede={feature.lede}>
+    <ButtonLink href={primary.href}>{primary.label}</ButtonLink>
+    <ButtonLink href={secondary.href} variant="secondary">{secondary.label}</ButtonLink>
+  </MarketingHero>
+
+  <div class="capability-strip container" aria-label="Available capabilities">
+    {feature.capabilities.map((item) => <span>{item}</span>)}
+  </div>
+
+  <slot />
+
+  <Section tone="tinted" narrow eyebrow="From the repository" title="Details and evidence.">
+    <nav class="source-links" aria-label={`${feature.eyebrow} technical resources`}>
+      {technicalLinks.map((link) => <a href={link.href}>{link.label}<span aria-hidden="true">↗</span></a>)}
+    </nav>
+  </Section>
+
+  <BottomCTA eyebrow={feature.eyebrow} title="Put it around real work." primaryHref={primary.href} primaryLabel={primary.label} secondaryHref={secondary.href} secondaryLabel={secondary.label} />
+</BaseLayout>

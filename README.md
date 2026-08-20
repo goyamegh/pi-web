@@ -3,9 +3,13 @@
 > **A fork of [pi-web](https://github.com/ashwin-pc/pi-web) that also supports [Claude Code](https://docs.anthropic.com/en/docs/claude-code).**
 > A per-session agent selector lets you drive both the pi agent and the local `claude` CLI from one unified web UI — the session drawer, tabs, model picker, and slash-command palette all work across both agents.
 
-A focused web UI for [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), designed for mobile, desktop, and tablet.
+**The best interface for working with your agents.**
 
-pi-web's goal is simple: provide the best interface for pi on every device. It stays close to the core agent experience while giving pi the web-specific context it needs to render artifacts, images, sessions, diffs, diagrams, and tool output clearly.
+[Website](https://ashwin-pc.github.io/pi-web/) · [Getting started](https://ashwin-pc.github.io/pi-web/getting-started/) · [Extensions](https://ashwin-pc.github.io/pi-web/extensions/)
+
+pi-web is a focused browser workspace for substantial, inspectable agent work across mobile, desktop, and tablet. [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) is its current default and full-capability reference harness; the architecture is being designed to support additional harnesses without reducing what pi can do.
+
+It keeps the surrounding work visible—sessions, rich artifacts, files, diagrams, tool output, diffs, and extension-built workflow UI—without trying to become a full IDE.
 
 | Desktop | Mobile |
 | --- | --- |
@@ -53,20 +57,27 @@ For development:
 npm install
 ```
 
-From npm:
+pi-web currently works through a local, authenticated [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) installation. Prepare the harness first:
+
+```bash
+npm install -g @earendil-works/pi-coding-agent
+pi
+```
+
+Run `/login` inside pi, complete provider authentication, then exit pi. Authentication belongs to the harness rather than pi-web. As support for additional harnesses arrives, the boundary remains the same: install and sign in to the harness locally before using it through pi-web.
+
+Then install and run pi-web from npm:
 
 ```bash
 npm i -g @ashwin-pc/pi-web
 pi-web
 ```
 
-Or run without a global install:
+Or run pi-web without a global install:
 
 ```bash
 npx -y @ashwin-pc/pi-web@latest
 ```
-
-First run: if pi-web does not find an existing Pi provider login, API key, or custom model config, it prompts in the same terminal to open the bundled Pi CLI. Run `/login` there, connect your provider, exit Pi, and pi-web continues starting. You can skip this prompt with `PI_WEB_SKIP_PROVIDER_ONBOARDING=1`.
 
 From a GitHub release asset:
 
@@ -113,7 +124,15 @@ PI_WEB_CWD=/Users/ashwin/projects/comfy-lan-webapp npm run dev
 
 ### Mobile-first sessions
 
-The session UI is built for small screens first, then scales up to desktop. Tabs, the session drawer, pinned sessions, bucket filters, and conversation navigation are designed to keep long-running pi work reachable from a phone without hiding the desktop workflow.
+The session UI is built for small screens first, then scales up to desktop. Session lanes keep active work **Pinned**, paused work **Parked**, and useful references in **Bookmarks**. The dedicated lane drawer supports notes, bucket markers, stale parked-session badges, and drag-and-drop ordering within or across lanes, while pinned sessions remain immediately available in the tab bar.
+
+Right-click a session—or long-press it on touch devices—to open the Inspector Card and change its lane, bucket, or optional note. Keyboard shortcuts cover pinning (`Ctrl/Cmd+Shift+P`), parking (`Ctrl/Cmd+Shift+K`), bookmarking (`Ctrl/Cmd+Shift+B`), and cycling through the focused lane (`Ctrl/Cmd+Shift+←/→`).
+
+### Workspace Explorer
+
+The responsive Explorer opens the active session's working directory as a lazy-loaded file tree and a full CodeMirror editor. A dedicated Artifacts scope presents generated project output as a visual gallery, with large interactive previews for images, sandboxed HTML, rendered Markdown, video, and PDFs—without digging through Pi's internal storage folders. Workspace and Artifacts each preserve their folder, scroll, and preview state when switching views or reopening the panel. Browser Back returns an open file or artifact to its prior tree or gallery before closing the panel on the next step. The Explorer supports syntax highlighting, multiple closeable tabs, conflict-aware saves, search and editor shortcuts, line wrapping, pinch or slider font resizing, and a resizable or collapsible tree. Desktop keeps chat, tree, and editor visible together; phones and touch-first foldables switch cleanly between the tree and editor without summoning the keyboard until the editor is tapped.
+
+File access stays scoped to the session working directory. The server rejects path traversal and escaping symlinks, detects binary and oversized files, writes atomically, and uses revisions to prevent silently overwriting changes made elsewhere.
 
 ### Diffs and tool review
 
@@ -145,19 +164,27 @@ New sessions open with a lightweight animated empty state and a compact working-
 | --- | --- |
 | ![pi-web new session desktop](tests/e2e/visual.spec.ts-snapshots/new-session-desktop.png) | ![pi-web new session mobile](tests/e2e/visual.spec.ts-snapshots/new-session-mobile.png) |
 
+### Workspace Explorer
+
+The Explorer uses the same session-scoped file tree and CodeMirror editor on every device. Desktop keeps the conversation and workspace side by side, while mobile switches to a focused editor view with a compact back control and touch-safe keyboard behavior.
+
+| Desktop | Mobile |
+| --- | --- |
+| ![pi-web Workspace Explorer desktop](tests/e2e/visual.spec.ts-snapshots/workspace-explorer-desktop.png) | ![pi-web Workspace Explorer mobile](tests/e2e/visual.spec.ts-snapshots/workspace-explorer-mobile.png) |
+
 ### Diff review
 
 | Desktop | Mobile |
 | --- | --- |
 | ![pi-web diff review desktop](tests/e2e/visual.spec.ts-snapshots/diff-review-desktop.png) | ![pi-web diff review mobile](tests/e2e/visual.spec.ts-snapshots/diff-review-mobile.png) |
 
-### Session workspace
+### Session lanes
 
-Tabs, pinned sessions, bucket colors, running indicators, and the session drawer are designed to stay usable on mobile while expanding naturally on desktop.
+Pinned, Parked, and Bookmarks form a persistent session workspace. The same lane manager becomes a desktop drawer or mobile bottom sheet, with flat session rows, optional notes, bucket markers, timestamps, drag handles, and quick access to the Inspector Card.
 
 | Desktop | Mobile |
 | --- | --- |
-| ![pi-web session workspace desktop](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-desktop.png) | ![pi-web session workspace mobile](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png) |
+| ![pi-web session lanes desktop](tests/e2e/visual.spec.ts-snapshots/session-lanes-desktop.png) | ![pi-web session lanes mobile](tests/e2e/visual.spec.ts-snapshots/session-lanes-mobile.png) |
 
 ### Git panel
 

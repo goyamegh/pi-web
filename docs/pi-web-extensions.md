@@ -63,6 +63,36 @@ pi-web-only extensions are loaded from:
 
 These are separate from regular pi extension locations on purpose. A pi-web extension can use HTML and browser-specific APIs without promising that the same UI works in the terminal TUI.
 
+## Contribution API
+
+`ctx.ui.web.contribute(key, spec)` is the canonical API for browser surfaces. Specs use an explicit `slot` and `kind`; pi-web normalizes them immediately into versioned descriptors. Passing `undefined` clears every contribution registered under that key. Keys are identities across slots, so prefix them with your extension name (for example, `acme-notes.panel`) to avoid collisions with other extensions and convenience wrappers.
+
+```ts
+ctx.ui.web.contribute("worker-status", {
+  slot: "panel",
+  kind: "rendered",
+  title: "Worker status",
+  render: async (event) => ({
+    html: `<button data-web-action="refresh">Refresh</button>`,
+  }),
+});
+```
+
+Rendered contributions receive the shared `{ action, payload, fields, context }` event envelope. Static contributions currently support the `footer` and `fab` slots; rendered contributions support `header-action`, `artifact-action`, `git-tab`, and `panel`.
+
+Independently distributed extensions should inspect `ctx.ui.web.capabilities` before using newer facilities. It reports the additive runtime contract: `apiVersion`, `slots`, `kinds`, and `effects`.
+
+When backing data changes without a browser interaction, call `ctx.ui.web.update(key)`. pi-web emits a lightweight invalidation and an active panel or Git tab pulls a fresh render. Updates for hidden surfaces do no work; they render when next opened.
+
+```ts
+revision += 1;
+ctx.ui.web.update("worker-status");
+```
+
+The typed `setFooter`, `setHeaderAction`, `setArtifactAction`, `setGitTab`, `setPanel`, and `setFabAction` methods remain supported convenience wrappers over this registry.
+
+The [global notepad example](../examples/pi-web-extensions/notepad.ts) demonstrates a rendered panel, explicit FAB launcher, persisted cross-session data, and `update()` invalidation across every live session.
+
 ## Footer API
 
 `ctx.ui.web.setFooter(key, footer)` sets a footer region between the composer and pinned session tabs. Multiple extensions can set independent footer regions by using different keys.
@@ -120,6 +150,65 @@ ctx.ui.web.setHeaderAction("recap", undefined);
 
 The repo includes a recap example at [`examples/pi-web-extensions/recap.ts`](../examples/pi-web-extensions/recap.ts).
 
+## FAB and right-panel API
+
+`ctx.ui.web.setPanel(key, panel)` registers an extension **panel surface**: trusted
+extension-provided HTML rendered in pi-web's shared right panel. A panel has **no
+implicit entry point** — registering one contributes nothing to the FAB. Entry points
+are explicit and may be anything that references the panel:
+
+- `ctx.ui.web.setFabAction(key, { title, icon, opens })` — a mascot-FAB launcher entry
+- a header action returning an `open-panel` effect from `invoke()`
+- future affordances (links from other extension views, etc.)
+
+The panel can call back into the extension with `data-web-action`, optional JSON
+in `data-web-payload`, and ordinary HTML forms. Successful form controls are sent
+as `event.fields`.
+
+```ts
+ctx.ui.web.setPanel("notes", {
+  title: "Notes",
+  label: "Notepad",
+  icon: "notebook-pen",
+  render: async (event) => {
+    if (event?.action === "save") {
+      const content = event.fields?.content;
+      // Persist content here.
+    }
+    return {
+      html: `<form data-web-action="save">
+        <textarea name="content"></textarea>
+        <button type="submit" data-web-action="save">Save</button>
+      </form>`,
+    };
+  },
+});
+```
+
+Panel HTML is trusted and uses the same local extension trust model as custom
+footer and Git-tab HTML. Scripts inserted through `innerHTML` do not execute;
+use action attributes for interaction. Clear the contribution with:
+
+```ts
+ctx.ui.web.setPanel("notes", undefined);
+ctx.ui.web.setFabAction("notes-launcher", undefined);
+```
+
+Register a FAB launcher for a panel, or open it from a header action — or both:
+
+```ts
+ctx.ui.web.setPanel("notes", { title: "Notes", render: ... });
+ctx.ui.web.setFabAction("notes-launcher", {
+  title: "Notes", icon: "notebook-pen", opens: "notes",
+});
+ctx.ui.web.setHeaderAction("open-notes", {
+  icon: "scroll-text",
+  title: "Open notes",
+  invoke: () => ({ effects: [{ type: "open-panel", key: "notes" }] }),
+});
+```
+
+
 ## Artifact preview action API
 
 `ctx.ui.web.setArtifactAction(key, action)` adds an action to matching Markdown, HTML, or video artifact preview cards. Match by preview kind, filename extension, or both. The handler receives the artifact's name, `/api/artifacts/...` path, and kind, and may return Markdown or a plain-text message shown in the card.
@@ -158,7 +247,7 @@ ctx.ui.web.setArtifactAction("publish", undefined);
 
 `ctx.ui.web.setGitTab(key, tab)` contributes a provider-specific tab to pi-web's built-in Git side panel. Core pi-web owns the Git drawer; extensions own provider detection, data fetching, and trusted HTML rendering.
 
-Elements inside the HTML can call back into the extension by using `data-web-git-tab-action` and optional JSON in `data-web-git-tab-payload`. An action can also return `composerContext` without `html`; pi-web keeps the current tab visible and adds the plain-text context as a removable composer pill. The context content is included with the next prompt.
+Elements inside the HTML can call back into the extension by using `data-web-action` and optional JSON in `data-web-payload` (the legacy Git-tab names remain accepted). An action can also return `composerContext` without `html`; pi-web keeps the current tab visible and adds the plain-text context as a removable composer pill. The context content is included with the next prompt.
 
 ```ts
 ctx.ui.web.setGitTab("github", {
@@ -176,7 +265,7 @@ ctx.ui.web.setGitTab("github", {
       };
     }
     return {
-      html: `<button data-web-git-tab-action="attach-issue" data-web-git-tab-payload='{"number":123}'>#123</button>`,
+      html: `<button data-web-action="attach-issue" data-web-payload='{"number":123}'>#123</button>`,
     };
   },
 });
@@ -187,6 +276,88 @@ Clear a Git panel tab by passing `undefined`:
 ```ts
 ctx.ui.web.setGitTab("github", undefined);
 ```
+
+## Settings API
+
+`ctx.ui.web.registerSettings(schema)` contributes a settings panel to pi-web's
+settings drawer. Core pi-web owns storage, validation, and rendering; the
+extension owns the schema and reacts to changes. Values are **global** (shared by
+every session) while the schema registration is **per session**, and they persist
+after the extension unloads.
+
+```ts
+pi.on("session_start", async (_event, ctx) => {
+  await ctx.ui.web.registerSettings({
+    id: "my-ext.prefs",          // namespaced: <extension>.<schema>
+    title: "My extension",
+    schemaVersion: 1,
+    fields: [
+      { key: "enabled", type: "toggle", label: "Enabled", default: true },
+      { key: "model", type: "select", label: "Model", optionsSource: "models" },
+    ],
+    onChange: (values, info) => applyPreferences(values, info.sessionId),
+  });
+
+  const { values } = await ctx.ui.web.getSettings("my-ext.prefs");
+});
+```
+
+Field types are `toggle`, `text`, `textarea`, `number`, `select`, and `list`
+(a repeater with `itemFields`). Constraints include `required`, `min`/`max`,
+`minLength`/`maxLength`/`pattern`, `minItems`/`maxItems`, and
+`uniqueCaseInsensitive`. Validation errors render inline and are announced to
+screen readers.
+
+`select` options come from static `options`, from the live model registry with
+`optionsSource: "models"`, or from another field with
+`optionsFromField: "<listKey>.<itemKey>"`. When a top-level `select` references a
+list column this way, pi-web renders it as a per-row "default" star on that list
+instead of a separate dropdown. List rows carry a stable hidden `__id`, so
+renaming a row keeps references intact.
+
+Storage notes:
+
+- Values are stored under `extensions[id]` in pi-web settings as
+  `{ schemaVersion, revision, values, backup? }` and are carried through
+  verbatim, so an unloaded extension never loses its configuration.
+- Writes are validated against the live schema and use an optimistic `revision`
+  guard, so concurrent edits from two browsers cannot silently drop fields.
+- Bump `schemaVersion` and supply `migrate(oldValues, oldVersion)` to upgrade
+  stored values. A failed migration falls back to defaults and keeps a one-slot
+  `backup`.
+- Owners with stored values but no live registration render as a read-only
+  "data retained" card. Their stored values can still be reset (reset needs only
+  stored data, not a live schema); editing requires the schema.
+- Every live registrant of an id is notified on change, each with its own
+  `onChange` and its own `info.sessionId`. The first registrant's descriptor is
+  canonical; a divergent schema for the same id is rejected.
+- If a migration fails, the stored values fall back to defaults, the previous
+  values are kept in `backup`, and the schema is published with a
+  `migrationError` so the UI can surface it.
+
+## Referencing sessions from extension output
+
+Extension output can point at other sessions, and pi-web renders those as links.
+This works the same way for custom messages and for tool results: put an explicit
+reference LIST in `details`.
+
+```ts
+pi.sendMessage({
+  customType: "my-ext",
+  content: "Background job finished",
+  details: { sessions: [{ sessionId, name: "job runner", status: "ok" }] },
+});
+```
+
+- Supported keys are `sessions`, `sessionRefs`, and `workers`; each entry is
+  `{ sessionId, name?, status? }`, where `status` may be `error` or `aborted` to
+  change the chip's glyph.
+- A **bare** `details.sessionId` is treated as incidental metadata and renders no
+  link, so a tool that merely echoes the session it acted on stays quiet. Linking
+  is opt-in.
+- Core caps rendering at 8 references per card, truncates labels, and requires
+  plausible session ids, because `details` is untrusted persisted input. No
+  extension or tool name is special-cased.
 
 ## Example: GitHub PRs and issues tab
 
@@ -232,18 +403,52 @@ rm ~/.pi/web/extensions/github-repo-panel.ts
 
 The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch and live dirty/clean state, refreshes periodically, and also refreshes around turns, bash commands, and compaction events.
 
-Install it for one project:
+Install it for one project from a checkout of this repository. Use a symlink so the installed extension stays in sync with the example source:
 
 ```sh
 mkdir -p .pi/web/extensions
-cp examples/pi-web-extensions/git-footer.ts .pi/web/extensions/git-footer.ts
+ln -s "$(pwd)/examples/pi-web-extensions/git-footer.ts" .pi/web/extensions/git-footer.ts
 ```
 
 Or install it for all pi-web projects:
 
 ```sh
 mkdir -p ~/.pi/web/extensions
-cp examples/pi-web-extensions/git-footer.ts ~/.pi/web/extensions/git-footer.ts
+ln -s "$(pwd)/examples/pi-web-extensions/git-footer.ts" ~/.pi/web/extensions/git-footer.ts
 ```
 
-Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
+These commands assume your current directory is the pi-web repository root. Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
+
+## Example: multi-agent session orchestration
+
+The repo includes a session-orchestration extension at
+[`examples/pi-web-extensions/session-orchestrator.ts`](../examples/pi-web-extensions/session-orchestrator.ts).
+It lets one session spawn, monitor, steer, and interrupt other sessions, turning
+pi-web into a multi-agent workspace where each worker is a **normal, fully
+visible session** in the sidebar rather than a hidden subagent.
+
+It registers five tools — `sessions_spawn`, `sessions_status`, `sessions_read`,
+`sessions_prompt`, `sessions_abort` — and a zero-token background poller that
+delivers a wakeup message when a worker goes idle, so the parent never polls.
+Worker models are chosen from user-authored **categories** (name + "when to use"
+prose + a model) configured through the Settings API above; the concrete model
+mapping stays private to the config and the spawn tool resolves it fail-closed.
+
+pi-web renders the orchestration state generically: spawned sessions are
+indented under their parent in the session drawer, a waiting indicator shows
+while a session's workers run, wakeups render as notification cards, and both the
+spawn tool card and wakeup card link to the worker session.
+
+Install the extension into a pi-web extension directory, and the companion skill
+into a pi skills directory:
+
+```bash
+cp examples/pi-web-extensions/session-orchestrator.ts .pi/web/extensions/session-orchestrator.ts
+cp -r examples/pi-web-skills/session-orchestration ~/.pi/agent/skills/session-orchestration
+```
+
+The skill at
+[`examples/pi-web-skills/session-orchestration/SKILL.md`](../examples/pi-web-skills/session-orchestration/SKILL.md)
+teaches the delegation loop: what to delegate, how to write self-contained worker
+tasks, how to pick a category, and why ending your turn while workers run is
+correct.

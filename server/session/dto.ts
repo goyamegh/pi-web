@@ -1,3 +1,5 @@
+import type { HarnessEventDto } from "./piEventMap.js";
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
@@ -20,20 +22,93 @@ export interface SessionStatsDto {
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 }
 
+export interface HarnessCapabilitiesDto {
+  harness: string;
+  queue: boolean;
+  steering: boolean;
+  followUp: boolean;
+  thinkingLevel: boolean;
+  tree: boolean;
+  compaction: boolean;
+  retry: boolean;
+  bash: boolean;
+  extensions: boolean;
+  interactions: boolean;
+}
+
 export interface BaseSessionStateDto {
   cwd: string;
+  /** Fork: Claude Code's "agent cd'd elsewhere" override for the repo bar. */
+  activeCwd?: string;
   sessionFile: string;
   sessionId: string;
   sessionName?: string;
   sessionTitle: string;
+  capabilities: HarnessCapabilitiesDto;
   isStreaming: boolean;
   isRetrying: boolean;
   isCompacting: boolean;
+  queue?: { steering: string[]; followUp: string[] };
   model?: ModelDto;
-  thinkingLevel: string;
-  thinkingLevels: string[];
+  thinkingLevel?: string;
+  thinkingLevels?: string[];
   stats: SessionStatsDto;
 }
+
+/** Serializable, role-discriminated projection consumed by every transcript path. */
+export type AttachmentDto = {
+  type: "file";
+  id: string;
+  name: string;
+  mediaType: string;
+  bytes: number;
+  path: string;
+  contentUrl: string;
+} | {
+  type: "reference";
+  id: string;
+  label: string;
+  title?: string;
+  reference: {
+    provider: "github";
+    repository: string;
+    resource: "issue" | "pull-request";
+    number: number;
+    url: string;
+  };
+} | {
+  type: "quote-reply";
+  id: string;
+  label: string;
+  quote: string;
+  question: string;
+  source: {
+    messageId?: string;
+    startOffset: number;
+    endOffset: number;
+  };
+};
+
+type MessageDtoBase = {
+  entryId?: string;
+  parentEntryId?: string;
+  text?: string;
+  timestamp?: string;
+  attachments?: AttachmentDto[];
+  raw?: JsonValue;
+};
+
+export type MessageDto = MessageDtoBase & (
+  | { role: "user"; isError?: boolean }
+  | { role: "assistant"; toolCalls?: Array<{ id?: string; toolName: string; args: JsonValue; startedAt?: string }>; isError: boolean }
+  | { role: "system"; isError?: boolean }
+  | { role: "toolResult"; toolCallId?: string; toolName?: string; toolArgs?: JsonValue; isError: boolean }
+  | { role: "bashExecution"; command?: JsonValue; output?: JsonValue; exitCode?: JsonValue; cancelled: boolean; truncated: boolean; fullOutputPath?: JsonValue; excludeFromContext: boolean }
+  | { role: "compactionSummary"; isError?: boolean }
+  | { role: "branchSummary"; isError?: boolean }
+  | { role: "unknown"; originalRole: string; isError?: boolean }
+  | { role: "custom"; customType: string; details?: JsonValue; display: true }
+);
 
 export interface TreeNodeDto {
   id: string;
@@ -67,33 +142,134 @@ export interface SlashCommandDto {
   sourceInfo?: JsonValue;
 }
 
-export type NavigationResult = Record<string, unknown> & { finish(): void };
+export interface SessionInfoDto {
+  id: string;
+  path: string;
+  name?: string;
+  firstMessage?: string;
+  created: string;
+  modified: string;
+  /** Exact for live sessions; omitted for cold sessions because deriving it requires a transcript parse. */
+  messageCount?: number;
+  cwd: string;
+  isCurrent: false;
+}
+
+export type PromptProvenanceSourceKind = "system-prompt" | "context-file" | "skill" | "tool" | "append-prompt" | "pi-web" | "unknown";
+export type PromptProvenanceConfidence = "exact" | "derived" | "unknown";
+
+export interface PromptProvenanceSpanDto {
+  /** UTF-16 code-unit offsets, matching JavaScript String#slice and browser selections. */
+  start: number;
+  end: number;
+  source: { kind: PromptProvenanceSourceKind; label: string; path?: string };
+  confidence: PromptProvenanceConfidence;
+}
+
+export interface PromptProvenanceDto {
+  encoding: "utf-16";
+  spans: PromptProvenanceSpanDto[];
+  coverage: { exact: number; derived: number; unknown: number; total: number };
+}
+
+export interface SessionContextDto {
+  sessionId: string;
+  systemPrompt: string;
+  provenance: PromptProvenanceDto;
+  capturedAt: string;
+  tools: {
+    activeNames: string[];
+    configured: Array<{ name: string; description?: string; sourceInfo?: JsonValue; callCount: number }>;
+    callsByName: Record<string, number>;
+  };
+  resources: {
+    skills: Array<{ name: string; description?: string; filePath?: string; disableModelInvocation?: boolean; sourceInfo?: JsonValue }>;
+    extensions: Array<{ path: string; resolvedPath?: string; hidden?: boolean; sourceInfo?: JsonValue; contributions: { tools: number; commands: number; handlers: number; renderers: number; flags: number; shortcuts: number } }>;
+    contextFiles: string[];
+    systemPromptSource?: string;
+    appendSystemPromptSources: string[];
+    diagnostics: JsonValue[];
+  };
+}
+
+export interface ModelsResultDto {
+  cwd: string;
+  current?: ModelDto;
+  thinkingLevel: string;
+  thinkingLevels: string[];
+  models: ModelDto[];
+}
+
+export interface InteractionRequestDto {
+  id: string;
+  source: "extension" | "approval" | "clarify" | "sudo" | "secret";
+  kind: string;
+  payload: { [key: string]: JsonValue };
+  sessionId: string;
+  sessionFile: string;
+  timeout: number;
+}
+
+export interface InteractionResponseDto {
+  id: string;
+  cancelled?: boolean;
+  [key: string]: JsonValue | undefined;
+}
+
+export interface DeleteSessionResultDto {
+  id: string;
+  disposition: "trashed" | "deleted";
+}
+
+export type SessionServiceEvent =
+  | { type: "agent"; sessionId: string; sessionFile: string; event: HarnessEventDto; clientMessageId?: string; sourceClientId?: string }
+  | { type: "interaction"; request: InteractionRequestDto }
+  | { type: "entry"; sessionId: string; sessionFile: string; entryId: string; parentId?: string; entryKind: string }
+  | { type: "state"; state: BaseSessionStateDto; includeThinkingLevels?: boolean }
+  | { type: "committed"; sessionId: string; sessionFile: string; message: MessageDto }
+  | { type: "stats"; sessionId: string; sessionFile: string; stats: SessionStatsDto }
+  | { type: "models"; sessionId: string; models: ModelDto[] }
+  | { type: "error"; sessionId?: string; sessionFile?: string; error: string; clientMessageId?: string }
+  | { type: "shutdown"; sessionId: string; sessionFile: string; sessionKey: string }
+  | { type: "runtime"; sessionId: string; sessionFile: string; activitySessionFile?: string; action: "ensure" | "clear" | "changed" | "completed"; aborted?: boolean }
+  | { type: "wire"; value: JsonValue };
+
+export type NavigationResult = {
+  state: BaseSessionStateDto;
+  [key: string]: unknown;
+};
 
 export interface SessionService {
-  defaultSessionId(): string;
-  state(sessionId?: string): Promise<Record<string, unknown>>;
-  stats(sessionId?: string): Promise<{ sessionId: string; stats: SessionStatsDto }>;
-  tree(sessionId?: string): Promise<ConversationTreeDto>;
-  messages(sessionId?: string): Promise<unknown[]>;
-  commands(sessionId?: string): Promise<SlashCommandDto[]>;
-  models(sessionId?: string): Promise<Record<string, unknown>>;
-  setModel(sessionId: string | undefined, provider: string, id: string, thinkingLevel?: string): Promise<Record<string, unknown>>;
-  executeShell(sessionId: string | undefined, command: string, excludeFromContext: boolean): Promise<Record<string, unknown>>;
-  executeCommand(sessionId: string | undefined, command: string): Promise<Record<string, unknown>>;
-  prompt(sessionId: string | undefined, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }> }): Promise<{ sessionId: string }>;
-  retry(sessionId?: string): Promise<{ sessionId: string }>;
-  abort(sessionId?: string): Promise<{ sessionId: string }>;
-  abortCompaction(sessionId?: string): Promise<{ sessionId: string }>;
-  abortBranchSummary(sessionId?: string): Promise<{ sessionId: string }>;
-  rename(sessionId: string | undefined, name: string): Promise<Record<string, unknown>>;
-  navigate(sessionId: string | undefined, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
-  invokeHeaderAction(sessionId: string | undefined, key: unknown): Promise<Record<string, unknown>>;
-  invokeGitTab(sessionId: string | undefined, input: Record<string, unknown>): Promise<Record<string, unknown>>;
-  list(extraCwds?: string[]): Promise<Array<{ id: string } & Record<string, unknown>>>;
-  create(sessionId?: string, cwd?: string): Promise<Record<string, unknown>>;
-  open(sessionId: string, cwd?: string): Promise<Record<string, unknown>>;
-  delete(sessionId: string, cwd?: string): Promise<unknown>;
-  switchCwd(sessionId: string | undefined, cwd: string): Promise<Record<string, unknown>>;
+  state(sessionId: string): Promise<BaseSessionStateDto>;
+  context(sessionId: string): Promise<SessionContextDto>;
+  stats(sessionId: string): Promise<{ sessionId: string; stats: SessionStatsDto }>;
+  tree(sessionId: string): Promise<ConversationTreeDto>;
+  messages(sessionId: string): Promise<MessageDto[]>;
+  commands(sessionId: string): Promise<SlashCommandDto[]>;
+  models(sessionId: string): Promise<ModelsResultDto>;
+  setModel(sessionId: string, provider: string, id: string, thinkingLevel?: string): Promise<BaseSessionStateDto>;
+  executeShell(sessionId: string, command: string, excludeFromContext: boolean): Promise<Record<string, JsonValue | undefined>>;
+  executeCommand(sessionId: string, command: string): Promise<{ message: string; state: BaseSessionStateDto }>;
+  prompt(sessionId: string, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }): Promise<{ sessionId: string }>;
+  retry(sessionId: string): Promise<{ sessionId: string }>;
+  abort(sessionId: string): Promise<{ sessionId: string }>;
+  abortCompaction(sessionId: string): Promise<{ sessionId: string }>;
+  abortBranchSummary(sessionId: string): Promise<{ sessionId: string }>;
+  rename(sessionId: string, name: string): Promise<BaseSessionStateDto>;
+  navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
+  respondInteraction(response: InteractionResponseDto): boolean;
+  cancelInteractions(): void;
+  invokeContribution(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  invokeHeaderAction(sessionId: string, key: unknown): Promise<Record<string, unknown>>;
+  invokeArtifactAction(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  invokeGitTab(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  invokePanel(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  list(extraCwds?: string[]): Promise<SessionInfoDto[]>;
+  create(previousSessionId: string | undefined, cwd?: string): Promise<BaseSessionStateDto>;
+  open(sessionId: string, cwd?: string): Promise<BaseSessionStateDto>;
+  delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto>;
+  switchCwd(sessionId: string, cwd: string): Promise<BaseSessionStateDto>;
+  subscribe(listener: (event: SessionServiceEvent) => void): () => void;
 }
 
 export function jsonRoundTrip<T>(value: T): T {

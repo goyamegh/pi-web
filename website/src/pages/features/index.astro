@@ -1,0 +1,54 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import BottomCTA from '../../components/BottomCTA.astro';
+import ButtonLink from '../../components/ButtonLink.astro';
+import MarketingHero from '../../components/MarketingHero.astro';
+import ProductStory from '../../components/ProductStory.astro';
+import Section from '../../components/Section.astro';
+import { outcomes } from '../../data/outcomes';
+
+const base = import.meta.env.BASE_URL;
+---
+
+<BaseLayout title="Features" description="A visual index of pi-web sessions, artifacts, responsive layouts, workspace files, Git, and extensions.">
+  <MarketingHero eyebrow="Features" title="More work done. Every thread visible." lede="Choose a product surface and see it in the real interface.">
+    <ButtonLink href={`${base}getting-started/`}>Install pi-web</ButtonLink>
+  </MarketingHero>
+
+  <Section eyebrow="Visual index" title="What pi-web can do.">
+    <div class="visual-index">
+      {outcomes.map((outcome) => outcome.screenshot ? (
+        <ProductStory
+          desktop={outcome.screenshot.desktop}
+          mobile={outcome.screenshot.mobile}
+          width={outcome.screenshot.width}
+          height={outcome.screenshot.height}
+          mobileWidth={outcome.screenshot.mobileWidth}
+          mobileHeight={outcome.screenshot.mobileHeight}
+          mobileAspectWidth={outcome.screenshot.mobileAspectWidth}
+          mobileAspectHeight={outcome.screenshot.mobileAspectHeight}
+          alt={outcome.screenshot.alt}
+          title={outcome.title}
+          caption={outcome.screenshot.caption}
+          href={`${base}${outcome.href}`}
+          linkLabel={outcome.eyebrow}
+          size="card"
+        />
+      ) : (
+        <a class="code-feature-card" href={`${base}${outcome.href}`}>
+          <span class="eyebrow">{outcome.eyebrow}</span>
+          <h2>{outcome.title}</h2>
+          <code>.pi/web/extensions/*.ts</code>
+          <code>/reload</code>
+          <strong>Explore extensions →</strong>
+        </a>
+      ))}
+    </div>
+  </Section>
+
+  <Section tone="dark" narrow>
+    <div class="harness-inline"><span>Current harness</span><strong><code>pi</code></strong><p>The full-capability reference today. Additional harnesses are product direction, not shipping support.</p><a href={`${base}principles/`}>Read the boundary →</a></div>
+  </Section>
+
+  <BottomCTA eyebrow="Start local" title="Put pi-web around your first task." primaryHref={`${base}getting-started/`} primaryLabel="Install pi-web" secondaryHref={`${base}extensions/`} secondaryLabel="Explore extensions" />
+</BaseLayout>

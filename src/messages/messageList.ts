@@ -1,9 +1,13 @@
 import type { ApiHeaders } from "../app/api.js";
 import { iconElement, type IconName } from "../app/icons.js";
 import type { AttachedImage, Role } from "../app/types.js";
+import type { MessageDto } from "../../server/session/dto.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
 import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
+import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
+import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
+import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -12,12 +16,15 @@ export type MessageActionKind = "edit" | "rerun" | "continue";
 export type MessageActionContext = {
   action: MessageActionKind;
   entryId: string;
+  parentEntryId?: string;
   role: "user" | "assistant";
   text: string;
 };
 export type MessageMetadata = {
   entryId?: string;
+  parentEntryId?: string;
   copyText?: string;
+  timestamp?: string;
 };
 
 export type TranscriptTerminalFailure = {
@@ -47,7 +54,9 @@ type ToolCallSummary = {
 
 export type MessageList = {
   addMessage: (role: Role, text: string, extraClass?: string, images?: AttachedImage[], metadata?: MessageMetadata) => HTMLDivElement;
-  appendStreamingDelta: (delta: string) => void;
+  startStreamingText: (contentIndex?: number | string) => void;
+  appendStreamingDelta: (delta: string, contentIndex?: number | string) => void;
+  endStreamingText: (content?: string, contentIndex?: number | string) => void;
   startStreamingThinking: (contentIndex?: number | string) => void;
   appendStreamingThinkingDelta: (delta: string, contentIndex?: number | string) => void;
   endStreamingThinking: (content?: string, contentIndex?: number | string) => void;
@@ -67,25 +76,52 @@ export type MessageList = {
   }) => Promise<void>;
   resetStreamingAssistant: () => void;
   invalidateRefreshes: () => void;
+  appendCommittedMessage: (message: MessageDto, options: {
+    addToolHistoryCard: AddToolHistoryCard;
+    addPendingToolCard: AddPendingToolCard;
+    addRuntimeErrorCard: AddRuntimeErrorCard;
+    isStreaming?: boolean;
+  }) => void;
   scrollToBottom: () => void;
 };
 
-function appendAttachedImage(container: HTMLElement, img: AttachedImage) {
-  if (img.data && img.mimeType) {
-    const el = document.createElement("img");
-    el.className = "messageImageThumb";
-    el.src = `data:${img.mimeType};base64,${img.data}`;
-    el.alt = imageFileName(img.path);
-    container.append(el);
-    attachImageActions(el);
-    return;
-  }
+function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, apiHeaders?: ApiHeaders, onMissing?: () => void) {
+  const mediaType = attachment.mediaType || attachment.mimeType || "application/octet-stream";
+  const name = attachment.label || attachment.name || imageFileName(attachment.path, "attachment");
+  const item = document.createElement("span");
+  item.className = "messageAttachmentPreview";
+  item.title = attachment.title ? `${name} · ${attachment.title}` : `${name}${typeof attachment.bytes === "number" ? ` · ${attachment.bytes.toLocaleString()} bytes` : ""}`;
 
-  const missing = document.createElement("span");
-  missing.className = "messageImageMissing";
-  missing.title = img.path || "unknown path";
-  missing.textContent = `🖼️ ${imageFileName(img.path, "missing image")}`;
-  container.append(missing);
+  if (attachment.type === "reference") {
+    item.textContent = attachment.reference?.provider === "github" ? "GH" : "REF";
+  } else if (mediaType.startsWith("image/") && (attachment.contentUrl || attachment.data)) {
+    const image = document.createElement("img");
+    image.className = "messageAttachmentImage";
+    image.alt = name;
+    if (attachment.data) image.src = `data:${mediaType};base64,${attachment.data}`;
+    else if (attachment.contentUrl) {
+      void fetch(attachment.contentUrl, { headers: apiHeaders?.() })
+        .then((response) => {
+          if (!response.ok) throw new Error("Attachment unavailable");
+          return response.blob();
+        })
+        .then((blob) => {
+          const objectUrl = URL.createObjectURL(blob);
+          image.src = objectUrl;
+        })
+        .catch(() => {
+          item.classList.add("missing");
+          item.textContent = "!";
+          item.title = `${name} · Unavailable`;
+          onMissing?.();
+        });
+    }
+    item.append(image);
+    attachImageActions(image);
+  } else {
+    item.textContent = name.includes(".") ? name.split(".").pop()!.slice(0, 3).toUpperCase() : "FILE";
+  }
+  container.append(item);
 }
 
 function rawContent(message: any) {
@@ -235,12 +271,18 @@ function transcriptRuntimeState(messages: any[], isStreaming?: boolean): Transcr
 }
 
 export function createMessageList(options: {
+  /** Switch to a referenced session in place instead of reloading the app. */
+  openSession?: (sessionId: string) => void;
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
+  apiHeaders?: ApiHeaders;
+  quoteReplies?: QuoteRepliesController;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction } = options;
+  const { messagesEl, markdown, onMessageAction, openSession, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
+  const streamingTextBlocks = new Map<string, HTMLDivElement>();
+  let currentStreamingTextKey = "current";
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
   const thinkingCardRawText = new WeakMap<HTMLDivElement, string>();
   let currentStreamingThinkingKey = "current";
@@ -588,7 +630,7 @@ export function createMessageList(options: {
     if (entryId && onMessageAction) {
       messageEl.dataset.entryId = entryId;
       const runAction = (action: MessageActionKind) => {
-        void onMessageAction({ action, entryId, role, text: actionText() });
+        void onMessageAction({ action, entryId, parentEntryId: metadata.parentEntryId?.trim(), role, text: actionText() });
       };
       if (role === "user") {
         appendMessageActionButton(actions, "square-pen", "Edit message from here", "Edit", () => runAction("edit"));
@@ -613,12 +655,18 @@ export function createMessageList(options: {
   function addMessage(role: Role, text: string, extraClass = "", images: AttachedImage[] = [], metadata: MessageMetadata = {}) {
     invalidatePendingRefreshes();
     const div = document.createElement("div");
+    const entryId = metadata.entryId?.trim();
+    if (entryId) div.dataset.entryId = entryId;
     const collapsible = shouldCollapseMessage(text);
     div.className = `message ${role} ${extraClass}${collapsible ? " collapsible collapsed" : ""}`.trim();
     const body = document.createElement("div");
     body.className = "body";
 
-    if (role === "user" && images.length > 0) {
+    const renderedQuoteReplies = role === "user" && quoteReplies?.renderSubmittedMessage(body, text, images);
+    const standardAttachments = images.filter((attachment) => attachment.type !== "quote-reply");
+    if (renderedQuoteReplies) {
+      // Structured quote prompts render as a compact linked-excerpt summary.
+    } else if (role === "user" && images.length > 0) {
       const cleanText = stripImagePathNote(text);
       if (cleanText) {
         const textNode = document.createElement("span");
@@ -626,11 +674,6 @@ export function createMessageList(options: {
         textNode.textContent = cleanText;
         body.append(textNode);
       }
-
-      const imgWrap = document.createElement("div");
-      imgWrap.className = "messageImages";
-      for (const img of images) appendAttachedImage(imgWrap, img);
-      body.append(imgWrap);
     } else if (role === "assistant" && text) {
       body.textContent = text;
       if (collapsible) markdown.queueAssistantMarkdownRender(body, text);
@@ -640,6 +683,63 @@ export function createMessageList(options: {
     }
 
     div.append(body);
+
+    if (role === "user") {
+      const baseline = document.createElement("div");
+      baseline.className = `messageAttachmentBaseline${standardAttachments.length ? "" : " messageAttachmentBaseline--timeOnly"}`;
+      if (standardAttachments.length) {
+        const summary = document.createElement("button");
+        summary.type = "button";
+        summary.className = "messageAttachmentSummary";
+        summary.setAttribute("aria-expanded", "false");
+        const previews = document.createElement("span");
+        previews.className = "messageAttachmentConstellation";
+        const popover = document.createElement("div");
+        popover.className = "messageAttachmentPopover";
+        popover.hidden = true;
+        const missingRows = new Map<number, HTMLElement>();
+        standardAttachments.forEach((attachment, index) => {
+          const row = document.createElement("div");
+          row.className = "messageAttachmentRow";
+          const name = document.createElement("span");
+          name.className = "messageAttachmentName";
+          name.textContent = attachment.name || imageFileName(attachment.path, "attachment");
+          const info = document.createElement("span");
+          info.className = "messageAttachmentInfo";
+          info.textContent = `${attachment.mediaType || attachment.mimeType || "file"}${typeof attachment.bytes === "number" ? ` · ${attachment.bytes.toLocaleString()} bytes` : ""}`;
+          row.append(name, info);
+          missingRows.set(index, row);
+          popover.append(row);
+        });
+        standardAttachments.slice(0, 3).forEach((attachment, index) => appendAttachedImage(previews, attachment, apiHeaders, () => {
+          const row = missingRows.get(index);
+          if (!row || row.classList.contains("missing")) return;
+          row.classList.add("missing");
+          const unavailable = document.createElement("span");
+          unavailable.className = "messageAttachmentUnavailable";
+          unavailable.textContent = "Unavailable";
+          row.append(unavailable);
+          summary.classList.add("hasMissing");
+        }));
+        const label = document.createElement("span");
+        label.className = "messageAttachmentCount";
+        label.textContent = `${standardAttachments.length} attached`;
+        summary.append(previews, label);
+        summary.addEventListener("click", (event) => {
+          event.stopPropagation();
+          popover.hidden = !popover.hidden;
+          summary.setAttribute("aria-expanded", String(!popover.hidden));
+        });
+        baseline.append(summary, popover);
+      }
+      const time = document.createElement("time");
+      const timestamp = metadata.timestamp ? new Date(metadata.timestamp) : new Date();
+      time.className = "messageTimestamp";
+      time.dateTime = Number.isNaN(timestamp.valueOf()) ? "" : timestamp.toISOString();
+      time.textContent = `You · ${Number.isNaN(timestamp.valueOf()) ? "now" : timestamp.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      baseline.append(time);
+      div.append(baseline);
+    }
 
     if (collapsible) {
       const toggle = document.createElement("button");
@@ -665,6 +765,81 @@ export function createMessageList(options: {
 
   function thinkingWordCount(text: string) {
     return text.split(/\s+/).filter(Boolean).length;
+  }
+
+  // ── Custom (extension-injected) message cards ───────────────────────────
+  // pi custom messages reach the LLM as user messages; here they render as a
+  // distinct notification card. `details` may carry structured session
+  // references (e.g. spawned workers) which render as link chips.
+
+  function prettyCustomType(customType: string) {
+    const text = (customType || "notification").replace(/[-_]+/g, " ").trim();
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function addCustomMessageCard(message: { text?: string; customType?: string; details?: unknown; isError?: boolean; raw?: any }) {
+    invalidatePendingRefreshes();
+    const text = String(message.text || "").trim();
+    const customType = message.customType || message.raw?.customType || "";
+    const details = message.details ?? message.raw?.details;
+    const sessionRefs = sessionRefsFromDetails(details);
+    // Nothing to show: upstream drops text-less custom messages, so do not
+    // leave an empty bordered strip in the conversation.
+    if (!text && sessionRefs.length === 0) return undefined;
+
+    // Realtime projection can briefly emit a details-only copy of a custom
+    // worker event after its complete transcript entry has already rendered.
+    // Avoid leaving a duplicate, empty bordered strip in the conversation.
+    if (!text && sessionRefs.length) {
+      const refIds = new Set(sessionRefs.map((ref) => ref.sessionId));
+      const existing = Array.from(messagesEl.querySelectorAll<HTMLDivElement>(".customCard"))
+        .find((card) => (card.dataset.sessionRefs || "").split(",").some((id) => refIds.has(id)));
+      if (existing) return existing;
+    }
+
+    const div = document.createElement("div");
+    div.dataset.sessionRefs = sessionRefs.map((ref) => ref.sessionId).join(",");
+    const collapsible = shouldCollapseMessage(text);
+    // Keep the `custom--<type>` styling hook that plain custom messages expose,
+    // so extension-specific CSS and selectors keep working on the card form.
+    const typeClass = customType.replace(/[^a-zA-Z0-9_-]+/g, "-");
+    div.className = `message custom customCard${typeClass ? ` custom--${typeClass}` : ""}${collapsible ? " collapsible collapsed" : ""}${message.isError ? " error" : ""}`;
+
+    const header = document.createElement("div");
+    header.className = "customCardHeader";
+    header.append(iconElement("bell"));
+    const label = document.createElement("span");
+    label.className = "customCardLabel";
+    label.textContent = prettyCustomType(customType);
+    label.title = customType ? `Injected by extension (${customType})` : "Injected by extension";
+    header.append(label);
+
+    for (const ref of sessionRefs) {
+      header.append(createSessionRefChip(ref, { openSession }));
+    }
+    div.append(header);
+
+    const body = document.createElement("div");
+    body.className = "body";
+    body.textContent = text;
+    if (text) markdown.renderAssistantMarkdown(body, text);
+    div.append(body);
+
+    if (collapsible) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "messageToggle";
+      toggle.textContent = "Show more";
+      toggle.addEventListener("click", () => {
+        const collapsed = div.classList.toggle("collapsed");
+        toggle.textContent = collapsed ? "Show more" : "Show less";
+      });
+      div.append(toggle);
+    }
+
+    messagesEl.append(div);
+    scrollToBottom();
+    return div;
   }
 
   function renderThinkingBody(body: HTMLElement, text: string) {
@@ -704,7 +879,7 @@ export function createMessageList(options: {
   }
 
   function updateThinkingCompactToggle(toggle: HTMLButtonElement, collapsed: boolean) {
-    toggle.textContent = collapsed ? "▸" : "▾";
+    toggle.textContent = "";
     toggle.setAttribute("aria-label", collapsed ? "Show thinking" : "Hide thinking");
     toggle.title = collapsed ? "Show thinking" : "Hide thinking";
     toggle.setAttribute("aria-expanded", String(!collapsed));
@@ -770,7 +945,7 @@ export function createMessageList(options: {
       toggle.className = "toolCardCollapseToggle";
       const setCollapsed = (collapsed: boolean) => {
         body.classList.toggle("collapsed", collapsed);
-        toggle.textContent = collapsed ? "▾" : "▴";
+        toggle.textContent = "";
         toggle.setAttribute("aria-label", collapsed ? "Show thinking" : "Hide thinking");
         toggle.title = collapsed ? "Show thinking" : "Hide thinking";
         toggle.setAttribute("aria-expanded", String(!collapsed));
@@ -786,13 +961,17 @@ export function createMessageList(options: {
 
     messagesEl.append(card);
     scrollToBottom();
+    if (streaming) playToolCardEntry(card);
     return card;
   }
 
   function clearInternal(invalidate = true) {
     if (invalidate) invalidatePendingRefreshes();
+    quoteReplies?.clear();
     messagesEl.textContent = "";
     streamingAssistant = null;
+    streamingTextBlocks.clear();
+    currentStreamingTextKey = "current";
     streamingThinkingCards.clear();
     currentStreamingThinkingKey = "current";
     setJumpButtonVisible(false);
@@ -804,21 +983,55 @@ export function createMessageList(options: {
 
   function resetStreamingAssistant() {
     streamingAssistant = null;
+    streamingTextBlocks.clear();
+    currentStreamingTextKey = "current";
     streamingThinkingCards.clear();
     currentStreamingThinkingKey = "current";
   }
 
-  function appendStreamingDelta(delta: string) {
+  function textKey(contentIndex?: number | string) {
+    return contentIndex === undefined || contentIndex === null ? currentStreamingTextKey : String(contentIndex);
+  }
+
+  function beginStreamingAssistant() {
     invalidatePendingRefreshes();
-    // Text after a tool result/thinking card belongs in a new assistant segment.
-    // Otherwise all deltas keep appending to the first assistant bubble, so live
-    // rendering loses the same interleaving that static history gets from parts.
-    if (!streamingAssistant || messagesEl.lastElementChild !== streamingAssistant) {
-      streamingAssistant = addMessage("assistant", "");
+    if (!streamingAssistant?.isConnected) streamingAssistant = addMessage("assistant", "");
+  }
+
+  function startStreamingText(contentIndex?: number | string) {
+    const key = textKey(contentIndex);
+    currentStreamingTextKey = key;
+    let card = streamingTextBlocks.get(key);
+    if (!card?.isConnected) {
+      beginStreamingAssistant();
+      card = streamingAssistant!;
+      streamingTextBlocks.set(key, card);
     }
-    const body = streamingAssistant.querySelector<HTMLElement>(".body");
+  }
+
+  function appendStreamingDelta(delta: string, contentIndex?: number | string) {
+    invalidatePendingRefreshes();
+    const key = textKey(contentIndex);
+    currentStreamingTextKey = key;
+    let card = streamingTextBlocks.get(key);
+    if (!card?.isConnected || messagesEl.lastElementChild !== card) {
+      streamingAssistant = addMessage("assistant", "");
+      card = streamingAssistant;
+      streamingTextBlocks.set(key, card);
+    }
+    const body = card.querySelector<HTMLElement>(".body");
     if (body) body.textContent += delta || "";
     scrollToBottom();
+  }
+
+  function endStreamingText(content?: string, contentIndex?: number | string) {
+    const key = textKey(contentIndex);
+    const card = streamingTextBlocks.get(key);
+    if (card?.isConnected && typeof content === "string") {
+      const body = card.querySelector<HTMLElement>(".body");
+      if (body) body.textContent = content;
+    }
+    streamingTextBlocks.delete(key);
   }
 
   function thinkingKey(contentIndex?: number | string) {
@@ -863,6 +1076,7 @@ export function createMessageList(options: {
       card.remove();
     } else {
       updateThinkingCardText(card, finalText, false);
+      playToolCardStateTransition(card);
     }
     streamingThinkingCards.delete(key);
     streamingAssistant = null;
@@ -939,6 +1153,83 @@ export function createMessageList(options: {
     }
   }
 
+  function assertNeverMessage(message: never): never {
+    throw new Error(`Unsupported transcript message: ${JSON.stringify(message)}`);
+  }
+
+  function renderMessage(message: MessageDto, options: {
+    addToolHistoryCard: AddToolHistoryCard;
+    addPendingToolCard: AddPendingToolCard;
+    addRuntimeErrorCard: AddRuntimeErrorCard;
+    completedToolResults: Map<string, MessageDto>;
+    renderedToolResultIds: Set<string>;
+    isStreaming?: boolean;
+  }) {
+    const { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming } = options;
+    switch (message.role) {
+      case "toolResult": {
+        const id = message.toolCallId;
+        if (id && renderedToolResultIds.has(id)) return;
+        renderToolResultMessage(message, addToolHistoryCard);
+        return;
+      }
+      case "bashExecution": {
+        const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
+        addToolHistoryCard("bash", Boolean(message.cancelled || (exitCode !== undefined && exitCode !== 0)), message, { command: String(message.command || "") });
+        return;
+      }
+      case "assistant":
+        renderAssistantMessageParts(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
+        return;
+      case "user": {
+        const text = messageText(message);
+        if (text) addMessage("user", text, message.isError ? "error" : "", message.attachments || imagesFromRawContent(rawContent(message)), { entryId: message.entryId, parentEntryId: message.parentEntryId, timestamp: message.timestamp });
+        return;
+      }
+      case "system":
+      case "unknown": {
+        const text = messageText(message);
+        if (text) addMessage("system", text, message.isError ? "error" : "", [], { entryId: message.entryId });
+        return;
+      }
+      case "compactionSummary":
+      case "branchSummary": {
+        const text = messageText(message);
+        if (text) addMessage("system", text, message.role === "compactionSummary" ? "compaction" : "", [], { entryId: message.entryId });
+        return;
+      }
+      case "custom": {
+        // Extension-injected custom messages render as a rich notification card
+        // (with session-link chips from `details`), not a plain system message.
+        // Non-display customs are already filtered out by the projection.
+        addCustomMessageCard(message);
+        return;
+      }
+      default:
+        assertNeverMessage(message);
+    }
+  }
+
+  function appendCommittedMessage(message: MessageDto, options: {
+    addToolHistoryCard: AddToolHistoryCard;
+    addPendingToolCard: AddPendingToolCard;
+    addRuntimeErrorCard: AddRuntimeErrorCard;
+    isStreaming?: boolean;
+  }) {
+    const streamingAnchor = streamingAssistant?.isConnected ? streamingAssistant : null;
+    const existingChildren = new Set(messagesEl.children);
+    renderMessage(message, {
+      ...options,
+      completedToolResults: new Map(),
+      renderedToolResultIds: new Set(),
+    });
+    if (streamingAnchor) {
+      for (const child of Array.from(messagesEl.children)) {
+        if (!existingChildren.has(child)) messagesEl.insertBefore(child, streamingAnchor);
+      }
+    }
+  }
+
   async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState }: {
     sessionId: string;
     headers: ApiHeaders;
@@ -964,14 +1255,13 @@ export function createMessageList(options: {
     try {
       clearInternal(false);
       clearActiveToolCards();
-      const allMessages = data.messages || [];
+      const allMessages = (data.messages || []) as MessageDto[];
       const runtimeState = transcriptRuntimeState(allMessages, isStreaming);
       bulkRendering = true;
-      const completedToolResults = new Map<string, any>();
+      const completedToolResults = new Map<string, MessageDto>();
       const renderedToolResultIds = new Set<string>();
       for (const message of allMessages) {
-        const id = message?.toolCallId || message?.raw?.toolCallId;
-        if (message?.role === "toolResult" && typeof id === "string") completedToolResults.set(id, message);
+        if (message.role === "toolResult" && message.toolCallId) completedToolResults.set(message.toolCallId, message);
       }
       for (let index = 0; index < allMessages.length; index += 1) {
         const message = allMessages[index];
@@ -984,31 +1274,7 @@ export function createMessageList(options: {
           continue;
         }
 
-        const id = message?.toolCallId || message?.raw?.toolCallId;
-        if (message.role === "toolResult") {
-          if (typeof id === "string" && renderedToolResultIds.has(id)) continue;
-          renderToolResultMessage(message, addToolHistoryCard);
-          continue;
-        }
-
-        if (message.role === "bashExecution") {
-          const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
-          addToolHistoryCard("bash", Boolean(message.cancelled || (exitCode !== undefined && exitCode !== 0)), message, { command: String(message.command || "") });
-          continue;
-        }
-
-        const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
-        if (role === "assistant") {
-          renderAssistantMessageParts(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
-          continue;
-        }
-
-        const text = messageText(message);
-        if (text) {
-          const rawImages = role === "user" ? imagesFromRawContent(rawContent(message)) : [];
-          const extraClass = message.role === "compactionSummary" ? "compaction" : message.isError ? "error" : "";
-          addMessage(role, text, extraClass, rawImages, { entryId: message.entryId });
-        }
+        renderMessage(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
       }
       bulkRendering = false;
       if (wasFollowing) scrollToBottom();
@@ -1030,7 +1296,10 @@ export function createMessageList(options: {
 
   return {
     addMessage,
+    appendCommittedMessage,
+    startStreamingText,
     appendStreamingDelta,
+    endStreamingText,
     appendStreamingThinkingDelta,
     beginStreamFollow,
     clear,

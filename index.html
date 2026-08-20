@@ -46,22 +46,11 @@
         <span id="activityStatus" class="activityStatus" hidden></span>
         <span id="connectionStatus" class="connectionStatus" aria-live="polite" hidden></span>
         <span id="headerActions" class="headerActions"></span>
-        <div class="sessionInfoWrap">
-          <button id="sessionInfoButton" class="iconButton statusBarButton" type="button" aria-label="Session info" title="Session info" aria-expanded="false">
-            <span data-icon="info"></span>
-          </button>
-          <div id="sessionInfoPopover" class="sessionInfoPopover" role="dialog" aria-label="Session info" hidden>
-            <div class="sessionInfoHeading">Session info</div>
-            <button id="sessionInfoId" class="sessionInfoRow" type="button"><span><small>Session ID</small><strong></strong></span><span data-icon="copy"></span></button>
-            <button id="sessionInfoCwd" class="sessionInfoRow" type="button"><span><small>Working directory</small><strong></strong></span><span data-icon="copy"></span></button>
-            <button id="sessionInfoGit" class="sessionInfoRow sessionInfoGitRow" type="button">
-              <span><small>Git changes</small><strong>Open source control</strong></span>
-              <span id="sessionInfoGitCount" class="sessionInfoDiffStats">—</span>
-            </button>
-          </div>
-        </div>
         <button id="newSessionHeaderButton" class="iconButton statusBarButton" type="button" aria-label="New session" title="New session">
           <span data-icon="square-pen"></span>
+        </button>
+        <button id="filesButton" class="iconButton statusBarButton" type="button" aria-label="Files" title="Files">
+          <span data-icon="folder-tree"></span>
         </button>
         <button id="conversationTreeButton" class="iconButton statusBarButton" type="button" aria-label="Conversation tree" title="Conversation tree">
           <span data-icon="git-fork"></span>
@@ -76,6 +65,81 @@
           <span data-icon="settings"></span>
         </button>
       </div>
+
+      <aside id="filesPanel" class="filesPanel" aria-label="Workspace files" data-mobile-view="tree" hidden>
+        <div class="filesPanelHeader">
+          <button id="fileBackButton" class="fileHeaderBackButton" type="button" aria-label="Back to files" title="Back to files">‹</button>
+          <div class="filesPanelHeading">
+            <span class="filesPanelHeadingIcon" aria-hidden="true">
+              <svg class="filesPanelHeadingIconWorkspace" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h6l2 2h10v10H3z"/><path d="M8 12v4m0-2h5m0-2v4m0-2h3"/></svg>
+              <svg class="filesPanelHeadingIconArtifact" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 1.35 3.65L17 8l-3.65 1.35L12 13l-1.35-3.65L7 8l3.65-1.35L12 3Z"/><path d="m18 13 .85 2.15L21 16l-2.15.85L18 19l-.85-2.15L15 16l2.15-.85L18 13Z"/></svg>
+            </span>
+            <h2 id="filesPanelHeadingLabel">Explorer</h2>
+          </div>
+          <span id="fileStatus" class="fileStatus" aria-live="polite"></span>
+          <button id="fileSaveButton" class="fileHeaderSaveButton" type="button" disabled>Save</button>
+          <button id="filesRefreshButton" class="iconButton" type="button" aria-label="Refresh files" title="Refresh files">↻</button>
+          <button id="filesCloseButton" class="iconButton" type="button" aria-label="Close files" title="Close files">×</button>
+        </div>
+        <div class="filesPanelBody">
+          <nav class="filesExplorer" aria-label="File tree">
+            <div class="filesExplorerScopeBar">
+              <div class="filesExplorerScope" role="group" aria-label="Explorer location">
+                <button id="filesWorkspaceScope" class="fileExplorerScopeButton" type="button" aria-pressed="true" title="Browse workspace files">
+                  <span class="fileExplorerScopeIcon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 6h6l2 2h10v10H3z"/></svg></span>
+                  <span>Workspace</span>
+                </button>
+                <button id="filesArtifactsScope" class="fileExplorerScopeButton fileExplorerScopeButton--artifacts" type="button" aria-pressed="false" title="Browse generated artifacts">
+                  <span class="fileExplorerScopeIcon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 1.35 3.65L17 8l-3.65 1.35L12 13l-1.35-3.65L7 8l3.65-1.35L12 3Z"/><path d="m18 13 .85 2.15L21 16l-2.15.85L18 19l-.85-2.15L15 16l2.15-.85L18 13Z"/><path d="M5 14v5h8"/></svg></span>
+                  <span>Artifacts</span>
+                </button>
+              </div>
+            </div>
+            <div id="artifactsGalleryToolbar" class="artifactsGalleryToolbar">
+              <button id="artifactsGalleryBack" class="artifactsGalleryBack" type="button" aria-label="Back one artifact folder" title="Back one folder" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+              </button>
+              <nav id="artifactsGalleryBreadcrumb" class="artifactsGalleryBreadcrumb" aria-label="Artifact folder"></nav>
+              <span id="artifactsGalleryCount" class="artifactsGalleryCount"></span>
+            </div>
+            <div id="filesTree" class="filesTree"></div>
+            <div id="artifactsTree" class="filesTree artifactGallery"></div>
+          </nav>
+          <div id="filesTreeResize" class="filesTreeResize" role="separator" aria-label="Resize file tree" aria-orientation="vertical" tabindex="0"><button id="filesTreeCollapse" type="button" aria-label="Collapse file tree" title="Collapse file tree">‹</button></div>
+          <section class="fileWorkspace">
+            <div class="fileTabsBar">
+              <div id="fileTabs" class="fileTabs"></div>
+            </div>
+            <div id="fileEditor" class="fileEditor">
+              <div class="fileEditorEmpty"><img src="/file-editor-waiting-v3.png" alt="" /></div>
+            </div>
+            <div class="fileEditorStatusBar" aria-label="Editor controls">
+              <button id="fileWrapToggle" class="fileWrapControl" type="button" aria-pressed="true">Wrap</button>
+              <label class="fileFontControl">
+                <span class="fileFontA" aria-hidden="true">A</span>
+                <input id="fileFontSlider" type="range" min="11" max="22" step="0.5" aria-label="Editor font size" />
+                <output id="fileFontValue" for="fileFontSlider">14px</output>
+              </label>
+            </div>
+          </section>
+          <section id="artifactBrowserPreview" class="artifactBrowserPreview" aria-label="Artifact preview">
+            <header class="artifactBrowserPreviewHeader">
+              <button id="artifactBrowserPreviewBack" class="artifactBrowserPreviewBack" type="button" aria-label="Back to artifact gallery" title="Back to gallery">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+              </button>
+              <div class="artifactBrowserPreviewIdentity">
+                <span>Artifact</span>
+                <strong id="artifactBrowserPreviewTitle"></strong>
+              </div>
+              <div class="artifactBrowserPreviewActions">
+                <a id="artifactBrowserPreviewOpen" href="#" target="_blank" rel="noopener noreferrer">Open</a>
+                <a id="artifactBrowserPreviewDownload" href="#" download>Download</a>
+              </div>
+            </header>
+            <div id="artifactBrowserPreviewBody" class="artifactBrowserPreviewBody"></div>
+          </section>
+        </div>
+      </aside>
 
       <aside id="gitPanel" class="gitPanel" aria-label="Git" hidden>
         <div class="gitPanelHeader">
@@ -95,7 +159,8 @@
       <section id="messages" class="messages" aria-live="polite"></section>
       <div id="emptyCwdChooser" class="emptyCwdChooser" hidden>
         <video class="newChatLoadingAnimation" muted playsinline preload="auto" aria-hidden="true">
-          <source src="/new-chat-loading.mp4" type="video/mp4">
+          <source src="/new-chat-loading.webm" type='video/webm; codecs="vp8"'>
+          <source src="/new-chat-loading.mp4" type='video/mp4; codecs="avc1.64001e"'>
         </video>
         <div class="emptyCwdInner">
           <span class="emptyCwdLabel">Working directory</span>
@@ -116,17 +181,93 @@
           <button id="sessionCloseButton" class="iconButton" type="button" aria-label="Close sessions" title="Close sessions">×</button>
         </div>
         <div id="sessionList" class="sessionList" aria-live="polite"></div>
-        <button id="sessionNewButton" class="sessionNewButton" type="button">+ New session</button>
+        <div class="sessionDrawerFooter">
+          <button id="sessionDrawerSettingsButton" class="sessionDrawerFooterButton" type="button" aria-controls="settingsPanel" aria-expanded="false">Settings</button>
+          <button id="sessionDrawerInfoButton" class="sessionDrawerFooterButton" type="button" aria-label="System info" title="System info">Info</button>
+          <button id="sessionNewButton" class="sessionNewButton" type="button">+ New session</button>
+        </div>
       </aside>
 
       <div id="settingsBackdrop" class="settingsBackdrop" hidden></div>
       <aside id="settingsPanel" class="settingsPanel" aria-label="Settings" hidden>
-        <div class="settingsHeader">
-          <h2>Settings</h2>
-          <button id="settingsCloseButton" class="iconButton" type="button" aria-label="Close settings" title="Close settings">×</button>
-        </div>
-        <section class="settingsSection">
-          <h3>Appearance</h3>
+        <header class="settingsHeader">
+          <div class="settingsHeaderPrimary">
+            <button id="settingsBackButton" class="settingsBackButton" type="button" aria-label="Back to settings categories" title="Back to settings categories" hidden>‹</button>
+            <div class="settingsHeaderTitles">
+              <h2 class="settingsDesktopTitle">Settings</h2>
+              <h2 id="settingsMobileTitle" class="settingsMobileTitle" tabindex="-1">Settings</h2>
+              <p class="settingsDesktopSubtitle">Preferences and system configuration</p>
+            </div>
+          </div>
+          <div class="settingsHeaderActions">
+            <span id="settingsStatus" class="settingsStatus" aria-live="polite"></span>
+            <button id="settingsCloseButton" class="iconButton" type="button" aria-label="Close settings" title="Close settings">×</button>
+          </div>
+        </header>
+        <div class="settingsShell">
+          <nav id="settingsNavigation" class="settingsNavigation" aria-label="Settings categories">
+            <label class="settingsSearch">
+              <span aria-hidden="true">⌕</span>
+              <input id="settingsSearchInput" type="search" placeholder="Search settings" autocomplete="off" aria-label="Search settings" />
+            </label>
+            <div class="settingsNavGroups">
+              <section class="settingsNavGroup" data-settings-nav-group>
+                <h3>Experience</h3>
+                <button id="settingsNavAppearance" class="settingsNavButton active" type="button" data-settings-page-target="appearance" data-settings-search="appearance interface density comfortable compact loading animation fireworks glow pulse color accent theme" aria-current="page" aria-controls="settingsPageAppearance">
+                  <span class="settingsNavIcon" data-settings-icon="star" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Appearance</span><span class="settingsNavSummary">Interface and color</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+                <button id="settingsNavComposer" class="settingsNavButton" type="button" data-settings-page-target="composer" data-settings-search="composer queue mode steer follow up expanded editor" aria-controls="settingsPageComposer">
+                  <span class="settingsNavIcon" data-settings-icon="notebook-pen" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Composer</span><span class="settingsNavSummary">Queue and editor behavior</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+                <button id="settingsNavNotifications" class="settingsNavButton" type="button" data-settings-page-target="notifications" data-settings-search="notifications alerts completion sound vibration browser push test" aria-controls="settingsPageNotifications">
+                  <span class="settingsNavIcon" data-settings-icon="bell" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Notifications</span><span class="settingsNavSummary">Run completion alerts</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+              </section>
+              <section class="settingsNavGroup" data-settings-nav-group>
+                <h3>Workflow</h3>
+                <button id="settingsNavNewSessions" class="settingsNavButton" type="button" data-settings-page-target="new-sessions" data-settings-search="new sessions defaults model reasoning thinking bucket color" aria-controls="settingsPageNewSessions">
+                  <span class="settingsNavIcon" data-settings-icon="square-pen" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">New sessions</span><span class="settingsNavSummary">Model and bucket defaults</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+              </section>
+              <section class="settingsNavGroup" data-settings-nav-group>
+                <h3>System</h3>
+                <button id="settingsNavExtensions" class="settingsNavButton" type="button" data-settings-page-target="extensions" data-settings-search="extensions plugins runtime health retry reload contributed settings" aria-controls="settingsPageExtensions">
+                  <span class="settingsNavIcon" data-settings-icon="settings" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Extensions</span><span class="settingsNavSummary">Health and contributed settings</span></span>
+                  <span class="settingsNavBadge" data-tone="neutral" hidden></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+                <button id="settingsNavAccess" class="settingsNavButton" type="button" data-settings-page-target="access" data-settings-search="access sharing token trusted device qr code copy link connect" aria-controls="settingsPageAccess">
+                  <span class="settingsNavIcon" data-settings-icon="key-round" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Access &amp; sharing</span><span class="settingsNavSummary">Connect another device</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+                <button id="settingsNavDiagnostics" class="settingsNavButton" type="button" data-settings-page-target="diagnostics" data-settings-search="diagnostics debug report troubleshooting lifecycle attachments mobile reload" aria-controls="settingsPageDiagnostics">
+                  <span class="settingsNavIcon" data-settings-icon="scroll-text" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Diagnostics</span><span class="settingsNavSummary">Debugging tools</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+              </section>
+            </div>
+            <p id="settingsSearchEmpty" class="settingsSearchEmpty" hidden>No settings match your search.</p>
+          </nav>
+          <div id="settingsContent" class="settingsContent" tabindex="-1">
+            <section id="settingsPageAppearance" class="settingsPage" data-settings-page="appearance" aria-labelledby="settingsPageAppearanceTitle">
+              <header class="settingsPageHeader">
+                <span>Experience</span>
+                <h3 id="settingsPageAppearanceTitle" class="settingsPageTitle" tabindex="-1">Appearance</h3>
+                <p>Adjust the density, motion, and signature color of pi-web.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Interface</h4>
           <label class="settingsField">
             <span>Density</span>
             <select id="settingDensitySelect">
@@ -146,6 +287,9 @@
               <option value="pulse">Pulse</option>
             </select>
           </label>
+              </section>
+              <section class="settingsSection">
+                <h4>Color</h4>
           <div class="settingsField settingsAccentField">
             <span>Accent color</span>
             <div class="settingsAccentPicker">
@@ -213,9 +357,16 @@
               </div>
             </div>
           </div>
-        </section>
-        <section class="settingsSection">
-          <h3>Composer</h3>
+              </section>
+            </section>
+            <section id="settingsPageComposer" class="settingsPage" data-settings-page="composer" aria-labelledby="settingsPageComposerTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>Experience</span>
+                <h3 id="settingsPageComposerTitle" class="settingsPageTitle" tabindex="-1">Composer</h3>
+                <p>Choose how messages queue and how the editor opens.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Behavior</h4>
           <label class="settingsField">
             <span>Default queue mode</span>
             <select id="settingQueueModeSelect">
@@ -227,9 +378,42 @@
             <input id="settingComposerExpandedCheckbox" type="checkbox" />
             <span>Keep composer expanded</span>
           </label>
-        </section>
-        <section class="settingsSection">
-          <h3>New sessions</h3>
+              </section>
+            </section>
+            <section id="settingsPageNotifications" class="settingsPage" data-settings-page="notifications" aria-labelledby="settingsPageNotificationsTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>Experience</span>
+                <h3 id="settingsPageNotificationsTitle" class="settingsPageTitle" tabindex="-1">Notifications</h3>
+                <p>Control completion alerts on this browser and device.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Run completion</h4>
+          <label class="settingsCheckbox">
+            <input id="settingRunNotificationsCheckbox" type="checkbox" />
+            <span>Notify when runs complete</span>
+          </label>
+          <label class="settingsCheckbox">
+            <input id="settingCompletionSoundCheckbox" type="checkbox" />
+            <span>Play a completion sound while pi-web is open</span>
+          </label>
+          <label class="settingsCheckbox">
+            <input id="settingCompletionVibrationCheckbox" type="checkbox" />
+            <span>Vibrate on supported mobile and tablet devices</span>
+          </label>
+          <p id="settingRunNotificationsStatus" class="settingsHint">Checking browser notification support…</p>
+          <div class="settingsActions">
+            <button id="settingRunNotificationsTestButton" type="button">Send test notification</button>
+          </div>
+              </section>
+            </section>
+            <section id="settingsPageNewSessions" class="settingsPage" data-settings-page="new-sessions" aria-labelledby="settingsPageNewSessionsTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>Workflow</span>
+                <h3 id="settingsPageNewSessionsTitle" class="settingsPageTitle" tabindex="-1">New sessions</h3>
+                <p>Set defaults for sessions created from now on.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Defaults</h4>
           <label class="settingsField">
             <span>Default bucket</span>
             <select id="settingDefaultBucketColorSelect" aria-label="Default session bucket color"></select>
@@ -240,9 +424,53 @@
             <button id="settingSaveModelDefaultsButton" type="button">Use current model</button>
             <button id="settingClearModelDefaultsButton" type="button">Clear model</button>
           </div>
-        </section>
-        <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
-          <h3>Token sharing</h3>
+              </section>
+            </section>
+            <section id="settingsPageDiagnostics" class="settingsPage" data-settings-page="diagnostics" aria-labelledby="settingsPageDiagnosticsTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>System</span>
+                <h3 id="settingsPageDiagnosticsTitle" class="settingsPageTitle" tabindex="-1">Diagnostics</h3>
+                <p>Inspect durable browser events when something goes wrong.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Debug report</h4>
+          <p class="settingsHint">Capture durable browser lifecycle and attachment events for troubleshooting mobile reloads.</p>
+          <div class="settingsActions">
+            <button id="openDebugDiagnosticsButton" type="button">Open debug report</button>
+          </div>
+              </section>
+            </section>
+            <section id="settingsPageExtensions" class="settingsPage" data-settings-page="extensions" aria-labelledby="settingsPageExtensionsTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>System</span>
+                <h3 id="settingsPageExtensionsTitle" class="settingsPageTitle" tabindex="-1">Extensions</h3>
+                <p>Review runtime health and configure settings contributed by extensions.</p>
+              </header>
+              <section class="settingsSection settingsExtensions">
+          <div class="settingsExtensionHeader">
+            <h4>Runtime</h4>
+            <span id="extensionStatusBadge" class="extensionStatusBadge loading">Checking…</span>
+          </div>
+          <p id="extensionStatusMessage" class="settingsHint">Checking extension status…</p>
+          <div id="extensionStatusDetails" class="extensionStatusDetails" hidden></div>
+          <div class="settingsActions">
+            <button id="extensionReloadButton" type="button">Retry extensions</button>
+          </div>
+              </section>
+              <div id="extensionSettingsContainer" class="extensionSettings"></div>
+            </section>
+            <section id="settingsPageAccess" class="settingsPage" data-settings-page="access" aria-labelledby="settingsPageAccessTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>System</span>
+                <h3 id="settingsPageAccessTitle" class="settingsPageTitle" tabindex="-1">Access &amp; sharing</h3>
+                <p>Connect another trusted device to this pi-web server.</p>
+              </header>
+              <section id="tokenShareUnavailable" class="settingsSection">
+                <h4>Token sharing</h4>
+                <p class="settingsHint">This server does not require a browser token, so there is no token link to share.</p>
+              </section>
+              <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
+                <h4>Token sharing</h4>
           <p class="settingsHint">Use Show QR or Copy link to open pi web on another trusted device with this browser’s saved token.</p>
           <div id="tokenShareQr" class="tokenShareQr" aria-live="polite"></div>
           <input id="tokenShareUrl" class="tokenShareUrl" type="text" readonly aria-label="Token share link" />
@@ -250,11 +478,14 @@
             <button id="tokenShareFullscreenButton" type="button">Show QR</button>
             <button id="tokenShareCopyButton" type="button">Copy link</button>
           </div>
-        </section>
-        <span id="settingsStatus" class="settingsStatus" aria-live="polite"></span>
+              </section>
+            </section>
+          </div>
+        </div>
       </aside>
 
       <section id="pendingMessages" class="pendingMessages" aria-label="Pending messages" aria-live="polite" hidden></section>
+      <section id="waitingSessions" class="waitingSessions" aria-label="Running spawned sessions" aria-live="polite" hidden></section>
       <form id="promptForm" class="composer">
         <button id="contextMeter" class="contextMeter unknown" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="contextMeterPopover" title="Context usage unavailable">
           <span class="contextMeterTrack" aria-hidden="true"><span id="contextMeterFill" class="contextMeterFill"></span></span>
@@ -268,7 +499,7 @@
           <span data-icon="maximize-2"></span>
         </button>
         <div id="attachments" class="attachments" aria-live="polite"></div>
-        <input id="imageInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
+        <input id="imageInput" type="file" multiple hidden />
         <div class="composerFooter">
           <div id="modelControl" class="modelControl">
             <button id="modelSettingsButton" class="modelSettingsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="modelSettingsPopover" title="Model and reasoning settings">
@@ -302,7 +533,7 @@
           <button id="queueToggle" class="iconButton" type="button" aria-pressed="true" aria-label="Queue mode: steer" title="Queue mode: steer">
             <span data-icon="route"></span>
           </button>
-          <button id="attachButton" class="iconButton" type="button" aria-label="Attach images" title="Attach images">
+          <button id="attachButton" class="iconButton" type="button" aria-label="Attach files" title="Attach files">
             <span data-icon="paperclip"></span>
           </button>
           <button id="stopButton" class="iconButton dangerAction" type="button" aria-label="Stop streaming" title="Stop streaming" style="display:none">

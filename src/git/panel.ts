@@ -14,6 +14,7 @@ type GitExtensionTabView = { key: string; loading: boolean; title?: string; html
 
 export type GitPanelController = {
   setExtensionTabs(tabs: unknown): void;
+  updateExtensionTab(key: string): void;
   isOpen(): boolean;
 };
 
@@ -35,6 +36,7 @@ export function initGitPanel(options: {
   let panelHandle: RightPanelHandle | undefined;
   let extensionTabs: GitExtensionTab[] = [];
   let extensionTabView: GitExtensionTabView | undefined;
+  let extensionRequestGeneration = 0;
 
   const state: GitState = {
     isOpen: false,
@@ -255,25 +257,26 @@ export function initGitPanel(options: {
   }
 
   async function loadExtensionTab(key: string, event?: { action?: string; payload?: unknown }) {
+    const generation = ++extensionRequestGeneration;
     state.primaryView = extensionViewKey(key);
     state.mobileView = extensionViewKey(key);
     if (!event) extensionTabView = { key, loading: true };
     panel.setAttribute("aria-busy", "true");
     render();
     try {
-      const res = await fetch("/api/web-git-tab/invoke", {
+      const res = await fetch("/api/web-contributions/invoke", {
         method: "POST",
         headers: apiHeaders(),
         body: JSON.stringify({
           sessionId: getSessionId?.(),
+          slot: "git-tab",
           key,
-          action: event?.action,
-          payload: event?.payload,
-          repo: selectedRepoContext(),
+          event: { ...event, context: selectedRepoContext() },
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
+      if (generation !== extensionRequestGeneration || extensionKeyFromView() !== key) return;
       if (data.composerContext && typeof data.composerContext === "object") {
         if (panelHandle) panelHandle.close(false);
         else setOpen(false);
@@ -285,10 +288,14 @@ export function initGitPanel(options: {
         throw new Error("Git tab returned no content");
       }
     } catch (error) {
-      extensionTabView = { key, loading: false, error: error instanceof Error ? error.message : String(error) };
+      if (generation === extensionRequestGeneration && extensionKeyFromView() === key) {
+        extensionTabView = { key, loading: false, error: error instanceof Error ? error.message : String(error) };
+      }
     } finally {
-      panel.removeAttribute("aria-busy");
-      render();
+      if (generation === extensionRequestGeneration) {
+        panel.removeAttribute("aria-busy");
+        render();
+      }
     }
   }
 
@@ -453,8 +460,8 @@ export function initGitPanel(options: {
 
   function invokeExtensionAction(activeKey: string, target: HTMLElement) {
     void loadExtensionTab(activeKey, {
-      action: target.dataset.webGitTabAction || "",
-      payload: parsePayload(target.dataset.webGitTabPayload),
+      action: target.dataset.webAction || target.dataset.webGitTabAction || "",
+      payload: parsePayload(target.dataset.webPayload || target.dataset.webGitTabPayload),
     });
   }
 
@@ -462,7 +469,7 @@ export function initGitPanel(options: {
     const activeKey = extensionKeyFromView();
     if (!activeKey) return;
     const target = event.target instanceof Element
-      ? event.target.closest<HTMLElement>("[data-web-git-tab-action]")
+      ? event.target.closest<HTMLElement>("[data-web-action], [data-web-git-tab-action]")
       : undefined;
     if (!target || !primary.contains(target)) return;
     event.preventDefault();
@@ -474,7 +481,7 @@ export function initGitPanel(options: {
     const activeKey = extensionKeyFromView();
     if (!activeKey) return;
     const target = event.target instanceof Element
-      ? event.target.closest<HTMLElement>("[data-web-git-tab-action]")
+      ? event.target.closest<HTMLElement>("[data-web-action], [data-web-git-tab-action]")
       : undefined;
     if (!target || !primary.contains(target)) return;
     event.preventDefault();
@@ -504,6 +511,9 @@ export function initGitPanel(options: {
 
   return {
     setExtensionTabs,
+    updateExtensionTab: (key) => {
+      if (extensionKeyFromView() === key && (panelHandle?.isOpen() ?? state.isOpen)) void loadExtensionTab(key);
+    },
     isOpen: () => panelHandle?.isOpen() ?? state.isOpen,
   };
 }

@@ -853,6 +853,30 @@ export async function createClaudeCodeAdapter(opts: CreateClaudeCodeAdapterOptio
   // Attach AgentAdapter contract (kind / capabilities / slash commands).
   Object.defineProperty(adapter, "kind", { value: "claude-code", enumerable: false, configurable: true });
   Object.defineProperty(adapter, "getCapabilities", { value: () => CC_CAPABILITIES, enumerable: false, configurable: true });
+  // Upstream Track-0 (RFC #92) capability surface — consumed by
+  // projectSessionState so CC sessions report their own harness + flags.
+  Object.defineProperty(adapter, "getHarnessCapabilities", {
+    value: () => ({
+      harness: "claude-code",
+      queue: false,
+      steering: false,
+      followUp: false,
+      thinkingLevel: true,
+      tree: false,
+      compaction: true,
+      retry: false,
+      bash: false,
+      extensions: false,
+      interactions: false,
+    }),
+    enumerable: false,
+    configurable: true,
+  });
+  // pi 0.84 PiWebSession requires a systemPrompt; CC owns its own prompt
+  // assembly, so surface an empty string (the details panel shows n/a).
+  if (!("systemPrompt" in adapter)) {
+    Object.defineProperty(adapter, "systemPrompt", { value: "", enumerable: false, configurable: true });
+  }
   Object.defineProperty(adapter, "getAgentSlashCommands", {
     value: (): AgentSlashCommand[] => {
       // CC's built-in slash commands. These are not on disk; we hardcode them so

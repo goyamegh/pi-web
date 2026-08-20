@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 
@@ -108,6 +108,9 @@ describe("pi-web mock API", () => {
     expect(agents.has("pi")).toBe(true);
     expect(agents.has("claude-code")).toBe(true);
     for (const session of sessions.sessions) expect(["pi", "claude-code"]).toContain(session.agent);
+
+    const lifecycle = await (await fetch(`${baseUrl}/api/session/lifecycle`)).json();
+    expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
   });
 
   it("deletes a requested session", async () => {
@@ -149,6 +152,37 @@ describe("pi-web mock API", () => {
 
   });
 
+  it("returns the current effective session context without resource file contents", async () => {
+    const response = await fetch(`${baseUrl}/api/session/context?sessionId=mock-current`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      sessionId: "mock-current",
+      systemPrompt: "Mock effective Pi system prompt.",
+      tools: {
+        activeNames: ["read", "mock-tool"],
+        configured: expect.arrayContaining([expect.objectContaining({ name: "mock-tool", callCount: 0 })]),
+        callsByName: {},
+      },
+      resources: {
+        skills: [expect.objectContaining({ name: "mock-skill", filePath: "/mock/SKILL.md" })],
+        extensions: [expect.objectContaining({ path: "/mock/extension.ts", contributions: expect.objectContaining({ tools: 1, commands: 1 }) })],
+        contextFiles: ["/mock/AGENTS.md"],
+        systemPromptSource: "/mock/SYSTEM.md",
+        appendSystemPromptSources: ["/mock/APPEND.md"],
+        diagnostics: expect.arrayContaining([expect.objectContaining({ message: "Mock skill diagnostic" }), expect.objectContaining({ error: "Mock extension error" })]),
+      },
+    });
+    expect(body.provenance).toEqual({
+      encoding: "utf-16",
+      spans: [{ start: 0, end: 32, source: { kind: "system-prompt", label: "System prompt", path: "/mock/SYSTEM.md" }, confidence: "exact" }],
+      coverage: { exact: 32, derived: 0, unknown: 0, total: 32 },
+    });
+    expect(Date.parse(body.capturedAt)).not.toBeNaN();
+    expect(JSON.stringify(body)).not.toContain("not exposed");
+  });
+
   it("returns and navigates the conversation tree", async () => {
     const tree = await (await fetch(`${baseUrl}/api/session/tree`)).json();
     expect(tree.sessionId).toBe("mock-current");
@@ -170,6 +204,37 @@ describe("pi-web mock API", () => {
     expect(messages.messages).toHaveLength(0);
 
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+  });
+
+  it("routes mock agent events through contract shapes and event-before-runtime order", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    await once(ws, "open");
+    const events: any[] = [];
+    ws.on("message", (data) => events.push(JSON.parse(String(data))));
+    await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", message: "thinking card", mode: "steer", attachments: [] }),
+    });
+    await waitForCondition(() => events.some((event) => event.type === "agent_event" && event.event?.type === "agent_settled"));
+    const lifecycle = events.filter((event) => event.type === "agent_event" || event.type === "session_runtime_changed");
+    for (let index = 0; index < lifecycle.length; index += 1) {
+      if (lifecycle[index].type === "agent_event") expect(lifecycle[index + 1]?.type).toBe("session_runtime_changed");
+    }
+    const deltas = events.filter((event) => event.type === "agent_event" && event.event?.type === "message_update");
+    for (const event of deltas) {
+      expect(event.event.assistantMessageEvent).toHaveProperty("contentIndex");
+      expect(event.event.assistantMessageEvent).not.toHaveProperty("partial");
+    }
+    const assistantLifecycle = events
+      .filter((event) => event.type === "agent_event" && (event.event?.type === "message_start" || event.event?.type === "message_update"))
+      .map((event) => event.event.type === "message_start" ? "message_start" : `${event.event.assistantMessageEvent.type}:${event.event.assistantMessageEvent.contentIndex}`);
+    expect(assistantLifecycle).toEqual([
+      "message_start", "thinking_start:0", "thinking_delta:0", "thinking_delta:0", "thinking_end:0",
+      "text_start:1", "text_delta:1", "text_end:1",
+    ]);
+    expect(events.find((event) => event.type === "agent_event" && event.event?.type === "agent_end")?.event).toMatchObject({ aborted: false, willRetry: false });
+    ws.close();
   });
 
   it("returns the tree navigation response and emits its terminal runtime event", async () => {
@@ -216,20 +281,36 @@ describe("pi-web mock API", () => {
     }
   }, 25_000);
 
-  it("accepts text and image prompts", async () => {
+  it("uploads generic attachments and keeps their bytes out of agent context", async () => {
+    const upload = await fetch(`${baseUrl}/api/attachments?name=tiny.png&mediaType=image%2Fpng`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: Buffer.from("png"),
+    });
+    expect(upload.status).toBe(201);
+    const { attachment } = await upload.json();
+
     const res = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        message: "describe this",
-        images: [{ type: "image", mimeType: "image/png", data: Buffer.from("png").toString("base64"), name: "tiny.png" }],
-      }),
+      body: JSON.stringify({ message: "describe this", attachments: [attachment] }),
     });
     expect(res.status).toBe(202);
 
     const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
-    expect(messages.messages.at(-2).text).toContain("describe this");
-    expect(messages.messages.at(-1).text).toContain("with image");
+    expect(messages.messages.at(-2)).toMatchObject({
+      text: "describe this",
+      attachments: [{ name: "tiny.png", mediaType: "image/png", bytes: 3 }],
+    });
+    expect(messages.messages.at(-1).text).toBe("Mock response.");
+
+    const content = await fetch(`${baseUrl}${attachment.contentUrl}`);
+    expect(content.status).toBe(200);
+    expect(Buffer.from(await content.arrayBuffer()).toString()).toBe("png");
+
+    await rm(dirname(attachment.path), { recursive: true, force: true });
+    const missing = await fetch(`${baseUrl}${attachment.contentUrl}`);
+    expect(missing.status).toBe(410);
   });
 
   it("persists and returns settings", async () => {
@@ -264,7 +345,8 @@ describe("pi-web mock API", () => {
   it("persists and returns server session UI state", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
-    expect(initial.sessionUiState.pinnedSessions).toEqual([]);
+    expect(initial.sessionUiState.revision).toEqual(expect.any(Number));
+    expect(initial.sessionUiState.lanes).toEqual([]);
     expect(initial.sessionUiState.pinnedFolders).toEqual([]);
     expect(initial.sessionUiState.sessionUnreadStates).toEqual([]);
     expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
@@ -275,7 +357,7 @@ describe("pi-web mock API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         pinnedSessions: [{ id: "mock-current", cwd: "." }],
-        pinnedFolders: ["/work/repo-a", "/work/repo-b", "/work/repo-a", "", "  "],
+        pinnedFolders: ["/tmp/pi-web", "/tmp/pi-web", ""],
         sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
         sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
         selectedMarkerColor: "green",
@@ -284,9 +366,10 @@ describe("pi-web mock API", () => {
     });
     expect(patchedRes.status).toBe(200);
     const patched = await patchedRes.json();
+    expect(patched.sessionUiState.revision).toBeGreaterThan(initial.sessionUiState.revision);
     expect(patched.sessionUiState).toMatchObject({
-      pinnedSessions: [{ id: "mock-current", cwd: "." }],
-      pinnedFolders: ["/work/repo-a", "/work/repo-b"],
+      lanes: [{ sessionId: "mock-current", lane: "pinned", cwd: ".", since: expect.any(String) }],
+      pinnedFolders: ["/tmp/pi-web"],
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z" }],
       selectedMarkerColor: "green",
@@ -300,11 +383,12 @@ describe("pi-web mock API", () => {
     });
     expect(readRes.status).toBe(200);
     const read = await readRes.json();
+    expect(read.sessionUiState.revision).toBeGreaterThan(patched.sessionUiState.revision);
     expect(read.sessionUiState.sessionUnreadStates).toEqual([]);
 
     const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(current.sessionUiState.selectedMarkerColor).toBe("green");
-    expect(current.sessionUiState.pinnedFolders).toEqual(["/work/repo-a", "/work/repo-b"]);
+    expect(current.sessionUiState.pinnedFolders).toEqual(["/tmp/pi-web"]);
     expect(current.sessionUiState.allowedMarkerColors).toEqual(["green", "yellow"]);
     expect(current.sessionUiState.sessionUnreadStates).toEqual([]);
 
@@ -367,6 +451,36 @@ describe("pi-web mock API", () => {
 
     const state = await (await fetch(`${baseUrl}/api/state`)).json();
     expect(state.sessionName).toBeUndefined();
+  });
+
+  it("clears queued mock prompt correlations on reset", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    await once(ws, "open");
+    const events: any[] = [];
+    ws.on("message", (data) => events.push(JSON.parse(String(data))));
+    const headers = { "content-type": "application/json", "x-pi-web-client-id": "correlation-client" };
+
+    await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers,
+      body: JSON.stringify({ message: "slow correlation run", clientMessageId: "first-message" }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers,
+      body: JSON.stringify({ message: "queued before reset", mode: "followUp", clientMessageId: "stale-message" }),
+    });
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    events.length = 0;
+    await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "after correlation reset" }),
+    });
+    await waitForCondition(() => events.some((event) => event.type === "agent_event" && event.event?.type === "message_end" && event.event?.message?.content === "after correlation reset"));
+    const nextUserEvent = events.find((event) => event.type === "agent_event" && event.event?.message?.content === "after correlation reset");
+    expect(nextUserEvent).not.toHaveProperty("clientMessageId");
+    expect(nextUserEvent).not.toHaveProperty("sourceClientId");
+    ws.close();
   });
 
   it("rejects empty prompts", async () => {
@@ -496,9 +610,11 @@ describe("pi-web mock API", () => {
     const missing = "does-not-exist";
     const cases: Array<[string, RequestInit, number]> = [
       [`/api/state?sessionId=${missing}`, {}, 404],
+      ["/api/state?sessionId=%20", {}, 404],
       [`/api/messages?sessionId=${missing}`, {}, 404],
       ["/api/sessions/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: missing }) }, 404],
       ["/api/session/cwd", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, cwd: "/tmp" }) }, 404],
+      ["/api/web-contributions/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, slot: "panel", key: "notes" }) }, 404],
       ["/api/web-header-action/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, key: "recap" }) }, 404],
       ["/api/web-git-tab/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, key: "status" }) }, 404],
       [`/api/session/tree?sessionId=${missing}`, {}, 404],
@@ -630,6 +746,8 @@ describe("artifact serving", () => {
     await mkdir(artifactDir, { recursive: true });
     await mkdir(legacyArtifactDir, { recursive: true });
     await writeFile(join(artifactDir, "test.png"), Buffer.from("PNG"));
+    await writeFile(join(artifactDir, "test.webm"), Buffer.from("WEBM"));
+    await writeFile(join(artifactDir, "test.mp3"), Buffer.from("MP3"));
     await mkdir(join(artifactDir, "image-edits", "run-1"), { recursive: true });
     await writeFile(join(artifactDir, "image-edits", "run-1", "output.png"), Buffer.from("NESTED"));
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
@@ -645,6 +763,8 @@ describe("artifact serving", () => {
   afterAll(async () => {
     child?.kill();
     await rm(join(artifactDir, "test.png"), { force: true });
+    await rm(join(artifactDir, "test.webm"), { force: true });
+    await rm(join(artifactDir, "test.mp3"), { force: true });
     await rm(join(artifactDir, "e2e-test.png"), { force: true });
     await rm(join(artifactDir, "image-edits"), { recursive: true, force: true });
     await rm(join(legacyArtifactDir, "legacy.png"), { force: true });
@@ -662,6 +782,31 @@ describe("artifact serving", () => {
     const res = await fetch(`${baseUrl}/api/artifacts/image-edits/run-1/output.png`);
     expect(res.status).toBe(200);
     expect(Buffer.from(await res.arrayBuffer()).toString()).toBe("NESTED");
+  });
+
+  it("keeps session-scoped artifact URLs and their relative assets on the same session route", async () => {
+    const documentUrl = new URL(`${baseUrl}/api/session-artifacts/mock-current/image-edits/run-1/index.html`);
+    expect(new URL("./output.png", documentUrl).pathname).toBe("/api/session-artifacts/mock-current/image-edits/run-1/output.png");
+
+    const asset = await fetch(new URL("./output.png", documentUrl));
+    expect(asset.status).toBe(200);
+    expect(Buffer.from(await asset.arrayBuffer()).toString()).toBe("NESTED");
+
+    const unknownSession = await fetch(`${baseUrl}/api/session-artifacts/unknown-session/test.png`);
+    expect(unknownSession.status).toBe(404);
+  });
+
+  it("serves preview media with the correct MIME type, byte ranges, and a session preference", async () => {
+    const audio = await fetch(`${baseUrl}/api/artifacts/test.mp3`);
+    expect(audio.status).toBe(200);
+    expect(audio.headers.get("content-type")).toBe("audio/mpeg");
+
+    const video = await fetch(`${baseUrl}/api/artifacts/test.webm?sessionId=unknown-session`, { headers: { range: "bytes=1-2" } });
+    expect(video.status).toBe(206);
+    expect(video.headers.get("content-type")).toBe("video/webm");
+    expect(video.headers.get("accept-ranges")).toBe("bytes");
+    expect(video.headers.get("content-range")).toBe("bytes 1-2/4");
+    expect(Buffer.from(await video.arrayBuffer()).toString()).toBe("EB");
   });
 
   it("serves legacy artifacts as a read-only fallback", async () => {
@@ -691,9 +836,13 @@ describe("artifact serving", () => {
       // artifact accessible without token
       const artifactRes = await fetch(`${tokenBaseUrl}/api/artifacts/test.png`);
       expect(artifactRes.status).toBe(200);
-      // api route still requires token
+      // normal API routes, including diagnostics, still require the token
       const apiRes = await fetch(`${tokenBaseUrl}/api/state`);
       expect(apiRes.status).toBe(401);
+      expect((await fetch(`${tokenBaseUrl}/api/session/lifecycle`)).status).toBe(401);
+      const diagnostics = await fetch(`${tokenBaseUrl}/api/session/lifecycle`, { headers: { authorization: "Bearer secret" } });
+      expect(diagnostics.status).toBe(200);
+      expect(await diagnostics.json()).toMatchObject({ ok: true, liveSessions: expect.any(Array) });
     } finally {
       tokenChild.kill();
     }

@@ -9,7 +9,7 @@ async function clickMessageAction(page: Page, message: Locator, buttonName: stri
     await page.mouse.down();
     await page.waitForTimeout(650);
     await page.mouse.up();
-    const menu = page.getByRole("menu");
+    const menu = page.locator(".messageActionMenu");
     await expect(menu).toBeVisible();
     await menu.getByRole("menuitem", { name: menuLabel }).click();
     return;
@@ -80,7 +80,7 @@ test.describe("message actions", () => {
     const rerunUser = page.locator(".message.user", { hasText: "Can you add image attachments?" }).first();
     await clickMessageAction(page, rerunUser, "Rerun message from here", "Rerun");
 
-    await expect(page.locator(".message.user", { hasText: "Can you add image attachments?" })).toBeVisible();
+    await expect(page.locator(".message.user", { hasText: "Can you add image attachments?" })).toHaveCount(1);
     await expect(page.locator(".message.assistant", { hasText: "Mock response" })).toBeVisible();
   });
 

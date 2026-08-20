@@ -1,6 +1,8 @@
 import hljs from "highlight.js/lib/common";
 import { renderEditDiff } from "../components/editDiff.js";
 import { textFromRawContent } from "../messages/content.js";
+import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
+import { playToolCardEntry, playToolCardStateTransition } from "../messages/entryAnimation.js";
 import type { ApiHeaders } from "../app/api.js";
 
 export type ToolCards = {
@@ -31,7 +33,7 @@ function isCompactDensity() {
 }
 
 function updateCompactToggle(toggle: HTMLButtonElement, collapsed: boolean) {
-  toggle.textContent = collapsed ? "▸" : "▾";
+  toggle.textContent = "";
   toggle.setAttribute("aria-label", collapsed ? "Show tool details" : "Hide tool details");
   toggle.title = collapsed ? "Show tool details" : "Hide tool details";
   toggle.setAttribute("aria-expanded", String(!collapsed));
@@ -91,6 +93,29 @@ function addToolArgsDetails(card: HTMLDivElement, args?: Record<string, unknown>
 
   details.append(summary, argsEl);
   card.append(details);
+}
+
+/**
+ * Render links to sessions that a tool result explicitly references via
+ * structured `details`. Generic: no tool name is special-cased and no result
+ * text is parsed. Safe to call repeatedly for the same card.
+ */
+let openSessionRef: ((sessionId: string) => void) | undefined;
+
+function addToolSessionChips(card: HTMLDivElement, result: unknown) {
+  const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
+  const details = record.details ?? (record.raw as Record<string, unknown> | undefined)?.details;
+  const refs = sessionRefsFromDetails(details);
+  const header = card.querySelector<HTMLElement>(".toolCardHeader");
+  if (!header) return;
+  // Reconcile rather than append: the live path updates a card that may already
+  // carry chips from an earlier partial result.
+  for (const existing of header.querySelectorAll(".customCardSessionChip")) existing.remove();
+  if (!refs.length) return;
+  const toggle = header.querySelector(".toolCardExpandToggle");
+  for (const ref of refs) {
+    header.insertBefore(createSessionRefChip(ref, { openSession: openSessionRef }), toggle || null);
+  }
 }
 
 function addCardHeader(card: HTMLDivElement, title: string, subtitleText = "") {
@@ -179,7 +204,7 @@ function addToolResultBody(card: HTMLDivElement, result: string) {
     toggle.className = "toolCardCollapseToggle";
     const setCollapsed = (collapsed: boolean) => {
       body.classList.toggle("collapsed", collapsed);
-      toggle.textContent = collapsed ? "▾" : "▴";
+      toggle.textContent = "";
       toggle.setAttribute("aria-label", collapsed ? "Show more" : "Show less");
       toggle.title = collapsed ? "Show more" : "Show less";
       toggle.setAttribute("aria-expanded", String(!collapsed));
@@ -329,7 +354,8 @@ function finalizePartialToolOutput(card: HTMLDivElement) {
 
 export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () => void = () => {
   messagesEl.scrollTop = messagesEl.scrollHeight;
-}, apiHeaders?: ApiHeaders): ToolCards {
+}, apiHeaders?: ApiHeaders, openSession?: (sessionId: string) => void): ToolCards {
+  openSessionRef = openSession;
   const activeToolCards = new Map<string, HTMLDivElement>();
   const knownToolStartedAts = new Map<string, number>();
   const runningToolStates = new WeakMap<HTMLDivElement, { startedAt?: number; lastActivityAt: number; timer: number }>();
@@ -424,6 +450,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     startRunningToolProgress(card, parseToolTimestamp(startedAt));
     messagesEl.append(card);
     scrollToBottom();
+    playToolCardEntry(card);
     return card;
   }
 
@@ -443,6 +470,8 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
       finalizePartialToolOutput(card);
     }
     addToolImagePreviews(card, result, apiHeaders);
+    playToolCardStateTransition(card);
+    addToolSessionChips(card, result);
 
     scrollToBottom();
   }
@@ -456,6 +485,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     if (toolName === "edit" && args) renderEditDiff(card, args, result);
     else if (resultStr) addToolResultBody(card, resultStr);
     addToolImagePreviews(card, result, apiHeaders);
+    addToolSessionChips(card, result);
     messagesEl.append(card);
   }
 

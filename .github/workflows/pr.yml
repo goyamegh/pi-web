@@ -6,6 +6,29 @@ on:
       - "**"
 
 jobs:
+  website:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check website
+        run: npm run website:check
+
+      - name: Build website
+        run: npm run website:build
+
+      - name: Validate website output
+        run: npm run website:test
+
   test:
     runs-on: macos-latest
 
@@ -29,8 +52,14 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
-      - name: E2E tests
-        run: npx playwright test --reporter=html,list
+      - name: Build
+        run: npm run build
+
+      - name: Complete E2E matrix
+        env:
+          PI_WEB_E2E_SHARDS: 2
+          PI_WEB_E2E_CONCURRENCY: 2
+        run: node scripts/run-all-tests.mjs --e2e-only --skip-build
 
       - name: Upload Playwright report
         if: always()

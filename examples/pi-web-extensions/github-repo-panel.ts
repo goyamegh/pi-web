@@ -498,39 +498,18 @@ function itemRequest(event: PiWebGitTabEvent | undefined, action: "open" | "atta
 function composerContext(repo: RepoInfo, kind: ItemKind, item: GhIssue | GhPullRequest) {
   const number = Number(item.number || 0);
   const isPr = kind === "pr";
-  const pr = item as GhPullRequest;
-  const metadata = [
-    `GitHub ${isPr ? "pull request" : "issue"}: ${repo.nameWithOwner}#${number}`,
-    `Title: ${item.title || "Untitled"}`,
-    item.state ? `State: ${item.state}` : "",
-    item.url ? `URL: ${item.url}` : "",
-    item.author?.login ? `Author: @${item.author.login}` : "",
-    item.assignees?.length ? `Assignees: ${item.assignees.map((user) => user.login ? `@${user.login}` : "").filter(Boolean).join(", ")}` : "",
-    item.labels?.length ? `Labels: ${item.labels.map((label) => label.name).filter(Boolean).join(", ")}` : "",
-    item.createdAt ? `Created: ${item.createdAt}` : "",
-    item.updatedAt ? `Updated: ${item.updatedAt}` : "",
-    isPr && pr.headRefName && pr.baseRefName ? `Branches: ${pr.headRefName} → ${pr.baseRefName}` : "",
-  ].filter(Boolean);
-  const lines = [
-    ...metadata,
-    "",
-    "Description:",
-    normalizeMarkdownText(item.body).trim() || "No description.",
-  ];
-
-  if (item.comments?.length) {
-    lines.push("", "Comments:");
-    for (const comment of item.comments) {
-      const author = comment.author?.login ? `@${comment.author.login}` : "unknown";
-      lines.push(`\n${author}${comment.createdAt ? ` (${comment.createdAt})` : ""}:`, normalizeMarkdownText(comment.body).trim() || "(empty comment)");
-    }
-  }
-
   return {
+    type: "reference" as const,
     id: `github:${repo.nameWithOwner}:${kind}:${number}`,
     label: `${isPr ? "GitHub PR" : "GitHub issue"} #${number}`,
     title: item.title || (isPr ? "Untitled pull request" : "Untitled issue"),
-    content: lines.join("\n").trim(),
+    reference: {
+      provider: "github" as const,
+      repository: repo.nameWithOwner,
+      resource: isPr ? "pull-request" as const : "issue" as const,
+      number,
+      url: `https://github.com/${repo.nameWithOwner}/${isPr ? "pull" : "issues"}/${number}`,
+    },
   };
 }
 
@@ -573,17 +552,23 @@ async function updateGitTab(pi: PiWebExtensionAPI, ctx: PiWebExtensionContext) {
 
   if (!repo) {
     if (installedSessions.has(key)) {
-      web.setGitTab(GIT_TAB_KEY, undefined);
+      web.contribute(GIT_TAB_KEY, undefined);
       installedSessions.delete(key);
     }
     return;
   }
 
   installedSessions.add(key);
-  web.setGitTab(GIT_TAB_KEY, {
+  web.contribute(GIT_TAB_KEY, {
+    slot: "git-tab",
+    kind: "rendered",
     title: `GitHub issues and pull requests for ${repo.nameWithOwner}`,
     label: "GitHub",
-    render: (event) => renderGitTab(pi, ctx, event),
+    render: (event) => renderGitTab(pi, ctx, {
+      action: event?.action,
+      payload: event?.payload,
+      repo: event?.context as PiWebGitTabEvent["repo"],
+    }),
   });
 }
 
@@ -605,7 +590,7 @@ export default function githubRepoPanel(pi: PiWebExtensionAPI) {
   pi.on("session_shutdown", (_event, ctx) => {
     const key = sessionKey(ctx);
     if (installedSessions.has(key)) {
-      ctx.ui.web.setGitTab(GIT_TAB_KEY, undefined);
+      ctx.ui.web.contribute(GIT_TAB_KEY, undefined);
       installedSessions.delete(key);
     }
   });

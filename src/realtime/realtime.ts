@@ -1,6 +1,8 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
+import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
+import type { MessageDto } from "../../server/session/dto.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
 import { messageText } from "../messages/content.js";
@@ -11,8 +13,12 @@ import type { SettingsController } from "../settings/settings.js";
 import type { StatusBar } from "../status/statusBar.js";
 import type { ToolCards } from "../tools/toolCards.js";
 import type { ConversationTreeController } from "../tree/conversationTree.js";
-import { renderWebFooters } from "../extensions/webFooter.js";
 import { assistantErrorBody, normalizeAssistantError } from "../messages/content.js";
+import { playCompletionAlerts } from "../app/completionAlerts.js";
+
+export function shouldRefreshSessionsForPiEvent(event: PiEvent | undefined) {
+  return event?.type === "message_end";
+}
 
 export type RealtimeController = {
   connect: () => void;
@@ -42,14 +48,13 @@ export function createRealtime(options: {
   status: StatusBar;
   tools: ToolCards;
   conversationTree?: ConversationTreeController;
-  updateMeta: (data: any) => void;
-  updateSessionStats: (stats: any) => void;
+  sessionState: SessionStateController;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
-  applyRuntimeState: (data: any) => void;
+  updateWebContribution?: (key: string, sessionId: string) => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, applyRuntimeState, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -60,9 +65,12 @@ export function createRealtime(options: {
   let incompleteResponseSessionId = "";
   let lastAssistantError: AssistantErrorInfo | null = null;
   let retryFinalError: AssistantErrorInfo | null = null;
+  let runAborted = false;
+  const abortedRuns = new Map<string, boolean>();
   let latestRetryAttempt: number | undefined;
   let latestRetryMaxAttempts: number | undefined;
   let sessionRefreshTimer: number | undefined;
+  let replayTranscriptRefreshTimer: number | undefined;
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
   const sessionRuntimeKeys = new Map<string, string>();
@@ -88,29 +96,8 @@ export function createRealtime(options: {
   }
   const terminalRuntimeSessions = new Set<string>();
 
-  function runtimeKey(runtime: any) {
-    return [
-      Boolean(runtime?.isRunning),
-      Boolean(runtime?.isStreaming),
-      Boolean(runtime?.isRetrying),
-      Boolean(runtime?.isCompacting),
-    ].join(":");
-  }
-
   function eventWillRetry(event: PiEvent | undefined) {
     return Boolean(event?.willRetry);
-  }
-
-  function shouldRefreshSessionsForPiEvent(event: PiEvent | undefined) {
-    switch (event?.type) {
-      case "session_info_changed":
-      case "message_end":
-      case "agent_end":
-      case "compaction_end":
-        return true;
-      default:
-        return false;
-    }
   }
 
   function noteRuntimeEvent(sessionKey: string, event: PiEvent | undefined) {
@@ -201,8 +188,8 @@ export function createRealtime(options: {
     }
   }
 
-  async function respondExtensionUi(id: string, response: Record<string, unknown>) {
-    const res = await fetch("/api/extension-ui/respond", {
+  async function respondInteraction(id: string, response: Record<string, unknown>) {
+    const res = await fetch("/api/interactions/respond", {
       method: "POST",
       headers: api.headers(),
       body: JSON.stringify({ id, ...response }),
@@ -221,9 +208,10 @@ export function createRealtime(options: {
     return options.find((option) => option === answer) || answer;
   }
 
-  function handleExtensionUiRequest(data: any) {
-    if (data.sessionId && data.sessionId !== state.currentSessionId) return;
-    const id = String(data.id || "");
+  function handleInteractionRequest(envelope: any) {
+    if (envelope.sessionId && envelope.sessionId !== state.currentSessionId) return;
+    const id = String(envelope.id || "");
+    const data = { ...(envelope.payload || {}), method: envelope.kind };
 
     switch (data.method) {
       case "notify":
@@ -238,22 +226,22 @@ export function createRealtime(options: {
       case "select": {
         const options = Array.isArray(data.options) ? data.options.map(String) : [];
         const value = promptForSelect(String(data.title || "Select"), options);
-        respondExtensionUi(id, value === undefined ? { cancelled: true } : { value }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        respondInteraction(id, value === undefined ? { cancelled: true } : { value }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
         return;
       }
       case "confirm": {
         const confirmed = window.confirm(`${String(data.title || "Confirm")}\n\n${String(data.message || "")}`);
-        respondExtensionUi(id, { confirmed }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        respondInteraction(id, { confirmed }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
         return;
       }
       case "input": {
         const value = window.prompt(String(data.title || "Input"), String(data.placeholder || ""));
-        respondExtensionUi(id, value === null ? { cancelled: true } : { value }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        respondInteraction(id, value === null ? { cancelled: true } : { value }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
         return;
       }
       case "editor": {
         const value = window.prompt(String(data.title || "Edit"), String(data.prefill || ""));
-        respondExtensionUi(id, value === null ? { cancelled: true } : { value }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        respondInteraction(id, value === null ? { cancelled: true } : { value }).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
         return;
       }
     }
@@ -347,7 +335,7 @@ export function createRealtime(options: {
     card.classList.remove("toolCard--compactCollapsed");
     const toggle = card.querySelector<HTMLButtonElement>(".toolCardExpandToggle");
     if (!toggle) return;
-    toggle.textContent = "▾";
+    toggle.textContent = "";
     toggle.setAttribute("aria-label", "Hide tool details");
     toggle.title = "Hide tool details";
     toggle.setAttribute("aria-expanded", "true");
@@ -418,15 +406,16 @@ export function createRealtime(options: {
     retryFinalError = null;
     const attemptText = retryAttemptText(info.attempt, info.maxAttempts);
     const delayText = formatRetryDelay(info.delayMs);
+    const retryTarget = event.source === "branchSummary" ? "branch summary" : event.source === "compaction" ? "compaction summary" : event.source === "summarization" ? "summary" : "assistant request";
     const retryText = `retrying${attemptText ? ` (${attemptText})` : ""}${delayText ? ` in ${delayText}` : ""}…`;
     status.markActivityProgress(`${info.text} — ${retryText}`, event.lastActivityAt);
     const card = ensureRetryErrorCard(info);
     setRuntimeCardKind(card, "running");
     setRuntimeErrorCardText(
       card,
-      "retrying assistant request",
+      `retrying ${retryTarget}`,
       `${info.text} · ${retryText}`,
-      `pi is retrying automatically after a transient provider error.${attemptText ? `\n${attemptText}` : ""}${delayText ? `\nBackoff: ${delayText}` : ""}`,
+      `pi is retrying ${retryTarget} automatically.${attemptText ? `\n${attemptText}` : ""}${delayText ? `\nBackoff: ${delayText}` : ""}`,
     );
   }
 
@@ -516,7 +505,7 @@ export function createRealtime(options: {
     expandRuntimeErrorCard(terminalFailureCard);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
-    appendTerminalFailureAction(actions, "Retry", "Retry the failed model request without adding a user message", (button) => resumeFromTerminalCard(button, "Retrying…"));
+    if (activeSessionState(state)?.capabilities?.retry !== false) appendTerminalFailureAction(actions, "Retry", "Retry the failed model request without adding a user message", (button) => resumeFromTerminalCard(button, "Retrying…"));
     appendTerminalFailureAction(actions, "Switch model", "Use /model to switch providers or models", () => focusComposerWith("/model "));
     terminalFailureCard.append(actions);
     messages.scrollToBottom();
@@ -531,19 +520,21 @@ export function createRealtime(options: {
     expandRuntimeErrorCard(incompleteResponseCard);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
-    appendTerminalFailureAction(actions, "Continue", "Continue the incomplete turn without adding a user message", (button) => resumeFromTerminalCard(button, "Continuing…"));
+    if (activeSessionState(state)?.capabilities?.retry !== false) appendTerminalFailureAction(actions, "Continue", "Continue the incomplete turn without adding a user message", (button) => resumeFromTerminalCard(button, "Continuing…"));
     appendTerminalFailureAction(actions, "Switch model", "Use /model to switch providers or models", () => focusComposerWith("/model "));
     incompleteResponseCard.append(actions);
     messages.scrollToBottom();
   }
 
   function restoreTerminalFailureCard() {
-    if (!terminalFailureInfo || terminalFailureSessionId !== (state.currentSessionId || "") || state.isStreaming || state.isRetrying) return;
+    const runtime = sessionRuntime(state);
+    if (!terminalFailureInfo || terminalFailureSessionId !== (state.currentSessionId || "") || runtime.isStreaming || runtime.isRetrying) return;
     if (!terminalFailureCard?.isConnected) addTerminalFailureCard(terminalFailureInfo);
   }
 
   function restoreIncompleteResponseCard() {
-    if (!incompleteResponseInfo || incompleteResponseSessionId !== (state.currentSessionId || "") || state.isStreaming || state.isRetrying) return;
+    const runtime = sessionRuntime(state);
+    if (!incompleteResponseInfo || incompleteResponseSessionId !== (state.currentSessionId || "") || runtime.isStreaming || runtime.isRetrying) return;
     if (!incompleteResponseCard?.isConnected) addIncompleteResponseCard(incompleteResponseInfo);
   }
 
@@ -576,7 +567,8 @@ export function createRealtime(options: {
   }
 
   function applyTranscriptRuntimeState(transcriptState: TranscriptRuntimeState) {
-    if (state.isStreaming || state.isRetrying) return;
+    const runtime = sessionRuntime(state);
+    if (runtime.isStreaming || runtime.isRetrying) return;
     if (transcriptState.terminalFailure) {
       rememberTerminalFailure({
         text: transcriptState.terminalFailure.text,
@@ -590,23 +582,30 @@ export function createRealtime(options: {
     rememberIncompleteResponse(transcriptState.incomplete || null);
   }
 
-  function handlePiEvent(event: PiEvent, isReplay = false) {
+  function handlePiEvent(event: PiEvent, isReplay = false, envelope?: { clientMessageId?: string; sourceClientId?: string }) {
     switch (event.type) {
       case "session_info_changed":
-        if ("name" in event) status.setStatusTitle(event.name || "New session");
+        if ("name" in event) sessionState.applySnapshot({ sessionId: state.currentSessionId, sessionName: event.name });
         break;
       case "agent_start":
+        runAborted = false;
         clearTransientFailureUi();
-        state.isStreaming = true;
-        state.isRetrying = false;
-        status.markActivityStart("starting", event.startedAt, event.lastActivityAt);
-        composer.updatePrimaryAction();
+        sessionState.patchRuntime(state.currentSessionId, {
+          loaded: true,
+          isStreaming: true,
+          isRetrying: false,
+          isCompacting: false,
+          startedAt: event.startedAt,
+          lastActivityAt: event.lastActivityAt,
+        }, { kind: "start", label: "starting", startedAt: event.startedAt, lastActivityAt: event.lastActivityAt });
         messages.resetStreamingAssistant();
         messages.beginStreamFollow();
         break;
       case "message_update": {
         const deltaEvent = event.assistantMessageEvent;
-        if (deltaEvent?.type === "text_delta") messages.appendStreamingDelta(deltaEvent.delta || "");
+        if (deltaEvent?.type === "text_start") messages.startStreamingText(deltaEvent.contentIndex);
+        else if (deltaEvent?.type === "text_delta") messages.appendStreamingDelta(deltaEvent.delta || "", deltaEvent.contentIndex);
+        else if (deltaEvent?.type === "text_end") messages.endStreamingText(deltaEvent.content, deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_start") messages.startStreamingThinking(deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_delta") messages.appendStreamingThinkingDelta(deltaEvent.delta || "", deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_end") messages.endStreamingThinking(deltaEvent.content || deltaEvent.thinking, deltaEvent.contentIndex);
@@ -630,14 +629,15 @@ export function createRealtime(options: {
         if (!isReplay) scheduleLiveRefresh();
         break;
       case "queue_update":
-        composer.updatePendingQueue(event.steering, event.followUp);
+        if (activeSessionState(state)?.capabilities?.queue !== false) sessionState.applySnapshot({ sessionId: state.currentSessionId, queue: { steering: event.steering, followUp: event.followUp } }, { activity: { kind: "preserve" } });
         break;
       case "message_end": {
         // CC live-refresh: see scheduleLiveRefresh — no-op for pi/mock agents.
         if (!isReplay) scheduleLiveRefresh();
         const deliveredMessage = messageFromEvent(event.message);
-        if (String(deliveredMessage?.role || deliveredMessage?.raw?.role || "") === "user") {
-          composer.handleUserMessage(messageText(deliveredMessage));
+        const deliveredRole = String(deliveredMessage?.role || deliveredMessage?.raw?.role || "");
+        if (deliveredRole === "user") {
+          composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId, deliveredMessage.attachments || []);
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {
@@ -655,30 +655,26 @@ export function createRealtime(options: {
         break;
       }
       case "auto_retry_start":
-        state.isStreaming = false;
-        state.isRetrying = true;
-        composer.updatePrimaryAction();
+        sessionState.patchRuntime(state.currentSessionId, { isStreaming: false, isRetrying: true }, { kind: "preserve" });
         updateRetryStart(event);
         break;
       case "auto_retry_end":
-        state.isRetrying = false;
-        composer.updatePrimaryAction();
+        sessionState.patchRuntime(state.currentSessionId, { isRetrying: false }, { kind: "preserve" });
         updateRetryEnd(event);
         break;
       case "agent_end": {
+        runAborted = Boolean(event.aborted);
         if (eventWillRetry(event)) {
-          state.isStreaming = false;
-          state.isRetrying = true;
-          composer.updatePrimaryAction();
-          status.markActivityProgress("waiting to retry", event.lastActivityAt);
+          sessionState.patchRuntime(state.currentSessionId, { isRetrying: true }, { kind: "progress", label: "waiting to retry", lastActivityAt: event.lastActivityAt });
           break;
         }
-        const terminalError = terminalErrorFromAgentEnd(event);
-        state.isStreaming = false;
-        state.isRetrying = false;
-        rememberTerminalFailure(terminalError);
-        status.markActivityEnd();
-        composer.updatePrimaryAction();
+        // agent_end closes one low-level loop, but extensions and post-run
+        // continuations may still run. agent_settled is the idle boundary.
+        rememberTerminalFailure(terminalErrorFromAgentEnd(event));
+        break;
+      }
+      case "agent_settled": {
+        sessionState.patchRuntime(state.currentSessionId, { isStreaming: false, isRetrying: false }, { kind: "end" });
         messages.resetStreamingAssistant();
         messages.endStreamFollow();
         tools.clearActiveToolCards();
@@ -699,22 +695,21 @@ export function createRealtime(options: {
         break;
       }
       case "compaction_start":
-        state.isCompacting = true;
-        state.isRetrying = false;
-        status.markActivityStart("compacting", event.startedAt, event.lastActivityAt);
-        updateSessionStats(state.stats);
+        sessionState.patchRuntime(state.currentSessionId, {
+          loaded: true,
+          isStreaming: false,
+          isRetrying: false,
+          isCompacting: true,
+          startedAt: event.startedAt,
+          lastActivityAt: event.lastActivityAt,
+        }, { kind: "start", label: "compacting", startedAt: event.startedAt, lastActivityAt: event.lastActivityAt });
         break;
       case "compaction_end": {
-        state.isCompacting = false;
         if (eventWillRetry(event)) {
-          state.isRetrying = true;
-          composer.updatePrimaryAction();
-          status.markActivityProgress("waiting to retry", event.lastActivityAt);
+          sessionState.patchRuntime(state.currentSessionId, { isCompacting: false, isRetrying: true }, { kind: "progress", label: "waiting to retry", lastActivityAt: event.lastActivityAt });
           break;
         }
-        state.isRetrying = false;
-        status.markActivityEnd();
-        updateSessionStats(state.stats);
+        sessionState.patchRuntime(state.currentSessionId, { isCompacting: false, isRetrying: false }, { kind: "end" });
         const extraClass = event.errorMessage && !event.aborted ? "compaction error" : "compaction";
         setCompactionMessage(compactionEndText(event), extraClass);
         compactionMessage = null;
@@ -728,7 +723,8 @@ export function createRealtime(options: {
         break;
       }
       case "thinking_level_changed":
-        state.currentThinkingLevel = event.level || state.currentThinkingLevel;
+        if (activeSessionState(state)?.capabilities?.thinkingLevel === false) break;
+        sessionState.applySnapshot({ sessionId: state.currentSessionId, thinkingLevel: event.level || state.currentThinkingLevel });
         elements.thinkingSelectEl.value = state.currentThinkingLevel;
         models.updateSummary();
         refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
@@ -756,10 +752,9 @@ export function createRealtime(options: {
       }
       const isReplay = data.replay === true;
       if (data.type === "hello" || data.type === "state_changed") {
-        if (data.sessionId && state.currentSessionId && data.sessionId !== state.currentSessionId) return;
-        updateMeta(data);
-        applyRuntimeState(data);
-        updateSessionStats(state.stats);
+        const appliesToCurrentSession = !data.sessionId || !state.currentSessionId || data.sessionId === state.currentSessionId;
+        sessionState.applySnapshot(data, { activate: data.type === "hello" && !state.currentSessionId });
+        if (!appliesToCurrentSession) return;
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
         if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
@@ -775,40 +770,28 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "session_deleted") {
-        if (!isReplay) scheduleSessionRefresh();
+        if (!isReplay) sessions.removeSession(String(data.sessionId || ""));
         return;
       }
       if (data.type === "session_runtime_changed") {
         const key = String(data.sessionId || data.sessionFile || "");
         if (isStaleRunningRuntimeAfterTerminal(key, data.runtime)) return;
         if (key && (!data.runtime?.isRunning || typeof data.runtime?.startedAt === "string")) terminalRuntimeSessions.delete(key);
-        const nextRuntimeKey = runtimeKey(data.runtime);
-        if (key && sessionRuntimeKeys.get(key) !== nextRuntimeKey) {
-          sessionRuntimeKeys.set(key, nextRuntimeKey);
-          sessions.updateSessionRuntime(String(data.sessionId || ""), data.runtime);
-        }
-        if (data.sessionId && data.sessionId === state.currentSessionId) {
-          const wasRunning = state.isStreaming || state.isRetrying || state.isCompacting;
-          const isRunning = Boolean(data.runtime?.isRunning);
-          state.isStreaming = Boolean(data.runtime?.isStreaming);
-          state.isRetrying = Boolean(data.runtime?.isRetrying);
-          state.isCompacting = Boolean(data.runtime?.isCompacting);
-          if (isRunning) {
-            if (wasRunning) status.markActivityProgress(undefined, data.runtime?.lastActivityAt);
-            else status.markActivityStart(state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active", data.runtime?.startedAt, data.runtime?.lastActivityAt);
-          } else status.markActivityEnd();
-          composer.updatePrimaryAction();
-          if (wasRunning && !isRunning) {
-            refreshMessages()
-              .then(() => {
-                restoreTerminalFailureCard();
-                restoreIncompleteResponseCard();
-                return sessions.markSessionRead();
-              })
-              .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
-            if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
-            status.refreshSessionTitle();
-          }
+        if (!data.sessionId) return;
+        const transition = sessionState.replaceRuntime(String(data.sessionId), data.runtime);
+        // Any runtime change (including a spawned child's) can flip the
+        // current session's derived "waiting on spawned sessions" state.
+        status.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
+        if (transition.isActive && transition.previous.isRunning && !transition.next.isRunning) {
+          refreshMessages()
+            .then(() => {
+              restoreTerminalFailureCard();
+              restoreIncompleteResponseCard();
+              return sessions.markSessionRead();
+            })
+            .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+          if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
+          status.refreshSessionTitle();
         }
         return;
       }
@@ -817,53 +800,84 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "session_stats_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) updateSessionStats(data.stats);
+        sessionState.updateStats(String(data.sessionId || state.currentSessionId), data.stats);
         return;
       }
       if (data.type === "settings_updated") {
         settings.applySettings(data.settings);
         return;
       }
+      if (data.type === "web_settings_schemas_changed") {
+        settings.applyWebSettingsSchemas(data.webSettingsSchemas);
+        return;
+      }
       if (data.type === "session_ui_state_changed") {
         sessions.applySessionUiState(data.sessionUiState);
+        status.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
         return;
       }
-      if (data.type === "extension_ui_request") {
-        handleExtensionUiRequest(data);
+      if (data.type === "interaction_request" || data.type === "interaction_effect") {
+        handleInteractionRequest(data);
         return;
       }
-      if (data.type === "web_footer_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) renderWebFooters(elements.extensionFooterEl, data.webFooters);
+      if (data.type === "web_contributions_changed") {
+        sessionState.applySnapshot(data);
         return;
       }
-      if (data.type === "web_header_actions_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
+      if (data.type === "web_contribution_updated") {
+        const sessionId = String(data.sessionId || "");
+        const key = typeof data.key === "string" ? data.key : "";
+        if (key && sessionId === state.currentSessionId) updateWebContribution?.(key, sessionId);
         return;
       }
-      if (data.type === "web_artifact_actions_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
+      if (data.type === "committed_message") {
+        const appliesToCurrentSession = !data.sessionId || data.sessionId === state.currentSessionId;
+        if (isReplay && appliesToCurrentSession) {
+          if (replayTranscriptRefreshTimer !== undefined) window.clearTimeout(replayTranscriptRefreshTimer);
+          replayTranscriptRefreshTimer = window.setTimeout(() => {
+            replayTranscriptRefreshTimer = undefined;
+            void refreshMessages().catch((error) => console.error("Could not reconcile replayed transcript messages", error));
+          }, 100);
+          return;
+        }
+        const committed = data.message as MessageDto | undefined;
+        if (committed && appliesToCurrentSession && !["user", "assistant", "toolResult"].includes(committed.role)) {
+          messages.appendCommittedMessage(committed, {
+            addToolHistoryCard: tools.addToolHistoryCard,
+            addPendingToolCard: tools.startTool,
+            addRuntimeErrorCard: tools.addRuntimeErrorCard,
+            isStreaming: sessionRuntime(state).isStreaming || sessionRuntime(state).isRetrying,
+          });
+        }
         return;
       }
-      if (data.type === "web_git_tabs_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
-        return;
-      }
-      if (data.type === "pi_event") {
+      if (data.type === "agent_event") {
         const eventSessionKey = String(data.sessionId || data.sessionFile || "");
         noteRuntimeEvent(eventSessionKey, data.event);
-        if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
-        if (data.sessionId) {
+        if (data.event?.type === "agent_start") abortedRuns.set(eventSessionKey, false);
+        if (data.event?.type === "agent_end") abortedRuns.set(eventSessionKey, Boolean(data.event.aborted));
+        if (!isReplay && data.event?.type === "agent_settled" && !abortedRuns.get(eventSessionKey)) playCompletionAlerts();
+        if (data.event?.type === "agent_settled") abortedRuns.delete(eventSessionKey);
+        if (!isReplay && data.event?.type === "session_info_changed") {
+          sessions.updateSessionName(String(data.sessionId || ""), String(data.event.name || ""));
+        } else if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
+        const appliesToCurrentSession = !data.sessionId || data.sessionId === state.currentSessionId;
+        if (data.sessionId && !appliesToCurrentSession) {
           if (data.event?.type === "agent_start") {
-            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: true, isRetrying: false, isCompacting: false, pendingMessageCount: 0 });
-          } else if (data.event?.type === "agent_end") {
-            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: eventWillRetry(data.event), isStreaming: false, isRetrying: eventWillRetry(data.event), isCompacting: false, pendingMessageCount: 0 });
+            sessionState.replaceRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: true, isRetrying: false, isCompacting: false, startedAt: data.event.startedAt, lastActivityAt: data.event.lastActivityAt, pendingMessageCount: 0 }, { kind: "preserve" });
+          } else if (data.event?.type === "agent_end" && eventWillRetry(data.event)) {
+            sessionState.patchRuntime(String(data.sessionId), { isRetrying: true }, { kind: "preserve" });
+          } else if (data.event?.type === "agent_settled") {
+            sessionState.replaceRuntime(String(data.sessionId), { loaded: true, isRunning: false, isStreaming: false, isRetrying: false, isCompacting: false, lastActivityAt: data.event.lastActivityAt, pendingMessageCount: 0 }, { kind: "preserve" });
           } else if (data.event?.type === "compaction_start") {
-            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: false, isRetrying: false, isCompacting: true, pendingMessageCount: 0 });
+            sessionState.replaceRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: false, isRetrying: false, isCompacting: true, startedAt: data.event.startedAt, lastActivityAt: data.event.lastActivityAt, pendingMessageCount: 0 }, { kind: "preserve" });
           } else if (data.event?.type === "compaction_end") {
-            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: eventWillRetry(data.event), isStreaming: false, isRetrying: eventWillRetry(data.event), isCompacting: false, pendingMessageCount: 0 });
+            sessionState.replaceRuntime(String(data.sessionId), { loaded: true, isRunning: eventWillRetry(data.event), isStreaming: false, isRetrying: eventWillRetry(data.event), isCompacting: false, lastActivityAt: data.event.lastActivityAt, pendingMessageCount: 0 }, { kind: "preserve" });
+          } else if (data.event?.type === "queue_update") {
+            sessionState.applySnapshot({ sessionId: data.sessionId, queue: { steering: data.event.steering, followUp: data.event.followUp } }, { activity: { kind: "preserve" } });
           }
         }
-        if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event, isReplay);
+        if (appliesToCurrentSession) handlePiEvent(data.event, isReplay, data);
         return;
       }
       if (data.type === "server_error" && (!data.sessionId || data.sessionId === state.currentSessionId)) addMessage("system", data.error, "error");

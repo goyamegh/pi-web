@@ -3,6 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import { iconElement } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState } from "../app/types.js";
+import { activeSessionState, type SessionStateController } from "../app/sessionState.js";
 import { bindCompactInactiveAction } from "../composer/compactInteractions.js";
 
 export type ModelSettings = {
@@ -105,10 +106,10 @@ export function createModelSettings(options: {
   state: AppState;
   elements: AppElements;
   api: ApiClient;
-  updateMeta: (data: any) => void;
+  sessionState: SessionStateController;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
 }): ModelSettings {
-  const { state, elements, api, updateMeta, addMessage } = options;
+  const { state, elements, api, sessionState, addMessage } = options;
 
   function ensureCurrentModelSummary() {
     const popover = elements.modelSettingsPopover as HTMLElement | undefined;
@@ -154,6 +155,10 @@ export function createModelSettings(options: {
   }
 
   function updateSummary() {
+    const supportsThinking = activeSessionState(state)?.capabilities?.thinkingLevel !== false;
+    elements.thinkingSelectEl.hidden = !supportsThinking;
+    elements.thinkingSelectEl.closest?.<HTMLElement>("label")?.toggleAttribute("hidden", !supportsThinking);
+    elements.modelSettingsThinking.hidden = !supportsThinking;
     const level = elements.thinkingSelectEl.value || state.currentThinkingLevel || "off";
     const selectedModelOption = elements.modelSelectEl.selectedOptions[0] as HTMLOptionElement | undefined;
     const selectedModelLabel = selectedModelOption?.textContent?.trim();
@@ -224,8 +229,9 @@ export function createModelSettings(options: {
         body: JSON.stringify({ agent: next }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      updateMeta(data);
+      await res.json();
+      // The server broadcasts state_changed for the new session; the realtime
+      // pipeline activates it. We only need fresh models for the new agent.
       await refreshModels();
     } catch (error) {
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
@@ -281,11 +287,13 @@ export function createModelSettings(options: {
   }
 
   async function refreshModels() {
-    const query = state.currentSessionId ? `?sessionId=${encodeURIComponent(state.currentSessionId)}` : "";
+    const sessionId = state.currentSessionId;
+    const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
     const res = await fetch(`/api/models${query}`, { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    updateMeta({ cwd: data.cwd || "", model: data.current, thinkingLevel: data.thinkingLevel });
+    sessionState.applySnapshot({ sessionId, cwd: data.cwd || "", model: data.current, thinkingLevel: data.thinkingLevel });
+    if (sessionId !== state.currentSessionId) return;
     populateModelSelect(data.models || [], state.currentModelKey);
     updateThinkingOptions(data.thinkingLevels || [state.currentThinkingLevel]);
   }
@@ -306,7 +314,7 @@ export function createModelSettings(options: {
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      updateMeta(data);
+      sessionState.applySnapshot(data);
       updateThinkingOptions(data.thinkingLevels || [data.thinkingLevel]);
       await refreshModels();
     } catch (error) {

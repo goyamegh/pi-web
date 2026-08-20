@@ -99,7 +99,7 @@
   }
 
   .composerFooter {
-    gap: 4px;
+    gap: 0;
   }
 
   .modelControl {
@@ -144,7 +144,7 @@
     height: 17px;
   }
 
-  .composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl {
+  .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelControl {
     flex: 0 1 auto;
     width: fit-content;
     max-width: clamp(104px, 34vw, 170px);

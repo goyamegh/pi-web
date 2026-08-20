@@ -1,0 +1,30 @@
+---
+import BaseLayout from '../../../layouts/BaseLayout.astro';
+import BottomCTA from '../../../components/BottomCTA.astro';
+import ButtonLink from '../../../components/ButtonLink.astro';
+import ExampleCard from '../../../components/ExampleCard.astro';
+import MarketingHero from '../../../components/MarketingHero.astro';
+import Section from '../../../components/Section.astro';
+import { extensionExamples } from '../../../data/extensionExamples';
+
+const base = import.meta.env.BASE_URL;
+const docs = 'https://github.com/ashwin-pc/pi-web/blob/main/docs/pi-web-extensions.md';
+---
+
+<BaseLayout title="Extension examples" description="Inspect, copy, and adapt six opt-in pi-web extension examples.">
+  <MarketingHero eyebrow="Extension examples" title="Start with a working extension. Make it yours." lede="Six small source examples. Inspect, copy, reload, adapt.">
+    <ButtonLink href="#examples">Choose an example</ButtonLink>
+    <ButtonLink href={`${base}extensions/#api`} variant="secondary">Build your own</ButtonLink>
+  </MarketingHero>
+
+  <Section id="examples" eyebrow="Opt-in source" title="Pick the closest surface.">
+    <div class="example-grid">{extensionExamples.map((example) => <ExampleCard example={example} />)}</div>
+  </Section>
+
+  <Section tone="dark" narrow eyebrow="Trusted code" title="Read before reload.">
+    <p class="boundary-copy">Extensions run locally through <code>pi</code> and may access files, invoke commands, affect agent behavior, or render trusted HTML. Delete the copied file and run <code>/reload</code> to remove one.</p>
+    <p class="orchestration-skill-link"><strong>Experimental · opt-in:</strong> orchestration also needs its <a href="https://github.com/ashwin-pc/pi-web/blob/main/examples/pi-web-skills/session-orchestration/SKILL.md">companion skill ↗</a>.</p>
+  </Section>
+
+  <BottomCTA eyebrow="Need a different workflow?" title="Use the source as a starting point." primaryHref={`${base}extensions/`} primaryLabel="Build your own" secondaryHref={docs} secondaryLabel="Extension docs" />
+</BaseLayout>

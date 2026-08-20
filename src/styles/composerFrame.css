@@ -42,9 +42,9 @@
   margin: 3px 6px;
   background: color-mix(in srgb, var(--border) 78%, transparent);
 }
-.pendingMessages:not([hidden]) + .composer { margin-top: 0; }
-.pendingMessages:not([hidden]) + .composer .runtimeStatus,
-.pendingMessages:not([hidden]) + .composer .contextMeterLabel { top: -8px; }
+.pendingMessages:not([hidden]) ~ .composer { margin-top: 0; }
+.pendingMessages:not([hidden]) ~ .composer .runtimeStatus,
+.pendingMessages:not([hidden]) ~ .composer .contextMeterLabel { top: -8px; }
 
 .composer {
   grid-row: 4;
@@ -56,6 +56,21 @@
   box-shadow: 0 18px 60px rgba(0,0,0,.25);
   padding: 0;
   margin: 8px 16px 0;
+}
+
+@media (hover: none) and (pointer: coarse) and (prefers-reduced-motion: no-preference) {
+  .composer:not(.expanded) {
+    interpolate-size: allow-keywords;
+    height: auto;
+    transition:
+      height .48s cubic-bezier(.2, .9, .25, 1),
+      margin-right .48s cubic-bezier(.2, .9, .25, 1),
+      border-radius .3s ease,
+      box-shadow .48s cubic-bezier(.2, .9, .25, 1);
+  }
+  .composer.compactInactive:not(.expanded) {
+    transition-delay: .1s;
+  }
 }
 
 .extensionFooter {

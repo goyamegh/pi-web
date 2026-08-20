@@ -14,6 +14,10 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: "autoUpdate",
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
+      devOptions: { enabled: true, type: "module" },
       includeAssets: ["icon.svg", "apple-touch-icon.png"],
       manifest: {
         name: "pi web",
@@ -29,22 +33,17 @@ export default defineConfig({
           { src: "pwa-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
         ],
       },
-      workbox: {
-        // Always send document navigations through the server. Serving cached HTML
-        // can bypass an auth proxy (such as Codespaces) after its session expires,
-        // leaving a visible app shell whose authenticated API requests all fail.
-        // Immutable assets remain precached, but HTML is deliberately excluded.
+      injectManifest: {
+        // Do not precache HTML or register a navigation route. Native browser
+        // navigations must continue to handle redirects from auth proxies.
         globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
-        runtimeCaching: [
-          {
-            urlPattern: ({ request }) => request.mode === "navigate",
-            handler: "NetworkOnly",
-          },
-        ],
       },
     }),
   ],
   server: {
+    // Runtime uploads and generated artifacts live below .pi. Watching those
+    // files makes Vite reload the page as soon as an attachment is persisted.
+    watch: { ignored: ["**/.pi/**"] },
     // Dev server is protected by PI_WEB_TOKEN and commonly accessed via
     // Tailscale MagicDNS names like http://studio:8787.
     allowedHosts: true,

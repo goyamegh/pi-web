@@ -1,6 +1,6 @@
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { Check, Copy, createElement } from "lucide";
+import { Check, Copy, createElement, Download, ExternalLink } from "lucide";
 import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
 
@@ -15,6 +15,9 @@ const maxCachedMarkdown = 160;
 const mermaidSvgCache = new Map<string, string>();
 const maxCachedMermaid = 32;
 const maxMermaidSourceLength = 20_000;
+const maxInlineHtmlSourceLength = 50_000;
+const inlineHtmlFrames = new Set<HTMLIFrameElement>();
+let inlineHtmlListenerAttached = false;
 let mermaidImportPromise: Promise<typeof import("mermaid")> | null = null;
 let mermaidRenderCounter = 0;
 const allowedMarkdownTags = new Set([
@@ -27,6 +30,9 @@ type ArtifactPreviewAction = { key?: unknown; title?: unknown; label?: unknown; 
 let artifactPreviewActions: ArtifactPreviewAction[] = [];
 let artifactActionHeaders: () => Record<string, string> = () => ({ "content-type": "application/json" });
 let artifactActionSessionId = () => "";
+let artifactPreviewId = 0;
+const interactiveArtifactCards = new Set<HTMLElement>();
+let artifactInteractionListenerAttached = false;
 
 export function configureArtifactPreviewActions(options: { headers: () => Record<string, string>; getSessionId: () => string }) {
   artifactActionHeaders = options.headers;
@@ -260,6 +266,72 @@ function enhanceMermaid(root: ParentNode) {
   }
 }
 
+function ensureInlineHtmlResizeListener() {
+  if (inlineHtmlListenerAttached) return;
+  inlineHtmlListenerAttached = true;
+  window.addEventListener("message", (event) => {
+    for (const frame of inlineHtmlFrames) {
+      if (!frame.isConnected) {
+        inlineHtmlFrames.delete(frame);
+        continue;
+      }
+      if (event.source !== frame.contentWindow) continue;
+      const data = event.data as { type?: unknown; height?: unknown; width?: unknown } | null;
+      if (data?.type !== "pi-web-html-preview-size" || typeof data.height !== "number" || typeof data.width !== "number") return;
+      const container = frame.closest<HTMLElement>(".htmlPreview");
+      if (!container) return;
+      frame.style.height = `${Math.min(Math.max(Math.ceil(data.height), 1), 720)}px`;
+      container.style.width = `${Math.max(Math.ceil(data.width), 1)}px`;
+      container.classList.toggle("htmlPreview--compact", data.height <= 140);
+      return;
+    }
+  });
+}
+
+function inlineHtmlReporter() {
+  return `<script>(()=>{const report=()=>{const b=document.body,e=document.documentElement,cs=getComputedStyle(b);let right=0,bottom=0;for(const n of b.children){const r=n.getBoundingClientRect();right=Math.max(right,r.right);bottom=Math.max(bottom,r.bottom)}const width=Math.ceil(right+parseFloat(cs.marginRight||'0')+parseFloat(cs.paddingRight||'0'));parent.postMessage({type:'pi-web-html-preview-size',height:Math.ceil(bottom+parseFloat(cs.marginBottom||'0')+parseFloat(cs.paddingBottom||'0')),width},'*')};addEventListener('load',report);new ResizeObserver(report).observe(document.documentElement);new MutationObserver(report).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});report()})()<\/script>`;
+}
+
+function enhanceInlineHtmlPreviews(root: ParentNode) {
+  for (const code of Array.from(root.querySelectorAll<HTMLElement>("pre > code.language-html-preview"))) {
+    const pre = code.closest<HTMLPreElement>("pre");
+    if (!pre || pre.dataset.htmlPreviewEnhanced) continue;
+    const source = code.textContent || "";
+    if (!source.trim() || source.length > maxInlineHtmlSourceLength) continue;
+    pre.dataset.htmlPreviewEnhanced = "true";
+    code.classList.remove("language-html-preview");
+    code.classList.add("language-html");
+    pre.hidden = true;
+
+    const container = document.createElement("div");
+    container.className = "htmlPreview";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "htmlPreviewToggle";
+    toggle.textContent = "Source";
+    toggle.title = "Show HTML source";
+    toggle.setAttribute("aria-label", toggle.title);
+    const frame = document.createElement("iframe");
+    frame.className = "htmlPreviewFrame";
+    frame.title = "Interactive HTML preview";
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.srcdoc = source + inlineHtmlReporter();
+    toggle.addEventListener("click", () => {
+      const showingSource = pre.hidden;
+      pre.hidden = !showingSource;
+      frame.hidden = showingSource;
+      container.classList.toggle("htmlPreview--source", showingSource);
+      toggle.textContent = showingSource ? "Preview" : "Source";
+      toggle.title = showingSource ? "Show interactive preview" : "Show HTML source";
+      toggle.setAttribute("aria-label", toggle.title);
+    });
+    pre.replaceWith(container);
+    container.append(frame, pre, toggle);
+    inlineHtmlFrames.add(frame);
+    ensureInlineHtmlResizeListener();
+  }
+}
+
 function enhanceCodeBlocks(root: ParentNode) {
   for (const pre of Array.from(root.querySelectorAll<HTMLPreElement>("pre"))) {
     if (pre.querySelector(".copyCode")) continue;
@@ -305,16 +377,21 @@ function artifactKind(pathname: string) {
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
   if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
   if (lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") || lower.endsWith(".ogv")) return "video";
+  if (lower.endsWith(".mp3") || lower.endsWith(".wav") || lower.endsWith(".flac") || lower.endsWith(".opus")) return "audio";
   return "";
 }
 
-function videoMimeType(pathname: string) {
+function mediaMimeType(pathname: string) {
   const lower = pathname.toLowerCase();
   if (lower.endsWith(".mp4")) return "video/mp4";
   if (lower.endsWith(".webm")) return "video/webm";
   if (lower.endsWith(".mov")) return "video/quicktime";
   if (lower.endsWith(".ogv")) return "video/ogg";
-  return "video/*";
+  if (lower.endsWith(".mp3")) return "audio/mpeg";
+  if (lower.endsWith(".wav")) return "audio/wav";
+  if (lower.endsWith(".flac")) return "audio/flac";
+  if (lower.endsWith(".opus")) return "audio/ogg";
+  return "application/octet-stream";
 }
 
 function isStandalonePwa() {
@@ -347,7 +424,9 @@ async function downloadArtifact(path: string, filename: string) {
 
 function renderArtifactActions(card: HTMLElement, name: string, path: string, kind: string) {
   card.querySelector(".artifactPreviewActions")?.remove();
-  const actions = matchingArtifactActions(name, kind);
+  // Download is a canonical built-in action. Extensions may still contribute
+  // artifact-specific operations, but not a duplicate generic download.
+  const actions = matchingArtifactActions(name, kind).filter((action) => !/download/i.test(`${action.label || ""} ${action.title}`));
   if (!actions.length) return;
   const container = document.createElement("span");
   container.className = "artifactPreviewActions";
@@ -362,7 +441,7 @@ function renderArtifactActions(card: HTMLElement, name: string, path: string, ki
       const original = button.textContent;
       button.textContent = "Working…";
       try {
-        const res = await fetch("/api/web-artifact-action/invoke", { method: "POST", headers: artifactActionHeaders(), body: JSON.stringify({ sessionId: artifactActionSessionId(), key: action.key, name, path, kind }) });
+        const res = await fetch("/api/web-contributions/invoke", { method: "POST", headers: artifactActionHeaders(), body: JSON.stringify({ sessionId: artifactActionSessionId(), slot: "artifact-action", key: action.key, event: { context: { name, path, kind } } }) });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
         if (data.download && typeof data.download.path === "string") {
@@ -396,6 +475,94 @@ function renderArtifactActions(card: HTMLElement, name: string, path: string, ki
   card.querySelector(".artifactPreviewHeader")?.append(container);
 }
 
+function setArtifactFrameInteraction(card: HTMLElement, interactive: boolean) {
+  card.classList.toggle("artifactPreview--interactive", interactive);
+  if (interactive) interactiveArtifactCards.add(card);
+  else interactiveArtifactCards.delete(card);
+}
+
+function ensureArtifactInteractionListener() {
+  if (artifactInteractionListenerAttached) return;
+  artifactInteractionListenerAttached = true;
+  document.addEventListener("pointerdown", (event) => {
+    for (const card of interactiveArtifactCards) {
+      if (!card.isConnected) {
+        interactiveArtifactCards.delete(card);
+        continue;
+      }
+      if (!card.contains(event.target as Node)) setArtifactFrameInteraction(card, false);
+    }
+  }, true);
+}
+
+function attachArtifactDisclosure(card: HTMLElement, header: HTMLElement, content: HTMLElement) {
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "artifactPreviewDisclosure";
+  toggle.title = "Minimize preview";
+  toggle.setAttribute("aria-label", toggle.title);
+  toggle.setAttribute("aria-expanded", "true");
+  toggle.setAttribute("aria-controls", content.id);
+  header.prepend(toggle);
+
+  const setMinimized = (minimized: boolean) => {
+    card.classList.toggle("artifactPreview--minimized", minimized);
+    toggle.setAttribute("aria-expanded", String(!minimized));
+    toggle.title = minimized ? "Restore preview" : "Minimize preview";
+    toggle.setAttribute("aria-label", toggle.title);
+    if (minimized) {
+      card.querySelector<HTMLMediaElement>("video, audio")?.pause();
+      setArtifactFrameInteraction(card, false);
+    }
+  };
+  toggle.addEventListener("click", () => setMinimized(!card.classList.contains("artifactPreview--minimized")));
+  header.addEventListener("click", (event) => {
+    if ((event.target as Element).closest("a, button")) return;
+    setMinimized(!card.classList.contains("artifactPreview--minimized"));
+  });
+}
+
+function attachArtifactOverflowControl(card: HTMLElement, content: HTMLElement) {
+  let resizeObserver: ResizeObserver | undefined;
+  const footer = document.createElement("div");
+  footer.className = "artifactPreviewExpandFooter";
+  footer.hidden = true;
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "artifactPreviewExpand";
+  toggle.textContent = "⌄ Show more";
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-controls", content.id);
+  footer.append(toggle);
+  card.append(footer);
+
+  const refresh = () => {
+    if (!card.isConnected) {
+      resizeObserver?.disconnect();
+      return;
+    }
+    const expanded = card.classList.contains("artifactPreview--expanded");
+    const overflows = content.scrollHeight > content.clientHeight + 1;
+    card.classList.toggle("artifactPreview--overflowing", overflows || expanded);
+    footer.hidden = !overflows && !expanded;
+  };
+  toggle.addEventListener("click", () => {
+    const expanded = !card.classList.contains("artifactPreview--expanded");
+    card.classList.toggle("artifactPreview--expanded", expanded);
+    toggle.textContent = expanded ? "⌃ Show less" : "⌄ Show more";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    refresh();
+    if (!expanded) card.scrollIntoView({ block: "nearest" });
+  });
+  content.addEventListener("load", refresh, true);
+  if ("ResizeObserver" in window) {
+    resizeObserver = new ResizeObserver(refresh);
+    resizeObserver.observe(content);
+  }
+  requestAnimationFrame(refresh);
+  return refresh;
+}
+
 function enhanceArtifactLinks(root: ParentNode) {
   for (const link of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="/api/artifacts/"]'))) {
     if (link.dataset.artifactPreviewEnhanced) continue;
@@ -404,16 +571,18 @@ function enhanceArtifactLinks(root: ParentNode) {
     if (!kind) continue;
     link.dataset.artifactPreviewEnhanced = "true";
 
+    const fileName = artifactName(url.pathname);
+    const displayName = link.textContent?.trim() || fileName;
     const card = document.createElement("div");
     card.className = `artifactPreview artifactPreview--${kind}`;
     const header = document.createElement("div");
     header.className = "artifactPreviewHeader";
     const title = document.createElement("span");
     title.className = "artifactPreviewTitle";
-    title.textContent = artifactName(url.pathname);
+    title.textContent = displayName;
     const open = document.createElement("a");
     open.href = kind === "markdown"
-      ? `/artifact-preview.html?src=${encodeURIComponent(url.pathname)}&name=${encodeURIComponent(artifactName(url.pathname))}`
+      ? `/artifact-preview.html?src=${encodeURIComponent(url.pathname)}&name=${encodeURIComponent(displayName)}`
       : url.pathname;
     if (isStandalonePwa()) {
       open.target = "_top";
@@ -421,15 +590,42 @@ function enhanceArtifactLinks(root: ParentNode) {
       open.target = "_blank";
       open.rel = "noopener noreferrer";
     }
-    open.textContent = "Open";
+    open.className = "artifactPreviewAction artifactPreviewAction--icon";
+    open.title = "Open artifact";
+    open.setAttribute("aria-label", open.title);
+    open.append(createElement(ExternalLink, { "aria-hidden": "true" }));
+    const download = document.createElement("button");
+    download.type = "button";
+    download.className = "artifactPreviewAction artifactPreviewAction--icon";
+    download.title = "Download artifact";
+    download.setAttribute("aria-label", download.title);
+    download.append(createElement(Download, { "aria-hidden": "true" }));
+    download.addEventListener("click", async () => {
+      download.disabled = true;
+      try {
+        await downloadArtifact(url.pathname, fileName);
+        download.title = "Downloaded";
+      } catch (error) {
+        download.title = error instanceof Error ? error.message : String(error);
+      } finally {
+        download.disabled = false;
+        window.setTimeout(() => {
+          if (!download.isConnected) return;
+          download.title = "Download artifact";
+        }, 1_500);
+      }
+    });
     const builtInActions = document.createElement("span");
     builtInActions.className = "artifactPreviewBuiltInActions";
-    builtInActions.append(open);
+    builtInActions.append(open, download);
     header.append(title, builtInActions);
     const content = document.createElement("div");
     content.className = "artifactPreviewContent";
+    content.id = `artifact-preview-content-${++artifactPreviewId}`;
     content.textContent = "Loading preview…";
     card.append(header, content);
+    attachArtifactDisclosure(card, header, content);
+    const refreshOverflow = attachArtifactOverflowControl(card, content);
     card.dataset.artifactName = title.textContent;
     card.dataset.artifactPath = url.pathname;
     card.dataset.artifactKind = kind;
@@ -447,22 +643,37 @@ function enhanceArtifactLinks(root: ParentNode) {
       // Allow artifact scripts (for diagrams and interactive previews) while omitting
       // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
       iframe.setAttribute("sandbox", "allow-scripts");
-      content.append(iframe);
+      const shield = document.createElement("button");
+      shield.type = "button";
+      shield.className = "artifactPreviewShield";
+      shield.setAttribute("aria-label", `Click to interact with ${title.textContent}`);
+      const shieldHint = document.createElement("span");
+      shieldHint.textContent = "Click to interact";
+      shield.append(shieldHint);
+      shield.addEventListener("click", () => {
+        setArtifactFrameInteraction(card, true);
+        iframe.focus();
+      });
+      card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
+      content.append(iframe, shield);
+      ensureArtifactInteractionListener();
+      refreshOverflow();
       continue;
     }
 
-    if (kind === "video") {
+    if (kind === "video" || kind === "audio") {
       content.textContent = "";
-      const video = document.createElement("video");
-      video.className = "artifactPreviewVideo";
-      video.controls = true;
-      video.playsInline = true;
-      video.preload = "metadata";
+      const media = document.createElement(kind);
+      media.className = kind === "video" ? "artifactPreviewVideo" : "artifactPreviewAudio";
+      media.controls = true;
+      if (media instanceof HTMLVideoElement) media.playsInline = true;
+      media.preload = "metadata";
       const source = document.createElement("source");
       source.src = url.pathname;
-      source.type = videoMimeType(url.pathname);
-      video.append(source);
-      content.append(video);
+      source.type = mediaMimeType(url.pathname);
+      media.append(source);
+      content.append(media);
+      refreshOverflow();
       continue;
     }
 
@@ -479,10 +690,12 @@ function enhanceArtifactLinks(root: ParentNode) {
         enhanceCodeBlocks(content);
         enhanceImages(content);
         enhanceArtifactLinks(content);
+        refreshOverflow();
       })
       .catch((error) => {
         content.textContent = error instanceof Error ? error.message : String(error);
         card.classList.add("artifactPreview--error");
+        refreshOverflow();
       });
   }
 }
@@ -491,6 +704,7 @@ export function renderStandaloneMarkdown(body: HTMLElement, text: string) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
   enhanceMermaid(body);
+  enhanceInlineHtmlPreviews(body);
   enhanceCodeBlocks(body);
   enhanceImages(body);
   enhanceArtifactLinks(body);
@@ -502,7 +716,11 @@ function renderAssistantMarkdown(body: HTMLElement, text: string) {
   delete body.dataset.markdownText;
 }
 
-export function createMarkdownRenderer(messagesEl: HTMLElement): MarkdownRenderer {
+export function createMarkdownRenderer(messagesEl: HTMLElement, onAssistantRendered?: (body: HTMLElement) => void): MarkdownRenderer {
+  const render = (body: HTMLElement, text: string) => {
+    renderAssistantMarkdown(body, text);
+    onAssistantRendered?.(body);
+  };
   const requestIdle = window.requestIdleCallback || ((callback: IdleRequestCallback) => window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 1));
   const markdownRenderObserver = "IntersectionObserver" in window
     ? new IntersectionObserver((entries, observer) => {
@@ -512,19 +730,19 @@ export function createMarkdownRenderer(messagesEl: HTMLElement): MarkdownRendere
         observer.unobserve(body);
         const text = body.dataset.markdownText || "";
         requestIdle(() => {
-          if (body.isConnected && text && !body.dataset.markdownRendered) renderAssistantMarkdown(body, text);
+          if (body.isConnected && text && !body.dataset.markdownRendered) render(body, text);
         });
       }
     }, { root: messagesEl, rootMargin: "600px 0px" })
     : null;
 
   return {
-    renderAssistantMarkdown,
+    renderAssistantMarkdown: render,
     queueAssistantMarkdownRender(body, text) {
       body.dataset.markdownText = text;
       if (markdownRenderObserver) markdownRenderObserver.observe(body);
       else requestIdle(() => {
-        if (body.isConnected && !body.dataset.markdownRendered) renderAssistantMarkdown(body, text);
+        if (body.isConnected && !body.dataset.markdownRendered) render(body, text);
       });
     },
     unobserve(body) {

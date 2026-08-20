@@ -42,21 +42,20 @@ function mockContextMeter(compacting: boolean) {
   const contextMeterLabelEl = new MockElement();
   const contextMeterPopoverEl = new MockElement();
   const controller = createContextMeter({
-    state: { isCompacting: compacting } as AppState,
     elements: {
       contextMeterEl,
       contextMeterLabelEl,
       contextMeterPopoverEl,
     } as unknown as AppElements,
   });
-  return { controller, contextMeterEl, contextMeterLabelEl };
+  return { controller, contextMeterEl, contextMeterLabelEl, compacting };
 }
 
 describe("context meter compaction polish", () => {
   it("shows a compacting label and class while compaction is running", () => {
-    const { controller, contextMeterEl, contextMeterLabelEl } = mockContextMeter(true);
+    const { controller, contextMeterEl, contextMeterLabelEl, compacting } = mockContextMeter(true);
 
-    controller.update({ contextUsage: { tokens: 82_000, contextWindow: 100_000 } });
+    controller.update({ stats: { contextUsage: { tokens: 82_000, contextWindow: 100_000 } }, isCompacting: compacting });
 
     expect(contextMeterEl.className).toContain("compacting");
     expect(contextMeterEl.title).toBe("Compacting context…");
@@ -65,9 +64,9 @@ describe("context meter compaction polish", () => {
   });
 
   it("uses the normal ctx percentage label when not compacting", () => {
-    const { controller, contextMeterEl, contextMeterLabelEl } = mockContextMeter(false);
+    const { controller, contextMeterEl, contextMeterLabelEl, compacting } = mockContextMeter(false);
 
-    controller.update({ contextUsage: { tokens: 82_000, contextWindow: 100_000 } });
+    controller.update({ stats: { contextUsage: { tokens: 82_000, contextWindow: 100_000 } }, isCompacting: compacting });
 
     expect(contextMeterEl.className).toBe("contextMeter warning");
     expect(contextMeterLabelEl.textContent).toBe("ctx 82%");
@@ -198,12 +197,73 @@ describe("git status colors", () => {
 
 describe("tool card expand chevrons", () => {
   const css = readFileSync(new URL("../src/styles/toolCards.css", import.meta.url), "utf8");
+  const toolCardsTs = readFileSync(new URL("../src/tools/toolCards.ts", import.meta.url), "utf8");
+  const messagesTs = readFileSync(new URL("../src/messages/messageList.ts", import.meta.url), "utf8");
 
-  it("keeps tool and thinking expand/collapse chevrons white instead of accent-colored", () => {
-    const toggleBlock = css.match(/\.toolCardExpandToggle,\n\.toolCardCollapseToggle \{[\s\S]*?\n\}/)?.[0] || "";
-    expect(toggleBlock).toContain("color: #fff;");
-    expect(toggleBlock).not.toContain("color: var(--accent);");
-    expect(css).toContain(".toolCardCollapseToggle:focus-visible { color: #fff; border: none; }");
+  it("renders one metallic CSS chevron while preserving expanded state semantics", () => {
+    expect(css).toContain(".toolCardExpandToggle::before,\n.toolCardCollapseToggle::before {");
+    expect(css).toContain("background: linear-gradient(90deg, #7e6a43, #d8c18d 50%, #7e6a43);");
+    expect(css).toContain('.toolCardCollapseToggle[aria-expanded="true"]::before { transform: rotate(180deg); }');
+    expect(toolCardsTs).toContain('toggle.textContent = "";');
+    expect(messagesTs).toContain('toggle.textContent = "";');
+  });
+});
+
+describe("connected transcript and header styling", () => {
+  const toolCss = readFileSync(new URL("../src/styles/toolCards.css", import.meta.url), "utf8");
+  const messagesCss = readFileSync(new URL("../src/styles/messages.css", import.meta.url), "utf8");
+  const entryAnimationTs = readFileSync(new URL("../src/messages/entryAnimation.ts", import.meta.url), "utf8");
+  const statusCss = readFileSync(new URL("../src/styles/statusBar.css", import.meta.url), "utf8");
+
+  it("uses the midnight and champagne treatment for adjacent tool cards", () => {
+    expect(toolCss).toContain(".toolCard--success { background: #15201e; }");
+    expect(toolCss).toContain(".toolCard--thinking { background: #171b25; }");
+    expect(toolCss).toContain("--tool-stitch-metal: #c7a86d;");
+    expect(toolCss).toContain("width: 60px;");
+  });
+
+  it("uses the selected folio flip for tool and thinking card entrances", () => {
+    expect(toolCss).toContain("animation: toolCardFolioFlip .55s");
+    expect(toolCss).toContain("transform: perspective(800px) rotateX(-62deg)");
+    expect(toolCss).toContain("transform: perspective(800px) rotateX(4deg)");
+    expect(toolCss).toContain("animation-name: toolCardFolioFlipCompact;");
+    expect(toolCss).toContain("transform: perspective(700px) rotateX(-78deg)");
+    expect(toolCss).toContain(".toolCard--folioPending { opacity: 0; }");
+    expect(toolCss).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(entryAnimationTs).toContain("window.requestAnimationFrame(() => {");
+    expect(entryAnimationTs).toContain('card.classList.add("toolCard--folioEnter")');
+  });
+
+  it("smoothly settles tool results and completed thinking states", () => {
+    expect(toolCss).toContain(".toolCard--stateChanging .toolCardHeader {");
+    expect(toolCss).toContain("animation: toolCardStateSettle .42s");
+    expect(toolCss).toContain("@keyframes toolCardStateIcon");
+    expect(toolCss).toContain("@keyframes toolCardStateContent");
+    expect(entryAnimationTs).toContain("export function playToolCardStateTransition");
+    expect(entryAnimationTs).toContain('card.classList.add("toolCard--stateChanging")');
+  });
+
+  it("frames artifacts with compact sticky chrome and no nested vertical scroller", () => {
+    expect(messagesCss).toContain("border: 1px solid color-mix(in srgb, #c7a86d 30%, var(--border));");
+    expect(messagesCss).toContain("overflow: clip;");
+    expect(messagesCss).toContain("position: sticky;\n  top: 0;\n  z-index: 3;");
+    expect(messagesCss).toContain("height: 29px;\n  min-height: 29px;");
+    expect(messagesCss).toContain(".artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: clip; }");
+    expect(messagesCss).toContain("repeating-linear-gradient(\n      90deg,");
+  });
+
+  it("moves transcript fades outside the scroller and keeps phone previews flush", () => {
+    expect(messagesCss).toContain(".app::before,\n.app::after {");
+    expect(messagesCss).toContain("border-top: 8px solid transparent;");
+    expect(messagesCss).not.toContain("mask-image: linear-gradient(to bottom, transparent 0%, black 36px");
+    expect(messagesCss).toContain(".message.assistant > .body > .artifactPreview {");
+    expect(messagesCss).toContain("border-right: 0;\n    border-left: 0;");
+  });
+
+  it("lets the session title use free header space before truncating", () => {
+    expect(statusCss).toContain(".statusTitle {\n  flex: 1 1 auto;\n  min-width: 0;");
+    expect(statusCss).not.toContain("max-width: 240px;");
+    expect(statusCss).not.toContain("max-width: 28vw;");
   });
 });
 
@@ -237,13 +297,22 @@ describe("configurable accent color", () => {
   });
 
   it("routes primary accent UI through the configurable token", () => {
-    expect(composerCss).toContain(".primaryAction {\n  background: color-mix(in srgb, var(--accent)");
-    expect(composerCss).toContain("box-shadow: inset 0 0 0 2px var(--accent);");
+    expect(composerCss).toContain(".primaryAction {\n  border-color: #a98d59;\n  border-bottom-width: 1px;\n  background-color: #24342e;");
+    expect(composerCss).toContain("repeating-linear-gradient(");
+    expect(composerCss).toContain(".dangerAction {\n  border-color: #9f5f67;\n  border-bottom-width: 1px;\n  background-color: #48262b;");
+    expect(composerCss).toContain(".composer .dangerAction:focus-visible {\n  box-shadow:");
+    expect(composerCss).toContain(".composer textarea:focus-visible {\n  box-shadow:");
     expect(composerCss).toContain(".contextMeter.active .contextMeterFill { background: var(--accent); }");
     expect(composerCss).toContain("--thinking-accent: var(--accent);");
     expect(sessionsCss).toContain(".sessionUnreadDot {");
     expect(sessionsCss).toContain("background: var(--accent);");
     expect(sessionsCss).toContain(".sessionBarTab.active {\n  border-top-color: var(--accent);");
+  });
+
+  it("keeps bucket colors prominent on marked session tabs", () => {
+    expect(sessionsCss).toContain("background: color-mix(in srgb, var(--session-tab-accent) 30%, transparent);");
+    expect(sessionsCss).toContain("background: color-mix(in srgb, var(--session-tab-accent) 38%, transparent);");
+    expect(sessionsCss).toContain("background: color-mix(in srgb, var(--session-tab-accent) 24%, #1f1f1f);");
   });
 
   it("offers selectable running session tab loading animations", () => {
@@ -314,10 +383,12 @@ describe("slash command compact styling", () => {
     expect(css).toContain("clip-path: inset(calc(100% - var(--thinking-fill, 0%)) 0 0 0)");
     expect(css).not.toContain('data-thinking-level="low"');
     expect(css).not.toContain('data-thinking-level="xhigh"');
+    expect(css).toContain(".modelSettingsThinkingText { display: none; }");
   });
 
   it("animates the context meter while compacting with reduced-motion support", () => {
-    expect(css).toContain(".contextMeter.compacting .contextMeterFill");
+    expect(css).toContain(".contextMeter.compacting .contextMeterFill {");
+    expect(css).not.toMatch(/\.contextMeter\.compacting \.contextMeterFill \{[^}]*width:\s*100%/s);
     expect(css).toContain("animation: contextMeterPulse 1.25s ease-in-out infinite");
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
   });
@@ -325,7 +396,7 @@ describe("slash command compact styling", () => {
 
 describe("compact inactive composer styling", () => {
   const css = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
-  const compactSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
+  const compactSelector = ".composer.compactInactive:not(:has(#prompt:focus)):not(.expanded)";
 
   it("collapses the inactive empty composer into a single floating bar", () => {
     expect(css).toContain(`${compactSelector} {`);
@@ -368,10 +439,10 @@ describe("compact inactive composer styling", () => {
     expect(css).toContain(`${compactSelector} .expandButton,\n${compactSelector} #queueToggle,\n${compactSelector} #primaryButton {\n  display: none !important;\n}`);
   });
 
-  it("sets the compact inactive state during composer initialization", () => {
+  it("sets or restores the compact inactive state during composer initialization", () => {
     const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
     expect(composer).toContain("function updateCompactInactive()");
-    expect(composer).toContain("    updateCompactInactive();\n  }\n\n  return {");
+    expect(composer).toContain("applyCompactInactive(restoreFocus ? false : !elements.formEl.contains(document.activeElement));");
   });
 
   it("routes compact actions through press handlers before focus expands the composer", () => {

@@ -29,6 +29,8 @@ export type AppElements = {
   sessionDrawer: HTMLElement;
   sessionBackdrop: HTMLDivElement;
   sessionCloseButton: HTMLButtonElement;
+  sessionDrawerSettingsButton: HTMLButtonElement;
+  sessionDrawerInfoButton: HTMLButtonElement;
   sessionNewButton: HTMLButtonElement;
   sessionListEl: HTMLDivElement;
   sessionBarEl: HTMLDivElement;
@@ -47,14 +49,10 @@ export type AppElements = {
   modelSelectEl: HTMLSelectElement;
   thinkingSelectEl: HTMLSelectElement;
   headerActionsEl: HTMLSpanElement;
-  sessionInfoButton: HTMLButtonElement;
-  sessionInfoPopover: HTMLDivElement;
-  sessionInfoId: HTMLButtonElement;
-  sessionInfoCwd: HTMLButtonElement;
-  sessionInfoGit: HTMLButtonElement;
-  sessionInfoGitCount: HTMLSpanElement;
   newSessionHeaderButton: HTMLButtonElement;
   conversationTreeButton: HTMLButtonElement;
+  filesButton: HTMLButtonElement;
+  filesPanel: HTMLElement;
   gitButton: HTMLButtonElement;
   currentSessionBucketButton: HTMLButtonElement;
   settingsButton: HTMLButtonElement;
@@ -73,12 +71,24 @@ export type AppElements = {
   settingAccentApplyButton: HTMLButtonElement;
   settingQueueModeSelect: HTMLSelectElement;
   settingComposerExpandedCheckbox: HTMLInputElement;
+  settingRunNotificationsCheckbox: HTMLInputElement;
+  settingCompletionSoundCheckbox: HTMLInputElement;
+  settingCompletionVibrationCheckbox: HTMLInputElement;
+  settingRunNotificationsStatus: HTMLParagraphElement;
+  settingRunNotificationsTestButton: HTMLButtonElement;
   settingDefaultBucketColorSelect: HTMLSelectElement;
   settingNavPinnedCheckbox: HTMLInputElement;
   settingModelDefaultsValue: HTMLSpanElement;
   settingSaveModelDefaultsButton: HTMLButtonElement;
   settingClearModelDefaultsButton: HTMLButtonElement;
+  extensionStatusBadge: HTMLSpanElement;
+  extensionStatusMessage: HTMLParagraphElement;
+  extensionStatusDetails: HTMLDivElement;
+  extensionReloadButton: HTMLButtonElement;
+  waitingSessionsEl: HTMLElement;
   settingsStatusEl: HTMLSpanElement;
+  extensionSettingsContainer: HTMLElement;
+  tokenShareUnavailable: HTMLElement;
   tokenShareSection: HTMLElement;
   tokenShareQr: HTMLDivElement;
   tokenShareUrl: HTMLInputElement;
@@ -131,6 +141,8 @@ export function getAppElements(): AppElements {
     sessionDrawer: requiredElement<HTMLElement>("#sessionDrawer"),
     sessionBackdrop: requiredElement<HTMLDivElement>("#sessionBackdrop"),
     sessionCloseButton: requiredElement<HTMLButtonElement>("#sessionCloseButton"),
+    sessionDrawerSettingsButton: requiredElement<HTMLButtonElement>("#sessionDrawerSettingsButton"),
+    sessionDrawerInfoButton: requiredElement<HTMLButtonElement>("#sessionDrawerInfoButton"),
     sessionNewButton: requiredElement<HTMLButtonElement>("#sessionNewButton"),
     sessionListEl: requiredElement<HTMLDivElement>("#sessionList"),
     sessionBarEl: requiredElement<HTMLDivElement>("#sessionBar"),
@@ -149,14 +161,10 @@ export function getAppElements(): AppElements {
     modelSelectEl: requiredElement<HTMLSelectElement>("#modelSelect"),
     thinkingSelectEl: requiredElement<HTMLSelectElement>("#thinkingSelect"),
     headerActionsEl: requiredElement<HTMLSpanElement>("#headerActions"),
-    sessionInfoButton: requiredElement<HTMLButtonElement>("#sessionInfoButton"),
-    sessionInfoPopover: requiredElement<HTMLDivElement>("#sessionInfoPopover"),
-    sessionInfoId: requiredElement<HTMLButtonElement>("#sessionInfoId"),
-    sessionInfoCwd: requiredElement<HTMLButtonElement>("#sessionInfoCwd"),
-    sessionInfoGit: requiredElement<HTMLButtonElement>("#sessionInfoGit"),
-    sessionInfoGitCount: requiredElement<HTMLSpanElement>("#sessionInfoGitCount"),
     newSessionHeaderButton: requiredElement<HTMLButtonElement>("#newSessionHeaderButton"),
     conversationTreeButton: requiredElement<HTMLButtonElement>("#conversationTreeButton"),
+    filesButton: requiredElement<HTMLButtonElement>("#filesButton"),
+    filesPanel: requiredElement<HTMLElement>("#filesPanel"),
     gitButton: requiredElement<HTMLButtonElement>("#gitButton"),
     currentSessionBucketButton: requiredElement<HTMLButtonElement>("#currentSessionBucketButton"),
     settingsButton: requiredElement<HTMLButtonElement>("#settingsButton"),
@@ -175,12 +183,24 @@ export function getAppElements(): AppElements {
     settingAccentApplyButton: requiredElement<HTMLButtonElement>("#settingAccentApplyButton"),
     settingQueueModeSelect: requiredElement<HTMLSelectElement>("#settingQueueModeSelect"),
     settingComposerExpandedCheckbox: requiredElement<HTMLInputElement>("#settingComposerExpandedCheckbox"),
+    settingRunNotificationsCheckbox: requiredElement<HTMLInputElement>("#settingRunNotificationsCheckbox"),
+    settingCompletionSoundCheckbox: requiredElement<HTMLInputElement>("#settingCompletionSoundCheckbox"),
+    settingCompletionVibrationCheckbox: requiredElement<HTMLInputElement>("#settingCompletionVibrationCheckbox"),
+    settingRunNotificationsStatus: requiredElement<HTMLParagraphElement>("#settingRunNotificationsStatus"),
+    settingRunNotificationsTestButton: requiredElement<HTMLButtonElement>("#settingRunNotificationsTestButton"),
     settingDefaultBucketColorSelect: requiredElement<HTMLSelectElement>("#settingDefaultBucketColorSelect"),
     settingNavPinnedCheckbox: requiredElement<HTMLInputElement>("#settingNavPinnedCheckbox"),
     settingModelDefaultsValue: requiredElement<HTMLSpanElement>("#settingModelDefaultsValue"),
     settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),
     settingClearModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingClearModelDefaultsButton"),
+    extensionStatusBadge: requiredElement<HTMLSpanElement>("#extensionStatusBadge"),
+    extensionStatusMessage: requiredElement<HTMLParagraphElement>("#extensionStatusMessage"),
+    extensionStatusDetails: requiredElement<HTMLDivElement>("#extensionStatusDetails"),
+    extensionReloadButton: requiredElement<HTMLButtonElement>("#extensionReloadButton"),
+    waitingSessionsEl: requiredElement<HTMLElement>("#waitingSessions"),
     settingsStatusEl: requiredElement<HTMLSpanElement>("#settingsStatus"),
+    extensionSettingsContainer: requiredElement<HTMLElement>("#extensionSettingsContainer"),
+    tokenShareUnavailable: requiredElement<HTMLElement>("#tokenShareUnavailable"),
     tokenShareSection: requiredElement<HTMLElement>("#tokenShareSection"),
     tokenShareQr: requiredElement<HTMLDivElement>("#tokenShareQr"),
     tokenShareUrl: requiredElement<HTMLInputElement>("#tokenShareUrl"),

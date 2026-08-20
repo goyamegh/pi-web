@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -68,13 +69,13 @@ test.describe("composer layout", () => {
     expect(data.cwd).toBe("/tmp");
   });
 
-  test("running activity badge keeps header actions right-aligned", async ({ page }) => {
+  test("running activity badge keeps the header within the viewport", async ({ page }) => {
     await page.goto("/");
 
     const readLayout = () =>
       page.locator("#statusBar").evaluate((bar) => {
         const rect = bar.getBoundingClientRect();
-        const visibleActions = Array.from(bar.querySelectorAll<HTMLElement>(".statusBarButton"))
+        const visibleActions = Array.from(bar.querySelectorAll<HTMLElement>("#headerActions .statusBarButton, #newSessionHeaderButton"))
           .map((element) => element.getBoundingClientRect())
           .filter((actionRect) => actionRect.width > 0);
         const lastActionRect = visibleActions.at(-1);
@@ -89,8 +90,10 @@ test.describe("composer layout", () => {
     const expectActionsAtRight = (layout: Awaited<ReturnType<typeof readLayout>>) => {
       expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
       expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth + 1);
-      expect(layout.lastActionRight).toBeLessThanOrEqual(layout.viewportWidth + 1);
-      expect(layout.lastActionRight).toBeGreaterThanOrEqual(layout.right - 12);
+      if (layout.lastActionRight) {
+        expect(layout.lastActionRight).toBeLessThanOrEqual(layout.viewportWidth + 1);
+        expect(layout.lastActionRight).toBeGreaterThanOrEqual(layout.right - 12);
+      }
     };
 
     expectActionsAtRight(await readLayout());
@@ -461,10 +464,25 @@ test.describe("composer layout", () => {
     await expect(other.locator("#statusTitle")).toHaveText("Current mock session");
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
 
+    await page.evaluate(() => history.replaceState({
+      ...history.state,
+      piWebArtifactView: { view: "preview", entry: { name: "older.html", path: ".pi/web/artifacts/older.html", kind: "file" } },
+      piWebWorkspaceView: { view: "editor" },
+    }, ""));
     await page.locator("#sessionButton").click();
     await page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionItemNavBtn").click();
     await expect(page).toHaveURL(/sessionId=mock-current/);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect.poll(() => page.evaluate(() => ({ artifact: history.state.piWebArtifactView, workspace: history.state.piWebWorkspaceView }))).toEqual({ artifact: undefined, workspace: undefined });
+
+    await page.goBack();
+    await expect(page).toHaveURL(/sessionId=mock-older/);
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect.poll(() => page.evaluate(() => history.state.piWebArtifactView?.entry?.name)).toBe("older.html");
+    await page.goForward();
+    await expect(page).toHaveURL(/sessionId=mock-current/);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect.poll(() => page.evaluate(() => history.state.piWebArtifactView)).toBeUndefined();
     await expect(other.locator("#statusTitle")).toHaveText("Current mock session");
     await other.close();
   });
@@ -541,11 +559,12 @@ test.describe("composer layout", () => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
     expect(overflow).toBe(false);
 
-    const composerBox = await composer.boundingBox();
-    const sendBox = await page.locator("#primaryButton").boundingBox();
-    expect(composerBox).toBeTruthy();
-    expect(sendBox).toBeTruthy();
-    expect(sendBox!.x + sendBox!.width).toBeLessThanOrEqual(composerBox!.x + composerBox!.width + 1);
+    await expect.poll(async () => {
+      const composerBox = await composer.boundingBox();
+      const sendBox = await page.locator("#primaryButton").boundingBox();
+      if (!composerBox || !sendBox) return false;
+      return sendBox.x + sendBox.width <= composerBox.x + composerBox.width + 1;
+    }).toBe(true);
   });
 
   test("composer action row is flush, 40px tall, and has rounded bottom corners", async ({ page }) => {
@@ -605,10 +624,13 @@ test.describe("composer layout", () => {
     });
 
     const openSettings = async () => {
-      if (await page.locator("#settingsPanel").isVisible()) return;
-      if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
-      await page.locator("#settingsButton").click();
-      await expect(page.locator("#settingsPanel")).toBeVisible();
+      if (!await page.locator("#settingsPanel").isVisible()) {
+        await page.locator("#prompt").blur();
+        if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
+        await openSessionDrawerFooterAction(page, "Settings");
+        await expect(page.locator("#settingsPanel")).toBeVisible();
+      }
+      if (!await page.locator("#settingAccentMenuButton").isVisible()) await page.locator("#settingsNavAppearance").click();
     };
 
     const before = await readAccentStyles();
@@ -632,7 +654,8 @@ test.describe("composer layout", () => {
     await expect(page.locator("#settingAccentMenuName")).toHaveText("Velvet Orchid");
     await expect(page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]')).toHaveAttribute("aria-checked", "true");
     const preview = await readAccentStyles();
-    expect(preview.buttonBackground).not.toBe(before.buttonBackground);
+    expect(preview.buttonBackground).toBe(before.buttonBackground);
+    expect(preview.buttonBackground).toBe("rgb(36, 52, 46)");
     expect(preview.promptFocusBorder).toBe("rgb(217, 138, 223)");
     expect(preview.unreadDotBackground).toBe("rgb(217, 138, 223)");
 
@@ -657,8 +680,8 @@ test.describe("composer layout", () => {
     await page.locator("#settingAccentApplyButton").click();
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#ff00aa");
     const custom = await readAccentStyles();
-    expect(custom.buttonBackground).not.toBe(before.buttonBackground);
-    expect(custom.buttonBackground).not.toBe(preview.buttonBackground);
+    expect(custom.buttonBackground).toBe(before.buttonBackground);
+    expect(custom.buttonBackground).toBe(preview.buttonBackground);
     expect(custom.promptFocusBorder).toBe("rgb(255, 0, 170)");
     expect(custom.unreadDotBackground).toBe("rgb(255, 0, 170)");
   });
@@ -667,10 +690,13 @@ test.describe("composer layout", () => {
     await page.goto("/");
 
     const openSettings = async () => {
-      if (await page.locator("#settingsPanel").isVisible()) return;
-      if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
-      await page.locator("#settingsButton").click();
-      await expect(page.locator("#settingsPanel")).toBeVisible();
+      if (!await page.locator("#settingsPanel").isVisible()) {
+        await page.locator("#prompt").blur();
+        if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
+        await openSessionDrawerFooterAction(page, "Settings");
+        await expect(page.locator("#settingsPanel")).toBeVisible();
+      }
+      if (!await page.locator("#settingLoadingAnimationSelect").isVisible()) await page.locator("#settingsNavAppearance").click();
     };
 
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.loadingAnimation)).toBe("fireworks");
@@ -908,6 +934,16 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Older mock session" }).locator(".sessionSpinner")).toHaveCount(0);
   });
 
+  test("desktop session view uses the full width without side panels", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto("/");
+
+    const appBox = await page.locator(".app").boundingBox();
+    expect(appBox).toBeTruthy();
+    expect(appBox!.x).toBeCloseTo(0, 1);
+    expect(appBox!.width).toBeCloseTo(1600, 1);
+  });
+
   test("desktop push mode uses the full space beside the drawer", async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 900 });
     await page.goto("/");
@@ -1088,7 +1124,8 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator("#connectionStatus")).toBeHidden();
   });
 
-  test("empty attachment container collapses and populated attachment row has padding", async ({ page }) => {
+  test("shows floating attachment micro-pills above focused and blurred composers", async ({ page }) => {
+    await page.setViewportSize({ width: 411, height: 903 });
     const attachments = page.locator("#attachments");
     await expect(attachments).toHaveCSS("display", "none");
 
@@ -1098,39 +1135,102 @@ test.describe("attachments and prompt", () => {
       buffer: VALID_PNG,
     };
     await page.locator("#imageInput").setInputFiles(file);
-    await expect(page.locator(".attachmentChip")).toBeVisible();
-    await expect(attachments).toHaveCSS("padding-top", "8px");
-    await expect(attachments).toHaveCSS("padding-right", "8px");
-    await expect(attachments).toHaveCSS("padding-bottom", "8px");
-    await expect(attachments).toHaveCSS("padding-left", "8px");
+    await page.locator("#prompt").focus();
+    const chip = page.locator(".attachmentChip");
+    await expect(chip).toBeVisible();
+    expect((await attachments.boundingBox())!.y).toBeLessThan((await page.locator("#promptForm").boundingBox())!.y);
+    const pillBox = (await attachments.boundingBox())!;
+    const fabBox = (await page.locator(".actionLauncherToggle").boundingBox())!;
+    expect(pillBox.x + pillBox.width).toBeLessThanOrEqual(fabBox.x);
+    await expect(page.locator(".removeAttachment")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
 
-    const attachmentBg = await attachments.evaluate((el) => getComputedStyle(el).backgroundColor);
-    const composerBg = await page.locator("#promptForm").evaluate((el) => getComputedStyle(el).backgroundColor);
-    expect(attachmentBg).toBe(composerBg);
+    await chip.locator("img").click();
+    await expect(page.locator(".imageOverlay img")).toBeVisible();
+    await page.locator(".imageOverlay").click();
+
+    await page.locator("#prompt").blur();
+    await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+    await expect(page.locator(".attachmentChip")).toBeVisible();
+    expect((await attachments.boundingBox())!.y).toBeLessThan((await page.locator("#promptForm").boundingBox())!.y);
   });
 
-  test("supports dragging and dropping image attachments", async ({ page }) => {
-    const dataTransfer = await page.evaluateHandle((bytes) => {
+  test("supports dragging, dropping, and submitting generic attachments", async ({ page }) => {
+    const dataTransfer = await page.evaluateHandle(() => {
       const transfer = new DataTransfer();
-      transfer.items.add(new File([new Uint8Array(bytes)], "dropped.png", { type: "image/png" }));
+      transfer.items.add(new File(["notes"], "dropped.txt", { type: "text/plain" }));
       return transfer;
-    }, Array.from(VALID_PNG));
+    });
 
     await page.locator("#promptForm").dispatchEvent("dragenter", { dataTransfer });
     await expect(page.locator("#promptForm")).toHaveClass(/dragOver/);
     await page.locator("#promptForm").dispatchEvent("drop", { dataTransfer });
 
-    await expect(page.locator(".attachmentChip")).toContainText("dropped.png");
+    await expect(page.locator(".attachmentChip")).toContainText("dropped.txt");
     await expect(page.locator("#primaryButton")).toBeEnabled();
+    await page.locator("#prompt").fill("summarize this");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator(".message.user .messageAttachmentPreview")).toHaveText("TXT");
+    await expect(page.locator(".message.user .messageAttachmentCount")).toHaveText("1 attached");
   });
 
-  test("supports image-only prompt and attachment removal", async ({ page }) => {
+  test("reconciles an attachment prompt without briefly duplicating its server-enriched message", async ({ page }) => {
     const file = {
       name: "tiny.png",
       mimeType: "image/png",
       buffer: VALID_PNG,
     };
     await page.locator("#imageInput").setInputFiles(file);
+    await page.locator("#prompt").fill("slow image correlation");
+    await page.locator("#primaryButton").click();
+
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await expect(page.locator(".message.user", { hasText: "slow image correlation" })).toHaveCount(1);
+    await expect(page.locator(".message.user .messageAttachmentImage")).toHaveCount(1);
+    await expect(page.locator(".message.user .messageAttachmentCount")).toHaveText("1 attached");
+    await expect(page.locator("#messages")).not.toContainText("pi-web-attachments-v1");
+    await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5000 });
+    await expect(page.locator(".message.user", { hasText: "slow image correlation" })).toHaveCount(1);
+  });
+
+  test("restores uploaded attachment drafts after the page is reloaded", async ({ page }) => {
+    const file = {
+      name: "android-picker.png",
+      mimeType: "image/png",
+      buffer: VALID_PNG,
+    };
+    await page.locator("#imageInput").setInputFiles(file);
+    await expect(page.locator(".attachmentChip")).toContainText("android-picker.png");
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-composer-attachments-v1"))).toContain("android-picker.png");
+
+    await page.reload();
+
+    await expect(page.locator(".attachmentChip")).toContainText("android-picker.png");
+    await expect(page.locator("#primaryButton")).toBeEnabled();
+  });
+
+  test("keeps a copyable attachment lifecycle report across reloads", async ({ page }) => {
+    await page.locator("#imageInput").setInputFiles({ name: "debug.png", mimeType: "image/png", buffer: VALID_PNG });
+    await expect(page.locator(".attachmentChip")).toContainText("debug.png");
+    await page.reload();
+    await page.locator("#settingsButton").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator("#settingsNavDiagnostics").click();
+    await page.locator("#openDebugDiagnosticsButton").click();
+
+    const report = page.locator(".debugDiagnostics textarea");
+    await expect(report).toHaveValue(/attachment-picker-change/);
+    await expect(report).toHaveValue(/attachment-upload-complete/);
+    await expect(report).toHaveValue(/page-hide/);
+    await expect(report).toHaveValue(/attachment-draft-restored/);
+  });
+
+  test("supports attachment-only prompts and attachment removal", async ({ page }) => {
+    const file = {
+      name: "tiny.png",
+      mimeType: "image/png",
+      buffer: VALID_PNG,
+    };
+    await page.locator("#imageInput").setInputFiles(file);
+    await page.locator("#prompt").focus();
     await expect(page.locator(".attachmentChip")).toBeVisible();
     await expect(page.locator("#primaryButton")).toBeEnabled();
 
@@ -1139,10 +1239,15 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator("#primaryButton")).toBeDisabled();
 
     await page.locator("#imageInput").setInputFiles(file);
+    await page.locator("#prompt").focus();
     await expect(page.locator(".attachmentChip")).toBeVisible();
     await page.locator("#primaryButton").click();
-    await expect(page.locator(".message.user .messageImageThumb")).toBeVisible();
-    await expect(page.getByText("Mock response with image.").first()).toBeVisible();
+    await expect(page.locator(".message.user .messageAttachmentImage")).toBeVisible();
+    await expect(page.locator(".message.user .messageAttachmentCount")).toHaveText("1 attached");
+    await page.locator(".message.user .messageAttachmentImage").click();
+    await expect(page.locator(".imageOverlay img")).toBeVisible();
+    await page.locator(".imageOverlay").click();
+    await expect(page.getByText("Mock response.").first()).toBeVisible();
   });
 });
 
@@ -1352,6 +1457,30 @@ test.describe("assistant markdown rendering", () => {
     await expect(latestAssistant.locator('.markdownBody a[href^="javascript:"]')).toHaveCount(0);
   });
 
+  test("renders sandboxed interactive HTML previews with sizing and a source toggle", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return html preview");
+    await page.locator("#primaryButton").click();
+
+    const assistant = page.locator(".message.assistant", { hasText: "Interactive result" }).last();
+    const preview = assistant.locator(".htmlPreview");
+    const frame = preview.locator("iframe");
+    await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(frame.contentFrame().locator("#ran")).toHaveText("script ran");
+    await expect.poll(() => preview.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(300);
+    await expect(preview).toHaveClass(/htmlPreview--compact/);
+
+    const initialHeight = await frame.evaluate((element) => element.getBoundingClientRect().height);
+    await frame.contentFrame().getByRole("button", { name: "Toggle" }).click();
+    await expect.poll(() => frame.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(initialHeight + 100);
+    await expect(preview).not.toHaveClass(/htmlPreview--compact/);
+
+    await preview.getByRole("button", { name: "Show HTML source" }).click();
+    await expect(preview.locator("pre code.language-html")).toBeVisible();
+    await preview.getByRole("button", { name: "Show interactive preview" }).click();
+    await expect(frame).toBeVisible();
+  });
+
   test("renders Mermaid code fences as diagrams", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("please return mermaid");
@@ -1500,7 +1629,9 @@ test.describe("code block copy button", () => {
     await pre.hover();
     const copyBtn = pre.locator(".copyCode");
     await copyBtn.evaluate((el) => (el as HTMLElement).focus());
-    await copyBtn.click();
+    // This test exercises the timer, not hover visibility (covered above). On
+    // touch projects Playwright may clear synthetic hover before the click.
+    await copyBtn.click({ force: true });
     await expect(copyBtn).toHaveAttribute("data-icon", "check");
 
     await page.waitForTimeout(2000);
@@ -1560,14 +1691,14 @@ test.describe("context compaction", () => {
 
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
-    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "pi_event", event: { type: "compaction_start", reason: "manual" } }));
+    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "agent_event", event: { type: "compaction_start", reason: "manual" } }));
 
     await expect(page.locator("#contextMeter")).toHaveClass(/compacting/);
     await expect(page.locator("#contextMeterLabel")).toHaveText("compacting");
     await expect(page.locator(".message.system.compaction")).toHaveCount(0);
 
     expect(abortRequested).toBe(false);
-    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "pi_event", event: { type: "compaction_end", reason: "manual", aborted: true } }));
+    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "agent_event", event: { type: "compaction_end", reason: "manual", aborted: true } }));
     const compaction = page.locator(".message.system.compaction").last();
     await expect(compaction).toContainText("Compaction cancelled.");
     await expect(page.locator("#contextMeter")).not.toHaveClass(/compacting/);
@@ -1625,8 +1756,10 @@ test.describe("image rendering", () => {
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
     await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n```ts\nconst preview = true;\n```\n");
+    await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
     await writeFile(join(artifactDir, "preview.html"), htmlPreview);
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
+    await writeFile(join(artifactDir, "e2e-audio-artifact.mp3"), Buffer.from("MP3"));
   });
 
   test.beforeEach(async ({ page }) => {
@@ -1640,10 +1773,107 @@ test.describe("image rendering", () => {
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
     const preview = page.locator(".artifactPreview--markdown").last();
-    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("report.md");
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("Artifact report");
     await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
     await expect(preview.locator(".artifactPreviewContent strong")).toHaveText("markdown");
     await expect(preview.locator(".artifactPreviewContent pre code")).toContainText("const preview = true;");
+  });
+
+  test("expands long artifacts in the chat flow without trapping the wheel", async ({ page }) => {
+    await page.locator("#prompt").fill("show long markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const messages = page.locator("#messages");
+    const preview = page.locator(".artifactPreview--markdown").last();
+    const content = preview.locator(".artifactPreviewContent");
+    const expand = preview.locator(".artifactPreviewExpand");
+    await expect(content.locator("h1")).toHaveText("Long artifact report");
+    await expect(expand).toBeVisible();
+    await expect(expand).toHaveText("⌄ Show more");
+
+    await messages.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    const chatScrollBefore = await messages.evaluate((element) => element.scrollTop);
+    await content.hover({ force: true });
+    await page.mouse.wheel(0, -240);
+    await expect.poll(() => messages.evaluate((element) => element.scrollTop)).toBeLessThan(chatScrollBefore);
+    expect(await content.evaluate((element) => element.scrollTop)).toBe(0);
+
+    await expand.click();
+    await expect(preview).toHaveClass(/artifactPreview--expanded/);
+    await expect(expand).toHaveText("⌃ Show less");
+    const expandedSize = await content.evaluate((element) => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));
+    expect(expandedSize.clientHeight).toBeGreaterThan(0);
+    expect(Math.abs(expandedSize.scrollHeight - expandedSize.clientHeight)).toBeLessThanOrEqual(1);
+
+    const header = preview.locator(".artifactPreviewHeader");
+    await header.evaluate((element) => element.scrollIntoView({ block: "start" }));
+    const pinnedGeometry = await header.evaluate((element) => {
+      const messages = document.querySelector<HTMLElement>("#messages")!;
+      return { headerTop: element.getBoundingClientRect().top, scrollportTop: messages.getBoundingClientRect().top + messages.clientTop };
+    });
+    expect(Math.abs(pinnedGeometry.headerTop - pinnedGeometry.scrollportTop)).toBeLessThanOrEqual(1);
+
+    await expand.click();
+    await expect(preview).not.toHaveClass(/artifactPreview--expanded/);
+    await expect(expand).toHaveText("⌄ Show more");
+  });
+
+  test("minimizes an artifact to its compact sticky header", async ({ page }) => {
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--markdown").last();
+    const disclosure = preview.locator(".artifactPreviewDisclosure");
+    await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
+    await disclosure.click();
+    await expect(preview).toHaveClass(/artifactPreview--minimized/);
+    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    await expect(preview.locator(".artifactPreviewContent")).toBeHidden();
+
+    await preview.locator(".artifactPreviewTitle").click();
+    await expect(preview).not.toHaveClass(/artifactPreview--minimized/);
+    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    await expect(preview.locator(".artifactPreviewContent")).toBeVisible();
+  });
+
+  test("keeps artifact headers at tool-row height when extension actions are present", async ({ page }) => {
+    await page.request.post("/api/mock/state", { data: {
+      webContributions: [{
+        version: 1,
+        key: "artifact-download",
+        slot: "artifact-action",
+        kind: "rendered",
+        title: "Download artifact",
+        label: "Download",
+        match: { kinds: ["markdown"] },
+      }],
+    } });
+    await page.reload();
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--markdown").last();
+    const header = preview.locator(".artifactPreviewHeader");
+    await expect(preview.getByRole("button", { name: "Download artifact" })).toHaveCount(1);
+    await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
+    expect((await header.boundingBox())?.height).toBeLessThanOrEqual(30);
+  });
+
+  test("keeps top-level artifact cards flush on phones", async ({ page }) => {
+    test.skip((page.viewportSize()?.width || 0) > 700, "Phone-only geometry");
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--markdown").last();
+    await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
+    const geometry = await preview.evaluate((card) => {
+      const cardRect = card.getBoundingClientRect();
+      const messageRect = card.closest(".message.assistant")!.getBoundingClientRect();
+      return { cardLeft: cardRect.left, cardRight: cardRect.right, messageLeft: messageRect.left, messageRight: messageRect.right };
+    });
+    expect(Math.abs(geometry.cardLeft - geometry.messageLeft)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometry.cardRight - geometry.messageRight)).toBeLessThanOrEqual(1);
   });
 
   test("opens markdown artifacts in a rendered preview page", async ({ page }) => {
@@ -1657,7 +1887,7 @@ test.describe("image rendering", () => {
     expect(href).toBeTruthy();
     await page.goto(href!);
 
-    await expect(page.locator("#artifactPreviewTitle")).toHaveText("report.md");
+    await expect(page.locator("#artifactPreviewTitle")).toHaveText("Artifact report");
     await expect(page.getByRole("button", { name: "Back" })).toHaveClass(/artifactPreviewPageAction/);
     await expect(page.getByRole("link", { name: "Raw" })).toHaveClass(/artifactPreviewPageAction/);
     await expect(page.locator("#artifactPreviewBody h1")).toHaveText("Artifact report");
@@ -1672,11 +1902,20 @@ test.describe("image rendering", () => {
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
     const preview = page.locator(".artifactPreview--html").last();
-    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("preview.html");
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("Interactive preview");
     const frame = preview.locator("iframe.artifactPreviewFrame");
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
     await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
     await expect(frame).toHaveAttribute("src", "/api/artifacts/preview.html");
+    await expect(frame).toHaveCSS("pointer-events", "none");
+    const shield = preview.locator(".artifactPreviewShield");
+    await expect(shield).toBeVisible();
+    await shield.click();
+    await expect(preview).toHaveClass(/artifactPreview--interactive/);
+    await expect(frame).toHaveCSS("pointer-events", "auto");
+    await page.mouse.move(0, 0);
+    await expect(preview).not.toHaveClass(/artifactPreview--interactive/);
+    await expect(frame).toHaveCSS("pointer-events", "none");
     const artifactFrame = frame.contentFrame();
     await expect(artifactFrame.locator("#script-status")).toHaveText("script ran");
     await expect(artifactFrame.locator("#sandbox-status")).toContainText("parent blocked");
@@ -1694,6 +1933,22 @@ test.describe("image rendering", () => {
     await expect(video).toBeVisible();
     await expect(video.locator("source")).toHaveAttribute("src", "/api/artifacts/e2e-video-artifact.webm");
     await expect(video.locator("source")).toHaveAttribute("type", "video/webm");
+  });
+
+  test("renders audio artifact links inline", async ({ page }) => {
+    await page.locator("#prompt").fill("show audio artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--audio").last();
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-audio-artifact.mp3");
+    const audio = preview.locator("audio.artifactPreviewAudio");
+    await expect(audio).toBeVisible();
+    await expect(audio.locator("source")).toHaveAttribute("src", "/api/artifacts/e2e-audio-artifact.mp3");
+    await expect(audio.locator("source")).toHaveAttribute("type", "audio/mpeg");
+
+    const downloadStarted = page.waitForEvent("download");
+    await preview.getByRole("button", { name: "Download artifact" }).click();
+    expect((await downloadStarted).suggestedFilename()).toBe("e2e-audio-artifact.mp3");
   });
 
   test("image actions appear on hover with fullscreen, download and open buttons", async ({ page }) => {

@@ -1,17 +1,23 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
-import type { AppState, ComposerContextAttachment, ImageAttachment, SlashCommand } from "../app/types.js";
+import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
+import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
+import { recordDebugEvent } from "../app/debugDiagnostics.js";
+import { openImageOverlay } from "../components/imageActions.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
+import type { QuoteRepliesController, QuoteReplySubmission } from "../quotes/quoteReplies.js";
 
 type BarcodeDetectorLike = {
   detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>>;
 };
 
 type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
+
+const restoreFocusStorageKey = "pi-web-composer-restore-focus";
 
 export type ComposerController = {
   init: () => void;
@@ -22,21 +28,10 @@ export type ComposerController = {
   updatePrimaryAction: () => void;
   updateQueueToggle: () => void;
   updatePendingQueue: (steering: unknown, followUp: unknown) => void;
-  handleUserMessage: (text: string, images?: any[]) => boolean;
+  trackOptimisticUserMessage: (clientMessageId: string) => void;
+  discardOptimisticUserMessage: (clientMessageId: string) => void;
+  handleUserMessage: (text: string, clientMessageId?: string, sourceClientId?: string, images?: any[]) => boolean;
 };
-
-function fileToImageAttachment(file: File): Promise<ImageAttachment> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      const result = String(reader.result || "");
-      const data = result.includes(",") ? result.slice(result.indexOf(",") + 1) : result;
-      resolve({ type: "image", data, mimeType: file.type, name: file.name });
-    });
-    reader.addEventListener("error", () => reject(reader.error || new Error(`Could not read ${file.name}`)));
-    reader.readAsDataURL(file);
-  });
-}
 
 export function createComposer(options: {
   state: AppState;
@@ -44,7 +39,7 @@ export function createComposer(options: {
   api: ApiClient;
   addMessage: (role: "user" | "system", text: string, extraClass?: string, images?: any[]) => void;
   addToolHistoryCard?: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
-  updateMeta: (data: any) => void;
+  sessionState: SessionStateController;
   updateThinkingOptions: (levels?: string[]) => void;
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
@@ -52,12 +47,14 @@ export function createComposer(options: {
   beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
+  quoteReplies: QuoteRepliesController;
 }): ComposerController {
-  const { state, elements, api, addMessage, addToolHistoryCard, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow } = options;
+  const { state, elements, api, addMessage, addToolHistoryCard, sessionState, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow, quoteReplies } = options;
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
   const draftStorageKey = "pi-web-composer-draft";
+  const attachmentDraftStorageKey = "pi-web-composer-attachments-v1";
   const expandedStorageKey = "pi-web-composer-expanded";
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
@@ -68,7 +65,7 @@ export function createComposer(options: {
   let contextAttachments: ComposerContextAttachment[] = [];
   let pendingSteering: string[] = [];
   let pendingFollowUp: string[] = [];
-  const optimisticUserMessages = new Map<string, number>();
+  const optimisticUserMessages = new Set<string>();
 
   function renderPendingQueue() {
     const entries = [
@@ -105,26 +102,33 @@ export function createComposer(options: {
     renderPendingQueue();
   }
 
-  function handleUserMessage(text: string, images: any[] = []) {
-    const optimisticCount = optimisticUserMessages.get(text) || 0;
-    if (optimisticCount > 0) {
-      if (optimisticCount === 1) optimisticUserMessages.delete(text);
-      else optimisticUserMessages.set(text, optimisticCount - 1);
-      return true;
-    }
+  function trackOptimisticUserMessage(clientMessageId: string) {
+    optimisticUserMessages.add(clientMessageId);
+  }
+
+  function discardOptimisticUserMessage(clientMessageId: string) {
+    optimisticUserMessages.delete(clientMessageId);
+  }
+
+  function handleUserMessage(text: string, clientMessageId?: string, sourceClientId?: string, images: any[] = []) {
+    if (clientMessageId && sourceClientId === api.clientId && optimisticUserMessages.delete(clientMessageId)) return true;
     addMessage("user", text, "", images);
     return true;
   }
 
   function updatePrimaryAction() {
-    const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0;
+    const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0 || quoteReplies.hasDrafts();
     const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
-    elements.primaryButton.disabled = !hasInput || !initialRealtimeReady;
+    const runtime = sessionRuntime(state);
+    const canSendWhileRunning = activeSessionState(state)?.capabilities?.queue !== false;
+    elements.primaryButton.disabled = !hasInput || !initialRealtimeReady || runtime.isRunning && !canSendWhileRunning;
     elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
-    elements.stopButton.style.display = state.isStreaming || state.isRetrying ? "" : "none";
+    elements.stopButton.style.display = runtime.isStreaming || runtime.isRetrying ? "" : "none";
   }
 
   function updateQueueToggle() {
+    const capabilities = activeSessionState(state)?.capabilities;
+    elements.queueToggle.hidden = capabilities?.queue === false;
     const isSteer = state.queueMode === "steer";
     elements.queueToggle.setAttribute("aria-pressed", String(isSteer));
     elements.queueToggle.title = isSteer ? "Queue mode: steer while running" : "Queue mode: follow up after running";
@@ -132,9 +136,13 @@ export function createComposer(options: {
     setIcon(elements.queueToggle, isSteer ? "route" : "corner-down-right");
   }
 
+  function applyCompactInactive(compact: boolean) {
+    elements.formEl.classList.toggle("compactInactive", compact);
+  }
+
   function updateCompactInactive() {
     const active = document.activeElement;
-    elements.formEl.classList.toggle("compactInactive", !active || !elements.formEl.contains(active));
+    applyCompactInactive(!active || !elements.formEl.contains(active));
   }
 
   async function stopStreaming() {
@@ -165,7 +173,14 @@ export function createComposer(options: {
   }
 
   function settlePromptFocusAfterSubmit() {
-    if (!focusIfKeyboardFriendly(elements.promptEl)) elements.promptEl.blur();
+    if (!focusIfKeyboardFriendly(elements.promptEl)) {
+      // Let the pointer-generated click finish before compact mode hides and
+      // reflows the submit control, especially on touch-sized viewports.
+      window.setTimeout(() => {
+        // A new queued prompt may have been entered while the request settled.
+        if (!elements.promptEl.value) elements.promptEl.blur();
+      }, 0);
+    }
   }
 
   function setPromptText(text: string) {
@@ -212,6 +227,7 @@ export function createComposer(options: {
       .filter((command) => {
         const name = command.name.toLowerCase();
         const description = command.description?.toLowerCase() || "";
+        if (name === "compact" && activeSessionState(state)?.capabilities?.compaction === false) return false;
         return !query || name.includes(query) || description.includes(query);
       })
       .sort((a, b) => {
@@ -310,20 +326,34 @@ export function createComposer(options: {
     return slashCommands.find((command) => command.name.toLowerCase() === name);
   }
 
-  async function attachImageFiles(files: File[]) {
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    if (files.length > 0 && imageFiles.length === 0) {
-      addMessage("system", "Only image attachments are supported.", "error");
-      return;
-    }
-    if (imageFiles.length !== files.length) addMessage("system", "Some dropped files were skipped because only image attachments are supported.");
+  async function attachFiles(files: File[]) {
+    if (!files.length) return;
+    recordDebugEvent("attachment-upload-start", { files: files.map(({ name, size, type }) => ({ name, size, type })) });
     try {
-      const images = await Promise.all(imageFiles.map(fileToImageAttachment));
-      state.attachedImages.push(...images);
+      const attachments = await Promise.all(files.map(async (file): Promise<FileAttachment> => {
+        const params = new URLSearchParams({
+          sessionId: state.currentSessionId,
+          name: file.name,
+          mediaType: file.type || "application/octet-stream",
+        });
+        const { "content-type": _contentType, ...uploadHeaders } = api.headers();
+        const response = await fetch(`/api/attachments?${params}`, {
+          method: "POST",
+          headers: uploadHeaders,
+          body: file,
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const result = await response.json() as { attachment?: FileAttachment };
+        if (!result.attachment) throw new Error(`Could not attach ${file.name}`);
+        return result.attachment;
+      }));
+      state.attachedImages.push(...attachments);
+      recordDebugEvent("attachment-upload-complete", { attachments: attachments.map(({ id, name, bytes, mediaType }) => ({ id, name, bytes, mediaType })) });
       renderAttachments();
       updatePrimaryAction();
       hideSlashCommands();
     } catch (error) {
+      recordDebugEvent("attachment-upload-error", { message: error instanceof Error ? error.message : String(error) });
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
     }
   }
@@ -348,7 +378,44 @@ export function createComposer(options: {
     focusIfKeyboardFriendly(elements.promptEl);
   }
 
+  function persistAttachmentDraft() {
+    try {
+      if (state.attachedImages.length) {
+        localStorage.setItem(attachmentDraftStorageKey, JSON.stringify({
+          sessionId: state.currentSessionId,
+          attachments: state.attachedImages,
+        }));
+      } else {
+        localStorage.removeItem(attachmentDraftStorageKey);
+      }
+    } catch { /* ignore */ }
+  }
+
+  function restoreAttachmentDraft() {
+    try {
+      const value = JSON.parse(localStorage.getItem(attachmentDraftStorageKey) || "null") as { sessionId?: unknown; attachments?: unknown } | null;
+      if (!value || !Array.isArray(value.attachments)) return;
+      // Initial state arrives asynchronously after the composer is created. If
+      // no session is active yet, restore now just like the text draft does.
+      if (state.currentSessionId && value.sessionId !== state.currentSessionId) return;
+      state.attachedImages = value.attachments.filter((item): item is FileAttachment => {
+        if (!item || typeof item !== "object") return false;
+        const attachment = item as Partial<FileAttachment>;
+        return typeof attachment.id === "string"
+          && typeof attachment.name === "string"
+          && typeof attachment.mediaType === "string"
+          && typeof attachment.bytes === "number"
+          && typeof attachment.path === "string"
+          && typeof attachment.contentUrl === "string";
+      });
+      recordDebugEvent("attachment-draft-restored", { count: state.attachedImages.length, storedSessionId: value.sessionId });
+      renderAttachments();
+      updatePrimaryAction();
+    } catch { /* ignore malformed or unavailable storage */ }
+  }
+
   function renderAttachments() {
+    persistAttachmentDraft();
     elements.attachmentsEl.textContent = "";
     elements.attachmentsEl.hidden = state.attachedImages.length === 0 && contextAttachments.length === 0;
     contextAttachments.forEach((context, index) => {
@@ -391,8 +458,31 @@ export function createComposer(options: {
       chip.className = "attachmentChip";
 
       const preview = document.createElement("img");
-      preview.src = `data:${image.mimeType};base64,${image.data}`;
-      preview.alt = "";
+      if (image.mediaType.startsWith("image/")) {
+        void fetch(image.contentUrl, { headers: api.headers() })
+          .then((response) => {
+            if (!response.ok) throw new Error("Attachment preview unavailable");
+            return response.blob();
+          })
+          .then((blob) => {
+            const objectUrl = URL.createObjectURL(blob);
+            preview.src = objectUrl;
+          })
+          .catch(() => { preview.hidden = true; });
+      } else preview.hidden = true;
+      preview.alt = image.name;
+      if (image.mediaType.startsWith("image/")) {
+        preview.tabIndex = 0;
+        preview.setAttribute("role", "button");
+        preview.setAttribute("aria-label", `Preview ${image.name}`);
+        preview.addEventListener("click", () => openImageOverlay(preview));
+        preview.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openImageOverlay(preview);
+          }
+        });
+      }
 
       const name = document.createElement("span");
       name.textContent = image.name;
@@ -412,16 +502,6 @@ export function createComposer(options: {
       chip.append(preview, name, remove);
       elements.attachmentsEl.append(chip);
     });
-  }
-
-  function messageWithAttachedContext(message: string, contexts: ComposerContextAttachment[]) {
-    if (contexts.length === 0) return message;
-    const attachedContext = contexts.map((context) => [
-      `--- Attached context: ${context.label} ---`,
-      context.content,
-      `--- End attached context: ${context.label} ---`,
-    ].join("\n")).join("\n\n");
-    return message ? `${attachedContext}\n\n${message}` : attachedContext;
   }
 
   function isShellError(data: { exitCode?: unknown; cancelled?: unknown }) {
@@ -476,7 +556,7 @@ export function createComposer(options: {
 
     const sessionId = scanned.url?.searchParams.get("sessionId")?.trim();
     if (sessionId) {
-      state.currentSessionId = sessionId;
+      sessionState.activate(sessionId);
       writeActiveSessionIdToUrl(sessionId, "replace");
     }
     connectWithToken(scanned.token);
@@ -538,6 +618,7 @@ export function createComposer(options: {
   }
 
   async function runShellEscape(input: string) {
+    if (activeSessionState(state)?.capabilities?.bash === false) throw new Error("Shell commands are not supported by this harness.");
     const trimmed = input.trim();
     const excludeFromContext = trimmed.startsWith("!!");
     const command = trimmed.slice(excludeFromContext ? 2 : 1).trim();
@@ -556,6 +637,7 @@ export function createComposer(options: {
 
   async function runSlashCommand(command: string) {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
+    if (name === "compact" && activeSessionState(state)?.capabilities?.compaction === false) throw new Error("Compaction is not supported by this harness.");
     if (name === "logout") {
       stopTokenScanner();
       state.token = "";
@@ -576,11 +658,8 @@ export function createComposer(options: {
     const resetsSession = name === "new" || name === "clear";
     if (resetsSession) beginTranscriptLoading?.();
     if (data.state) {
-      updateMeta(data.state);
+      sessionState.applySnapshot(data.state, { activate: resetsSession });
       if (resetsSession && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
-      state.isStreaming = Boolean(data.state.isStreaming);
-      state.isRetrying = Boolean(data.state.isRetrying || data.state.runtime?.isRetrying);
-      updatePrimaryAction();
       if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
     }
     await refreshModels();
@@ -590,18 +669,35 @@ export function createComposer(options: {
   }
 
   function init() {
+    // Keep textarea focus through pointer submission so compact mode cannot
+    // hide the Send button between pointerdown and click on touch browsers.
+    elements.primaryButton.addEventListener("pointerdown", (event) => event.preventDefault());
+
     elements.formEl.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if ((state.isStreaming || state.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0) return;
+      const activeRuntime = sessionRuntime(state);
+      if ((activeRuntime.isStreaming || activeRuntime.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0 && !quoteReplies.hasDrafts()) return;
 
       const rawMessage = elements.promptEl.value;
       const promptMessage = rawMessage.trim();
       const contexts = [...contextAttachments];
-      const message = messageWithAttachedContext(promptMessage, contexts);
-      const images = state.attachedImages.map(({ type, data, mimeType, name }) => ({ type, data, mimeType, name }));
-      if (!message && images.length === 0) return;
+      let quoteSubmission: QuoteReplySubmission | undefined;
+      try {
+        quoteSubmission = quoteReplies.prepareSubmission(promptMessage);
+      } catch (error) {
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+        return;
+      }
+      const message = quoteSubmission?.message ?? promptMessage;
+      const submittedAttachments = [...state.attachedImages];
+      const attachments = [
+        ...submittedAttachments.map(({ type, id, name, mediaType, bytes, path, contentUrl }) => ({ type, id, name, mediaType, bytes, path, contentUrl })),
+        ...contexts,
+        ...(quoteSubmission?.attachments || []),
+      ];
+      if (!message && attachments.length === 0) return;
 
-      if (rawMessage.startsWith("!") && images.length === 0 && contexts.length === 0) {
+      if (rawMessage.startsWith("!") && attachments.length === 0 && contexts.length === 0 && !quoteSubmission) {
         elements.promptEl.value = "";
         clearDraft();
         hideSlashCommands();
@@ -616,7 +712,7 @@ export function createComposer(options: {
         return;
       }
 
-      if (rawMessage.startsWith("/") && images.length === 0 && contexts.length === 0) {
+      if (rawMessage.startsWith("/") && attachments.length === 0 && contexts.length === 0 && !quoteSubmission) {
         let commandInfo: SlashCommand | undefined;
         try {
           commandInfo = await commandInfoForMessage(promptMessage);
@@ -649,26 +745,36 @@ export function createComposer(options: {
       state.attachedImages = [];
       contextAttachments = [];
       renderAttachments();
-      const submittedWhileRunning = state.isStreaming || state.isRetrying;
-      state.isStreaming = true;
-      state.isRetrying = false;
-      updatePrimaryAction();
+      const submittedWhileRunning = activeRuntime.isStreaming || activeRuntime.isRetrying;
+      const sessionId = state.currentSessionId;
+      const runtimeTransition = sessionState.patchRuntime(sessionId, {
+        loaded: true,
+        isStreaming: true,
+        isRetrying: false,
+      }, { kind: "start", label: "starting" });
       beginStreamFollow?.();
+      const clientMessageId = crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       if (!submittedWhileRunning) {
-        optimisticUserMessages.set(message, (optimisticUserMessages.get(message) || 0) + 1);
-        addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
+        optimisticUserMessages.add(clientMessageId);
+        addMessage("user", message || "", "", attachments);
       }
 
       try {
         const res = await fetch("/api/prompt", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ sessionId: state.currentSessionId, message, mode: state.queueMode, images }),
+          body: JSON.stringify({ sessionId, clientMessageId, message, mode: state.queueMode, attachments }),
         });
         if (!res.ok) throw new Error(await res.text());
+        if (quoteSubmission) quoteReplies.commitSubmission(quoteSubmission);
+        updatePrimaryAction();
       } catch (error) {
-        state.isStreaming = false;
-        state.isRetrying = false;
+        optimisticUserMessages.delete(clientMessageId);
+        sessionState.replaceRuntime(sessionId, runtimeTransition.previous);
+        state.attachedImages = [...submittedAttachments, ...state.attachedImages];
+        if (!elements.promptEl.value) elements.promptEl.value = rawMessage;
+        if (contextAttachments.length === 0) contextAttachments = contexts;
+        renderAttachments();
         updatePrimaryAction();
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
@@ -704,13 +810,22 @@ export function createComposer(options: {
         }
       }
 
-      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-        elements.formEl.requestSubmit();
-      }
     });
 
-    elements.formEl.addEventListener("focusin", updateCompactInactive);
-    elements.formEl.addEventListener("focusout", () => window.setTimeout(updateCompactInactive, 0));
+    // focusin fires before every focused child is guaranteed to be reflected by
+    // document.activeElement on mobile WebKit. The event itself is authoritative.
+    let pageIsUnloading = false;
+    window.addEventListener("beforeunload", () => { pageIsUnloading = true; });
+    elements.formEl.addEventListener("focusin", () => {
+      applyCompactInactive(false);
+      try { sessionStorage.setItem(restoreFocusStorageKey, "true"); } catch { /* ignore */ }
+    });
+    elements.formEl.addEventListener("focusout", () => window.setTimeout(() => {
+      updateCompactInactive();
+      if (!pageIsUnloading && !elements.formEl.contains(document.activeElement)) {
+        try { sessionStorage.removeItem(restoreFocusStorageKey); } catch { /* ignore */ }
+      }
+    }, 0));
     elements.promptEl.addEventListener("focus", () => { void maybeRefreshSlashCommands(); });
     elements.promptEl.addEventListener("blur", () => window.setTimeout(hideSlashCommands, 100));
     elements.promptEl.addEventListener("input", () => {
@@ -725,14 +840,16 @@ export function createComposer(options: {
       elements.imageInput.click();
     });
     elements.attachButton.addEventListener("click", (event) => {
+      recordDebugEvent("attachment-picker-open", { compact: elements.formEl.classList.contains("compactInactive") });
       if (consumeCompactAttachClick(event)) return;
       elements.imageInput.click();
     });
 
     elements.imageInput.addEventListener("change", () => {
       const files = Array.from(elements.imageInput.files || []);
+      recordDebugEvent("attachment-picker-change", { files: files.map(({ name, size, type }) => ({ name, size, type })) });
       elements.imageInput.value = "";
-      void attachImageFiles(files);
+      void attachFiles(files);
     });
 
     let dragDepth = 0;
@@ -758,7 +875,7 @@ export function createComposer(options: {
       event.preventDefault();
       dragDepth = 0;
       setDragOver(false);
-      void attachImageFiles(Array.from(event.dataTransfer?.files || []));
+      void attachFiles(Array.from(event.dataTransfer?.files || []));
     });
 
     const consumeCompactStopClick = bindCompactInactiveAction(elements.stopButton, elements.formEl, () => {
@@ -810,7 +927,19 @@ export function createComposer(options: {
         updatePrimaryAction();
       }
     } catch { /* ignore */ }
-    updateCompactInactive();
+    restoreAttachmentDraft();
+
+    let restoreFocus = false;
+    try {
+      restoreFocus = sessionStorage.getItem(restoreFocusStorageKey) === "true";
+      sessionStorage.removeItem(restoreFocusStorageKey);
+    } catch { /* ignore */ }
+
+    applyCompactInactive(restoreFocus ? false : !elements.formEl.contains(document.activeElement));
+    if (restoreFocus) {
+      // Defer until the browser has completed its own load-time focus handling.
+      window.requestAnimationFrame(() => elements.promptEl.focus({ preventScroll: true }));
+    }
   }
 
   return {
@@ -822,6 +951,8 @@ export function createComposer(options: {
     updatePrimaryAction,
     updateQueueToggle,
     updatePendingQueue,
+    trackOptimisticUserMessage,
+    discardOptimisticUserMessage,
     handleUserMessage,
   };
 }

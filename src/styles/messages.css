@@ -1,13 +1,37 @@
+.app::before,
+.app::after {
+  content: "";
+  grid-row: 2;
+  grid-column: 1;
+  z-index: 2;
+  align-self: start;
+  height: 36px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% -12rem, rgba(54, 54, 54, .62) 0, rgba(28, 28, 28, .28) 22rem, transparent 44rem),
+    linear-gradient(180deg, #090909 0%, var(--bg) 55%, #010101 100%);
+  background-attachment: fixed;
+  -webkit-mask-image: linear-gradient(to bottom, #000, transparent);
+  mask-image: linear-gradient(to bottom, #000, transparent);
+}
+.app::after {
+  align-self: end;
+  -webkit-mask-image: linear-gradient(to top, #000, transparent);
+  mask-image: linear-gradient(to top, #000, transparent);
+}
+.app:has(#emptyCwdChooser:not([hidden]))::before,
+.app:has(#emptyCwdChooser:not([hidden]))::after { display: none; }
+
 .messages {
   grid-row: 2;
+  grid-column: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px 0 32px;
+  border-top: 8px solid transparent;
+  padding: 0 0 32px;
   display: flex;
   flex-direction: column;
   gap: 0;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 36px, black calc(100% - 36px), transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 36px, black calc(100% - 36px), transparent 100%);
 }
 
 .message {
@@ -149,6 +173,48 @@ body.artifactPreviewDocument {
   background: transparent;
   padding: 0;
 }
+.htmlPreview {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 .8em;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgba(0,0,0,.12);
+}
+.htmlPreviewFrame {
+  display: block;
+  width: 100%;
+  height: 160px;
+  max-height: min(70vh, 720px);
+  border: 0;
+  background: #fff;
+}
+.htmlPreviewToggle {
+  position: absolute;
+  z-index: 1;
+  top: 7px;
+  right: 7px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid rgba(0,0,0,.18);
+  border-radius: 6px;
+  background: rgba(255,255,255,.92);
+  color: #27272a;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+.htmlPreview:hover .htmlPreviewToggle,
+.htmlPreview:focus-within .htmlPreviewToggle { opacity: 1; }
+.htmlPreview > pre[hidden], .htmlPreviewFrame[hidden] { display: none; }
+.htmlPreview--source { width: 100% !important; overflow: visible; border: 0; background: transparent; box-shadow: none; }
+.htmlPreview--source > pre { margin: 0; padding-right: 72px; }
+.htmlPreview--compact { margin-right: .5em; border-color: color-mix(in srgb, var(--border) 72%, transparent); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.htmlPreview--compact .htmlPreviewToggle { top: 4px; right: 4px; }
+
 .mermaidDiagram {
   position: relative;
   margin: 0 0 .8em;
@@ -288,36 +354,175 @@ body.artifactPreviewDocument {
 .markdownBody a:hover { opacity: 0.8; }
 .markdownBody td a, .markdownBody th a { word-break: break-all; }
 .artifactPreview {
-  width: calc(100% + 28px);
-  margin: 10px -14px 14px;
-  border: 0;
-  border-radius: 0;
+  width: 100%;
+  margin: 10px 0 14px;
+  border: 1px solid color-mix(in srgb, #c7a86d 30%, var(--border));
+  border-radius: 12px;
   background: var(--panel);
-  overflow: hidden;
+  box-shadow: 0 8px 28px rgba(0,0,0,.22), inset 0 1px rgba(255,255,255,.025);
+  overflow: clip;
+}
+.artifactPreview--interactive {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  box-shadow: 0 8px 28px rgba(0,0,0,.22), 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .artifactPreviewHeader {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   display: flex;
+  height: 29px;
+  min-height: 29px;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 14px;
-  border-bottom: 0;
-  background: color-mix(in srgb, var(--text) 4%, var(--panel));
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid color-mix(in srgb, #c7a86d 35%, var(--border));
+  box-sizing: border-box;
+  background-color: color-mix(in srgb, #171b25 84%, var(--panel));
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, white 6%, transparent) 0 1px,
+      transparent 1px 8px
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, #c7a86d 7%, transparent),
+      transparent 42%
+    );
   color: var(--muted);
-  font-size: 12px;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
 }
-.artifactPreviewTitle { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: auto; }
-.artifactPreviewBuiltInActions, .artifactPreviewActions { display: inline-flex; align-items: center; gap: 8px; }
-.artifactPreviewAction { border: 0; padding: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.artifactPreviewDisclosure {
+  display: grid;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 0;
+  flex: 0 0 16px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+.artifactPreviewDisclosure::before {
+  content: "";
+  width: 8px;
+  height: 6px;
+  background: linear-gradient(90deg, #7e6a43, #d8c18d 50%, #7e6a43);
+  clip-path: polygon(0 10%, 50% 70%, 100% 10%, 100% 35%, 50% 100%, 0 35%);
+  transition: transform 140ms ease;
+}
+.artifactPreview--minimized .artifactPreviewDisclosure::before { transform: rotate(-90deg); }
+.artifactPreviewTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifactPreviewBuiltInActions, .artifactPreviewActions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+.artifactPreviewAction {
+  height: auto;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
 .artifactPreviewAction:hover { text-decoration: underline; }
+.artifactPreviewAction--icon {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 6px;
+}
+.artifactPreviewAction--icon svg { width: 14px; height: 14px; }
+.artifactPreviewAction--icon:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); text-decoration: none; }
 .artifactPreviewAction:disabled { color: var(--muted); cursor: wait; text-decoration: none; }
 .artifactPreviewActionResult { padding: 10px; border-bottom: 1px solid var(--border); }
-.artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: auto; }
-.artifactPreview--html .artifactPreviewContent { padding: 0; overflow: hidden; }
-.artifactPreviewFrame { display: block; width: 100%; height: min(70vh, 720px); border: 0; background: #fff; border-radius: 0; }
+.artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: clip; }
+.artifactPreview--expanded > .artifactPreviewContent { max-height: none; }
+.artifactPreview--html .artifactPreviewContent { position: relative; padding: 0; }
+.artifactPreviewFrame { display: block; width: 100%; height: min(70vh, 720px); border: 0; background: #fff; border-radius: 0; pointer-events: none; }
+.artifactPreview--interactive .artifactPreviewFrame { pointer-events: auto; }
+.artifactPreviewShield {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.artifactPreviewShield span {
+  padding: 6px 9px;
+  border: 1px solid rgba(255,255,255,.24);
+  border-radius: 7px;
+  background: rgba(0,0,0,.68);
+  color: #fff;
+  font-size: 11px;
+  opacity: 0;
+  box-shadow: 0 4px 16px rgba(0,0,0,.3);
+  transition: opacity 140ms ease;
+}
+.artifactPreviewShield:hover span,
+.artifactPreviewShield:focus-visible span { opacity: 1; }
+.artifactPreview--interactive .artifactPreviewShield { pointer-events: none; }
 .artifactPreviewVideo { display: block; width: 100%; max-height: min(70vh, 720px); border-radius: 0 0 12px 12px; background: #000; }
-.artifactPreview--video .artifactPreviewContent { padding: 0; overflow: hidden; }
+.artifactPreviewAudio { display: block; width: calc(100% - 24px); height: 42px; margin: 12px; }
+.artifactPreview--video .artifactPreviewContent { padding: 0; }
 .artifactPreview--error .artifactPreviewContent { color: #fecdd3; }
+.artifactPreviewExpandFooter {
+  position: relative;
+  z-index: 2;
+  margin-top: -42px;
+  padding-top: 30px;
+  background: linear-gradient(transparent, var(--panel) 30px);
+}
+.artifactPreviewExpandFooter[hidden] { display: none; }
+.artifactPreviewExpand {
+  display: block;
+  width: 100%;
+  height: 29px;
+  min-height: 29px;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: var(--panel);
+  color: var(--accent);
+  padding: 0 12px;
+  font-size: 10px;
+}
+.artifactPreview--expanded > .artifactPreviewExpandFooter { margin-top: 0; padding-top: 0; background: none; }
+.artifactPreview--minimized > :not(.artifactPreviewHeader) { display: none; }
+.artifactPreview--minimized .artifactPreviewHeader { border-bottom: 0; }
+@media (max-width: 700px) {
+  .message.assistant > .body > .artifactPreview {
+    width: calc(100% + 28px);
+    margin-right: -14px;
+    margin-left: -14px;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+}
 .markdownBody img {
   display: block;
   max-width: min(100%, 900px);
@@ -397,12 +602,59 @@ body.artifactPreviewDocument {
   line-height: 1.4;
 }
 .messageToggle:hover { border: none; }
-.message.user { --message-bg: var(--user); align-self: flex-end; background: var(--user); margin: 12px 16px 12px 0; }
+.message.user {
+  --message-bg: color-mix(in srgb, var(--panel-2) 80%, var(--accent) 20%);
+  align-self: flex-end;
+  margin: 12px 16px 12px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.message.user > .body {
+  padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 16px 16px 6px 16px;
+  background: linear-gradient(145deg,
+    color-mix(in srgb, var(--panel-2) 80%, var(--accent) 20%),
+    color-mix(in srgb, var(--panel) 88%, var(--accent) 12%));
+  box-shadow: inset 0 1px rgba(255,255,255,.035), 0 8px 24px rgba(0,0,0,.14);
+}
 .messageText { display: block; white-space: pre-wrap; word-break: break-word; }
-.messageImages { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.messageImageThumb { max-width: 260px; max-height: 200px; border-radius: 6px; object-fit: contain; display: block; }
-.messageImages .imageFrame:only-child .messageImageThumb { max-width: 320px; max-height: 280px; }
-.messageImageMissing { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,.08); color: var(--muted); font-size: 12px; border: 1px dashed rgba(255,255,255,.2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.messageAttachmentBaseline { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 22px; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.messageAttachmentBaseline--timeOnly { justify-content: flex-end; }
+.messageTimestamp { margin-left: auto; color: color-mix(in srgb, var(--muted) 72%, transparent); font-size: 8px; white-space: nowrap; }
+.messageAttachmentSummary { display: inline-flex; align-items: center; gap: 6px; height: 22px; min-height: 22px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; }
+.messageAttachmentSummary:hover { border: 0; color: var(--text); }
+.messageAttachmentSummary:focus-visible { outline: 1px solid color-mix(in srgb, var(--accent) 54%, transparent); outline-offset: 2px; border-radius: 5px; }
+.messageAttachmentSummary.hasMissing::after { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #d6a25d; box-shadow: 0 0 0 2px color-mix(in srgb, #d6a25d 12%, transparent); }
+.messageAttachmentConstellation { display: flex; align-items: center; padding-left: 5px; }
+.messageAttachmentPopover { position: absolute; right: 0; top: calc(100% + 3px); z-index: 5; width: min(300px, 82vw); padding: 5px; border: 1px solid color-mix(in srgb, var(--border) 78%, var(--text) 10%); border-radius: 11px; background: color-mix(in srgb, var(--panel) 97%, transparent); box-shadow: 0 18px 50px rgba(0,0,0,.55); backdrop-filter: blur(18px); }
+.messageAttachmentPopover[hidden] { display: none; }
+.messageAttachmentRow { position: relative; display: grid; gap: 1px; min-height: 38px; padding: 6px 8px; border-radius: 7px; }
+.messageAttachmentRow:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.messageAttachmentName { overflow: hidden; color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.messageAttachmentInfo { color: var(--muted); font-size: 8px; }
+.messageAttachmentRow.missing { padding-right: 72px; opacity: .72; }
+.messageAttachmentUnavailable { position: absolute; right: 7px; top: 10px; color: color-mix(in srgb, #d6a25d 78%, var(--muted)); font-size: 8px; }
+.messageAttachmentPreview {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: -6px;
+  overflow: hidden;
+  border: 1.5px solid color-mix(in srgb, var(--bg) 88%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel-2) 90%, var(--text) 10%);
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+  box-shadow: 0 2px 6px rgba(0,0,0,.35);
+  font: 700 6px/1 ui-monospace, monospace;
+}
+.messageAttachmentPreview:first-child { margin-left: 0; }
+.messageAttachmentPreview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.messageAttachmentPreview.missing { color: color-mix(in srgb, #d6a25d 82%, var(--muted)); border-color: color-mix(in srgb, #d6a25d 34%, var(--border)); }
+.messageAttachmentCount { white-space: nowrap; }
 .imageOverlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
 .imageOverlay img { max-width: 92vw; max-height: 92vh; border-radius: 8px; object-fit: contain; }
 .message.assistant { --message-bg: var(--bg); align-self: stretch; background: transparent; border: none; max-width: 100%; width: 100%; }
@@ -551,3 +803,78 @@ body.artifactPreviewDocument {
   background: rgba(250, 204, 21, .14);
 }
 .message.error { border-color: var(--danger); color: #fecdd3; }
+/* Extension-injected messages, including orchestrator worker updates. */
+.message.customCard {
+  --message-bg: color-mix(in srgb, var(--accent) 4%, var(--panel));
+  align-self: flex-start;
+  flex: none; /* overflow:hidden zeroes the flex min-size; don't let the column squash the card */
+  box-sizing: border-box;
+  width: min(880px, calc(100% - 32px));
+  max-width: min(880px, calc(100% - 32px));
+  margin: 12px 16px;
+  padding: 11px 14px 12px;
+  overflow: hidden;
+  background: var(--message-bg);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  border-radius: 12px;
+}
+.message.customCard.error {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+.message.customCard > .body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.customCardHeader {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--accent) 82%, var(--text));
+}
+.customCardHeader svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+.customCardSessionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.customCardSessionChip:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.customCardSessionChip.status-error {
+  border-color: color-mix(in srgb, var(--danger) 38%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+.customCardSessionChip.status-aborted {
+  border-color: color-mix(in srgb, var(--muted) 30%, transparent);
+  background: color-mix(in srgb, var(--muted) 9%, transparent);
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .message.customCard {
+    width: calc(100% - 16px);
+    max-width: calc(100% - 16px);
+    margin: 8px;
+  }
+}

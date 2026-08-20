@@ -76,6 +76,7 @@
 .runtimeStatus.running { color: var(--accent); }
 .runtimeStatus.quiet { color: #facc15; }
 .runtimeStatus.stale { color: #fb923c; }
+
 .contextMeterLabel {
   right: 0;
   display: none;
@@ -186,9 +187,10 @@ textarea:focus { border-bottom-color: var(--accent); }
 .expandButton svg { width: 14px; height: 14px; }
 .composer:hover .expandButton,
 .composer.expanded .expandButton { display: inline-grid; }
-.composer { position: relative; z-index: 2; }
+/* Keep composer chrome that protrudes into the message row above its edge fade. */
+.composer { position: relative; z-index: 3; }
 .composer.dragOver::after {
-  content: "Drop images to attach";
+  content: "Drop files to attach";
   position: absolute;
   inset: 0;
   z-index: 25;
@@ -281,6 +283,7 @@ textarea:focus { border-bottom-color: var(--accent); }
   position: fixed;
   inset: 16px;
   z-index: 10;
+  margin: 0;
   border-radius: 20px;
   display: flex;
   flex-direction: column;
@@ -292,13 +295,26 @@ textarea:focus { border-bottom-color: var(--accent); }
   border-radius: 19px 19px 0 0;
 }
 .attachments {
+  position: absolute;
+  right: 9px;
+  bottom: calc(100% + 5px);
+  z-index: 4;
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  max-width: calc(100% - 18px);
+  min-width: 0;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 5px;
   margin: 0;
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  padding: 0;
+  overflow-x: auto;
+  background: transparent;
+  scrollbar-width: none;
+}
+.attachments::-webkit-scrollbar { display: none; }
+.composer:not(.compactInactive):not(.expanded):has(.attachments:not(:empty)) .attachments {
+  right: 72px;
+  max-width: calc(100% - 81px);
 }
 .attachments:empty {
   display: none;
@@ -306,21 +322,24 @@ textarea:focus { border-bottom-color: var(--accent); }
 .attachmentChip {
   display: inline-flex;
   align-items: center;
-  max-width: 220px;
-  gap: 6px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--panel-2);
-  padding: 3px 5px 3px 3px;
+  max-width: min(220px, calc(100vw - 24px));
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--panel-2) 86%, var(--accent) 14%);
+  height: 25px;
+  padding: 1px 3px 1px 2px;
   color: var(--muted);
-  font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.18);
+  font-size: 10px;
 }
 .attachmentChip img {
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
+  width: 21px;
+  height: 21px;
+  border-radius: 7px;
   object-fit: cover;
 }
+.attachmentChip img[role="button"] { cursor: zoom-in; }
 .attachmentChip span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -362,7 +381,11 @@ textarea:focus { border-bottom-color: var(--accent); }
   border-radius: 999px;
   padding: 0;
 }
-.attachmentChip .removeAttachment { border: 0; }
+.attachmentChip .removeAttachment {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
 .removeAttachment svg { width: 13px; height: 13px; }
 .composerFooter {
   display: flex;
@@ -373,6 +396,12 @@ textarea:focus { border-bottom-color: var(--accent); }
   margin-top: 0;
   padding: 0;
   overflow: visible;
+  border-radius: 0 0 15px 15px;
+  background-color: color-mix(in srgb, var(--panel-2) 96%, var(--accent) 4%);
+  background-image:
+    repeating-linear-gradient(115deg, rgba(0, 0, 0, .26) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(25deg, rgba(0, 0, 0, .16) 0 1px, transparent 1px 5px),
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, .025), transparent 48%);
 }
 button, select {
   height: 40px;
@@ -409,6 +438,7 @@ select {
   padding: 4px 10px;
   text-align: left;
 }
+.composerFooter .modelSettingsButton { background-color: transparent; }
 .modelSettingsButton:hover { border-color: var(--accent); }
 .modelSettingsLabel {
   display: grid;
@@ -447,7 +477,7 @@ select {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 4px;
+  gap: 0;
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
@@ -495,7 +525,7 @@ select {
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--thinking-accent) 45%, transparent));
 }
 .modelSettingsThinking[data-thinking-active="true"] .modelSettingsThinkingIconBase { opacity: .34; }
-.modelSettingsThinking[data-thinking-active="true"] .modelSettingsThinkingText { color: var(--thinking-accent); }
+.modelSettingsThinkingText { display: none; }
 .modelSettingsPopover {
   position: absolute;
   left: 0;
@@ -594,6 +624,11 @@ button:hover { border-color: var(--accent); }
   position: relative;
   z-index: 1;
 }
+.composer textarea:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px #d5bd8b,
+    inset 0 0 0 3px rgba(199, 168, 109, .14);
+}
 button:disabled { cursor: default; opacity: .45; }
 button:disabled:hover { border-color: var(--border); }
 .composerFooter .iconButton:not(.primaryAction) {
@@ -605,12 +640,26 @@ button:disabled:hover { border-color: var(--border); }
   color: var(--accent);
 }
 #queueToggle[aria-pressed="true"] { color: var(--accent); }
-#primaryButton { border-bottom-right-radius: 15px; }
+#stopButton {
+  position: relative;
+  z-index: 13;
+}
+#primaryButton {
+  position: relative;
+  z-index: 2;
+  border-bottom-right-radius: 15px;
+}
+.composerFooter:has(#stopButton:not([style*="display: none"])) #stopButton { border-right: 0; }
+.composerFooter:has(#stopButton:not([style*="display: none"])) #stopButton + #primaryButton {
+  margin-left: 0;
+  border-left: 0;
+}
 
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  height: 46px;
   min-height: 46px;
   isolation: isolate;
   border: 1px solid rgba(255,255,255,.075);
@@ -622,7 +671,7 @@ button:disabled:hover { border-color: var(--border); }
     inset 0 -1px 0 rgba(0,0,0,.65);
   padding: 3px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))::before {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded)::before {
   content: "";
   position: absolute;
   z-index: -1;
@@ -636,12 +685,12 @@ button:disabled:hover { border-color: var(--border); }
   opacity: .86;
   pointer-events: none;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .contextMeter {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .contextMeter {
   left: 18px;
   right: 18px;
   top: -5px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) textarea {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) textarea {
   min-height: 38px;
   height: 38px;
   resize: none;
@@ -650,18 +699,21 @@ button:disabled:hover { border-color: var(--border); }
   background: transparent;
   padding: 8px 12px 8px 14px;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .expandButton,
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #queueToggle,
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #primaryButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .expandButton,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #queueToggle,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #primaryButton {
   display: none !important;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .composerFooter {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerFooter {
   height: 38px;
   align-items: center;
   overflow: visible;
+  background: transparent;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelControl {
   flex: 0 1 auto;
   width: fit-content;
   max-width: clamp(112px, 18vw, 190px);
@@ -670,7 +722,7 @@ button:disabled:hover { border-color: var(--border); }
   max-width: clamp(132px, 22vw, 230px);
 }
 
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsButton {
   display: inline-flex;
   width: auto;
   max-width: 100%;
@@ -684,19 +736,19 @@ button:disabled:hover { border-color: var(--border); }
   justify-content: flex-start;
   padding: 0 8px 0 10px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsLabel {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsLabel {
   flex: 0 1 auto;
   gap: 0;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsModelName {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsModelName {
   font-size: 11.5px;
   line-height: 1.12;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsProvider {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsProvider {
   font-size: 9.5px;
   line-height: 1.1;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsPopover,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsPopover,
 .composer:has(.modelSettingsButton[aria-expanded="true"]) .modelSettingsPopover {
   position: fixed;
   left: 50%;
@@ -705,8 +757,8 @@ button:disabled:hover { border-color: var(--border); }
   width: min(560px, calc(100vw - 32px));
   transform: translateX(-50%);
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #attachButton,
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #stopButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton {
   width: 38px;
   min-width: 38px;
   height: 38px;
@@ -714,22 +766,151 @@ button:disabled:hover { border-color: var(--border); }
   border: 0;
   border-radius: 999px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #attachButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton {
   background: transparent;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #stopButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton {
   margin-left: 2px;
 }
 .primaryAction {
-  background: color-mix(in srgb, var(--accent) 44%, #051621);
-  border-color: color-mix(in srgb, var(--accent) 72%, #0b2432);
-  color: #fff;
+  border-color: #a98d59;
+  border-bottom-width: 1px;
+  background-color: #24342e;
+  background-image:
+    repeating-linear-gradient(
+      115deg,
+      rgba(255, 255, 255, .075) 0 1px,
+      transparent 1px 4px
+    ),
+    repeating-linear-gradient(
+      25deg,
+      rgba(0, 0, 0, .2) 0 1px,
+      transparent 1px 5px
+    ),
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, .08), transparent 48%);
+  color: #d5bd8b;
+  box-shadow:
+    inset 0 0 0 1px rgba(213, 189, 139, .55),
+    inset 0 1px 0 rgba(255, 255, 255, .1),
+    inset 0 -1px 0 rgba(0, 0, 0, .35);
 }
 .primaryAction:hover {
-  background: color-mix(in srgb, var(--accent) 52%, #061824);
-  border-color: var(--accent);
+  border-color: #d5bd8b;
+  background-color: #2b4037;
+  color: #ead5a7;
 }
-.dangerAction { background: #5f1824; border-color: #9f2a3d; }
-.dangerAction:hover { border-color: var(--danger); }
-.composerFooter .iconButton.dangerAction { background: #5f1824; border-color: #9f2a3d; }
-.composerFooter .iconButton.dangerAction:hover { border-color: var(--danger); background: #7a1f2e; }
+.composer .primaryAction:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px #ead5a7,
+    inset 0 0 0 3px rgba(199, 168, 109, .2),
+    inset 0 1px 0 rgba(255, 255, 255, .1);
+}
+.dangerAction {
+  border-color: #9f5f67;
+  border-bottom-width: 1px;
+  background-color: #48262b;
+  background-image:
+    repeating-linear-gradient(
+      115deg,
+      rgba(255, 255, 255, .07) 0 1px,
+      transparent 1px 4px
+    ),
+    repeating-linear-gradient(
+      25deg,
+      rgba(0, 0, 0, .2) 0 1px,
+      transparent 1px 5px
+    ),
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, .07), transparent 48%);
+  color: #dfb5ae;
+  box-shadow:
+    inset 0 0 0 1px rgba(207, 137, 142, .48),
+    inset 0 1px 0 rgba(255, 255, 255, .08),
+    inset 0 -1px 0 rgba(0, 0, 0, .35);
+}
+.dangerAction:hover {
+  border-color: #cf898e;
+  background-color: #583036;
+  color: #f1cbc4;
+}
+.composerFooter .iconButton.dangerAction {
+  border-color: #9f5f67;
+  border-bottom-width: 1px;
+  background-color: #48262b;
+  color: #e58f93;
+}
+.composerFooter .iconButton.dangerAction:hover {
+  border-color: #cf898e;
+  background-color: #583036;
+  color: #efaaad;
+}
+.composer .dangerAction:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px #efb6b2,
+    inset 0 0 0 3px rgba(207, 137, 142, .2),
+    inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+/* Spawned sessions still running, shown directly above the composer. Each is a
+   link, so a worker can be opened while it works. Hidden entirely when idle, so
+   it costs no vertical space. */
+.waitingSessions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 4px 10px;
+  margin: 0 auto;
+  width: min(var(--composer-max-width, 900px), 100%);
+  box-sizing: border-box;
+  font-size: 12px;
+  color: var(--muted);
+}
+.waitingSessions::-webkit-scrollbar { display: none; }
+.waitingSessions[hidden] { display: none; }
+.waitingSessionsLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.waitingSessionsLabel svg {
+  width: 13px;
+  height: 13px;
+  animation: waitingPulse 2s ease-in-out infinite;
+}
+.waitingSessionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 220px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  color: var(--text);
+  text-decoration: none;
+  padding: 3px 10px 3px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.waitingSessionChip:hover,
+.waitingSessionChip:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  outline: none;
+}
+.waitingSessionSpinner {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--accent);
+  animation: waitingPulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .waitingSessionsLabel svg, .waitingSessionSpinner { animation: none; }
+}

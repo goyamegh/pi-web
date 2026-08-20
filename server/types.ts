@@ -17,6 +17,7 @@ export interface PiWebSession {
   activeCwd?: string;
   model: PiWebModel;
   thinkingLevel: string;
+  readonly systemPrompt: string;
   messages: unknown[];
   agent: { state: { messages: unknown[] } };
   sessionName?: string;
@@ -44,9 +45,18 @@ export interface PiWebSession {
   };
   promptTemplates?: unknown[];
   resourceLoader?: {
-    getPrompts?(): { prompts: unknown[] };
-    getSkills?(): { skills: unknown[] };
+    getPrompts?(): { prompts: unknown[]; diagnostics?: unknown[] };
+    getSkills?(): { skills: unknown[]; diagnostics?: unknown[] };
+    getExtensions?(): { extensions: unknown[]; errors: unknown[] };
+    getAgentsFiles?(): { agentsFiles: Array<{ path: string; content: string }> };
+    getSystemPrompt?(): string | undefined;
+    getSystemPromptSource?(): { path: string } | undefined;
+    getAppendSystemPrompt?(): string[];
+    getAppendSystemPromptSources?(): Array<{ path: string }>;
+    getStatus?(): { errors?: unknown[] };
   };
+  getActiveToolNames?(): string[];
+  getAllTools?(): Array<{ name?: string; description?: string; promptGuidelines?: string[]; sourceInfo?: unknown; definition?: { name?: string; description?: string; promptGuidelines?: string[] } }>;
   bindExtensions?(bindings: unknown): Promise<void>;
   getAvailableThinkingLevels(): string[];
   getSessionName?(): string | undefined;
@@ -64,6 +74,8 @@ export interface PiWebSession {
   retryFromFailure?(): Promise<void>;
   abort(): Promise<void>;
   clearQueue?(): void;
+  getSteeringMessages?(): readonly string[];
+  getFollowUpMessages?(): readonly string[];
   subscribe?(listener: (event: unknown) => void): (() => void) | undefined;
   /** Release live resources (e.g. a persistent agent subprocess); called by disposeLiveSession(). */
   dispose?(): void;

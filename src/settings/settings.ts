@@ -2,10 +2,13 @@ import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
-import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
+import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings, type WebSettingsSchema } from "../app/types.js";
 import { createQrSvg } from "../token/qr.js";
 import { createTokenShareUrl } from "../token/tokenShare.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
+import { createExtensionSettings, type ExtensionSettingsController } from "./extensionSettings.js";
+import { createRunNotifications } from "./runNotifications.js";
+import { createSettingsShell, type SettingsShellController } from "./settingsShell.js";
 
 export type SettingsController = {
   init: () => void;
@@ -14,6 +17,17 @@ export type SettingsController = {
   patchSettings: (patch: unknown) => Promise<void>;
   isNavPinned: () => boolean;
   getNavWidth: () => number;
+  applyWebSettingsSchemas: (schemas: WebSettingsSchema[]) => void;
+};
+
+type ExtensionLoadStatus = {
+  state: "loading" | "ready" | "degraded";
+  attempt: number;
+  durationMs?: number;
+  extensionCount: number;
+  errors: Array<{ path: string; error: string }>;
+  runtimeErrors?: Array<{ path: string; event: string; error: string; timestamp: string }>;
+  message: string;
 };
 
 function cloneSettings(settings: PiWebSettings): PiWebSettings {
@@ -65,6 +79,9 @@ function normalizeSettings(value: unknown): PiWebSettings {
   const sessionBucketColor = normalizeMarkerColor(defaults?.sessionBucketColor);
   if (sessionBucketColor) settings.defaults.sessionBucketColor = sessionBucketColor;
 
+  // Carry the extension-settings blob through verbatim (server owns validation).
+  if (isRecord(value.extensions)) settings.extensions = value.extensions as PiWebSettings["extensions"];
+
   return settings;
 }
 
@@ -106,6 +123,13 @@ export function createSettings(options: {
   const expandedStorageKey = "pi-web-composer-expanded";
   let hasAppliedSettings = false;
   let settingsPanelHandle: RightPanelHandle | undefined;
+  let extSettings: ExtensionSettingsController | undefined;
+  let settingsShell: SettingsShellController | undefined;
+  const runNotifications = createRunNotifications({
+    elements,
+    api,
+    onError: (error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"),
+  });
 
   function updateQueueToggle() {
     const isSteer = state.queueMode === "steer";
@@ -134,6 +158,21 @@ export function createSettings(options: {
     const normalized = normalizeAccentColor(accentColor) || defaultAccentColor;
     const swatch = accentSwatchButtons().find((button) => normalizeAccentColor(button.dataset.accentColor) === normalized);
     return swatch?.dataset.accentName || "Custom";
+  }
+
+  function updateExtensionSearchTerms() {
+    const terms = (state.webSettingsSchemas ?? []).flatMap((schema) => [
+      schema.id,
+      schema.title,
+      ...schema.fields.flatMap((field) => [
+        field.key,
+        field.label,
+        field.description || "",
+        ...(field.itemFields ?? []).flatMap((item) => [item.key, item.label, item.description || ""]),
+      ]),
+    ]);
+    terms.push(...Object.keys(state.settings.extensions ?? {}));
+    settingsShell?.setSearchTerms("extensions", terms);
   }
 
   function setDocumentAccent(accentColor: string) {
@@ -224,6 +263,14 @@ export function createSettings(options: {
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
     elements.settingModelDefaultsValue.textContent = settingsLabel(settings);
 
+    const density = settings.appearance.density === "compact" ? "Compact" : "Comfortable";
+    const queueMode = settings.composer.queueMode === "steer" ? "Steer" : "Follow up";
+    const model = settings.defaults.model;
+    settingsShell?.setSummary("appearance", `${density} · ${accentName(accentColor)}`);
+    settingsShell?.setSummary("composer", `${queueMode} · ${settings.composer.expanded ? "Expanded" : "Collapsed"}`);
+    settingsShell?.setSummary("new-sessions", model ? `${model.provider}/${model.id}` : settings.defaults.sessionBucketColor ? "Bucket default set" : "No defaults set");
+    settingsShell?.setSummary("access", state.token.trim() ? "Connect another device" : "No browser token saved");
+    updateExtensionSearchTerms();
     updateQueueToggle();
     updateExpandedComposer();
     if (lastNavPinned !== settings.appearance.navPinned) {
@@ -234,11 +281,83 @@ export function createSettings(options: {
       lastNavWidth = settings.appearance.navWidth;
       onNavWidthChange?.(settings.appearance.navWidth);
     }
+    extSettings?.render();
   }
 
   function setSettingsStatus(message: string, isError = false) {
     elements.settingsStatusEl.textContent = message;
     elements.settingsStatusEl.classList.toggle("error", isError);
+  }
+
+  function renderExtensionStatus(status: ExtensionLoadStatus) {
+    const badge = elements.extensionStatusBadge;
+    badge.className = `extensionStatusBadge ${status.state}`;
+    badge.textContent = status.state === "ready" ? "Ready" : status.state === "degraded" ? "Degraded" : "Loading…";
+    elements.extensionStatusMessage.textContent = status.message;
+    elements.extensionReloadButton.disabled = status.state === "loading";
+    elements.extensionStatusDetails.replaceChildren();
+
+    const facts = document.createElement("div");
+    const duration = typeof status.durationMs === "number" ? ` · ${status.durationMs}ms` : "";
+    facts.textContent = `${status.extensionCount} loaded · attempt ${status.attempt}${duration}`;
+    elements.extensionStatusDetails.append(facts);
+    for (const error of status.errors) {
+      const row = document.createElement("div");
+      row.className = "extensionStatusError";
+      row.textContent = `${error.path}: ${error.error}`;
+      elements.extensionStatusDetails.append(row);
+    }
+    for (const error of status.runtimeErrors || []) {
+      const row = document.createElement("div");
+      row.className = "extensionStatusError";
+      const time = Number.isNaN(Date.parse(error.timestamp)) ? error.timestamp : new Date(error.timestamp).toLocaleString();
+      row.textContent = `${error.path} · ${error.event} · ${time}: ${error.error}`;
+      elements.extensionStatusDetails.append(row);
+    }
+    elements.extensionStatusDetails.hidden = status.state === "ready" && status.errors.length === 0 && !status.runtimeErrors?.length;
+    settingsShell?.setBadge("extensions", status.state === "loading" ? "…" : status.state === "ready" ? "Ready" : "Issue", status.state === "ready" ? "ready" : status.state === "degraded" ? "danger" : "neutral");
+    settingsShell?.setSummary("extensions", `${status.extensionCount} loaded · ${status.state === "ready" ? "Healthy" : status.state === "degraded" ? "Needs attention" : "Checking"}`);
+  }
+
+  function renderExtensionStatusError(error: unknown) {
+    elements.extensionStatusBadge.className = "extensionStatusBadge degraded";
+    elements.extensionStatusBadge.textContent = "Unavailable";
+    elements.extensionStatusMessage.textContent = error instanceof Error ? error.message : String(error);
+    elements.extensionStatusDetails.hidden = true;
+    elements.extensionReloadButton.disabled = false;
+    settingsShell?.setBadge("extensions", "Issue", "danger");
+    settingsShell?.setSummary("extensions", "Status unavailable");
+  }
+
+  async function refreshExtensionStatus() {
+    const params = new URLSearchParams();
+    if (state.currentSessionId) params.set("sessionId", state.currentSessionId);
+    const res = await fetch(`/api/extensions/status?${params}`, { headers: api.headers() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || `Unable to read extension status (${res.status})`);
+    renderExtensionStatus(data.status as ExtensionLoadStatus);
+  }
+
+  async function reloadExtensions() {
+    elements.extensionStatusBadge.className = "extensionStatusBadge loading";
+    elements.extensionStatusBadge.textContent = "Retrying…";
+    elements.extensionStatusMessage.textContent = "Reloading extensions and models without restarting pi-web…";
+    elements.extensionStatusDetails.hidden = true;
+    elements.extensionReloadButton.disabled = true;
+    try {
+      const res = await fetch("/api/extensions/reload", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ sessionId: state.currentSessionId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `Unable to reload extensions (${res.status})`);
+      renderExtensionStatus(data.status as ExtensionLoadStatus);
+      setSettingsStatus(data.status?.state === "ready" ? "Extensions reloaded" : "Extension reload completed with errors", data.status?.state !== "ready");
+    } catch (error) {
+      renderExtensionStatusError(error);
+      setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+    }
   }
 
   function tokenShareUrl() {
@@ -266,12 +385,14 @@ export function createSettings(options: {
   function renderTokenShare() {
     const shareUrl = tokenShareUrl();
     if (!shareUrl) {
+      elements.tokenShareUnavailable.hidden = false;
       elements.tokenShareSection.hidden = true;
       elements.tokenShareQr.replaceChildren();
       elements.tokenShareUrl.value = "";
       setTokenShareGenerated(false);
       return;
     }
+    elements.tokenShareUnavailable.hidden = true;
     elements.tokenShareSection.hidden = false;
     elements.tokenShareUrl.value = shareUrl;
     elements.tokenShareQr.replaceChildren();
@@ -357,16 +478,29 @@ export function createSettings(options: {
     const res = await fetch("/api/settings", { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
+    if (Array.isArray(data.webSettingsSchemas)) state.webSettingsSchemas = data.webSettingsSchemas;
     applySettings(data.settings);
   }
 
   function prepareOpenSettings() {
+    elements.sessionDrawerSettingsButton.setAttribute("aria-expanded", "true");
+    elements.sessionDrawerSettingsButton.classList.add("active");
+    settingsShell?.prepareOpen();
     const hasToken = !!state.token.trim();
+    elements.tokenShareUnavailable.hidden = hasToken;
     elements.tokenShareSection.hidden = !hasToken;
     elements.tokenShareQr.replaceChildren();
     elements.tokenShareUrl.value = "";
     setTokenShareGenerated(false);
     setSettingsStatus("");
+    elements.extensionStatusBadge.className = "extensionStatusBadge loading";
+    elements.extensionStatusBadge.textContent = "Checking…";
+    elements.extensionStatusMessage.textContent = "Checking extension status…";
+    elements.extensionStatusDetails.hidden = true;
+    settingsShell?.setBadge("extensions", "…", "neutral");
+    settingsShell?.setSummary("access", hasToken ? "Connect another device" : "No browser token saved");
+    void refreshExtensionStatus().catch(renderExtensionStatusError);
+    void runNotifications.refresh().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   }
 
   function afterOpenSettings() {
@@ -374,8 +508,11 @@ export function createSettings(options: {
   }
 
   function prepareCloseSettings() {
+    elements.sessionDrawerSettingsButton.setAttribute("aria-expanded", "false");
+    elements.sessionDrawerSettingsButton.classList.remove("active");
     closeAccentPopover({ restorePreview: true, focusButton: false });
     closeTokenShareFullscreen(false);
+    settingsShell?.prepareClose();
   }
 
   function openSettings() {
@@ -398,11 +535,26 @@ export function createSettings(options: {
     prepareCloseSettings();
     elements.settingsPanel.hidden = true;
     elements.settingsBackdrop.hidden = true;
-    elements.settingsButton.focus();
+    elements.sessionButton.focus();
   }
 
   function init() {
     populateBucketColorSelect(elements.settingDefaultBucketColorSelect);
+    settingsShell = createSettingsShell(elements.settingsPanel);
+    settingsShell.init();
+    extSettings = createExtensionSettings({
+      container: elements.extensionSettingsContainer,
+      api,
+      state,
+      fetchModels: async () => {
+        const res = await fetch("/api/models", { headers: api.headers() });
+        if (!res.ok) return [];
+        const data = await res.json().catch(() => ({}));
+        return Array.isArray(data.models) ? data.models : [];
+      },
+      setStatus: setSettingsStatus,
+      notifyError: (message) => addMessage("system", message, "error"),
+    });
     applySettings(state.settings);
 
     settingsPanelHandle = rightPanels?.register({
@@ -412,14 +564,14 @@ export function createSettings(options: {
       trigger: elements.settingsButton,
       backdrop: elements.settingsBackdrop,
       closeButton: elements.settingsCloseButton,
-      width: "380px",
-      minWidth: 320,
-      maxWidth: 560,
+      width: "820px",
+      minWidth: 680,
+      maxWidth: 980,
       closeOnEscape: false,
       onBeforeOpen: prepareOpenSettings,
       onOpen: afterOpenSettings,
       onBeforeClose: prepareCloseSettings,
-      focusOnClose: elements.settingsButton,
+      focusOnClose: elements.sessionButton,
     });
     if (!settingsPanelHandle) elements.settingsButton.addEventListener("click", openSettings);
     elements.tokenShareFullscreenButton.addEventListener("click", () => {
@@ -451,6 +603,7 @@ export function createSettings(options: {
         closeAccentPopover();
         return;
       }
+      if (!elements.settingsPanel.hidden && settingsShell?.handleEscape()) return;
       if (!elements.settingsPanel.hidden) closeSettings();
     });
 
@@ -537,7 +690,17 @@ export function createSettings(options: {
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       });
     });
+    elements.extensionReloadButton.addEventListener("click", () => {
+      void reloadExtensions();
+    });
+    runNotifications.init();
   }
 
-  return { init, refreshSettings, applySettings, patchSettings, isNavPinned: () => state.settings.appearance.navPinned, getNavWidth: () => state.settings.appearance.navWidth };
+  function applyWebSettingsSchemas(schemas: WebSettingsSchema[]) {
+    state.webSettingsSchemas = Array.isArray(schemas) ? schemas : [];
+    updateExtensionSearchTerms();
+    extSettings?.render();
+  }
+
+  return { init, refreshSettings, applySettings, patchSettings, applyWebSettingsSchemas, isNavPinned: () => state.settings.appearance.navPinned, getNavWidth: () => state.settings.appearance.navWidth };
 }

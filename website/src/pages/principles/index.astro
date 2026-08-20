@@ -1,0 +1,36 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import BottomCTA from '../../components/BottomCTA.astro';
+import ButtonLink from '../../components/ButtonLink.astro';
+import MarketingHero from '../../components/MarketingHero.astro';
+import Section from '../../components/Section.astro';
+
+const base = import.meta.env.BASE_URL;
+const repo = 'https://github.com/ashwin-pc/pi-web';
+const principles = [
+  ['Outcomes over chat', 'The result matters more than transcript mechanics.'],
+  ['Sessions preserve work', 'Threads stay named, resumable, and branchable.'],
+  ['Everything inspectable', 'Tools, artifacts, files, and changes remain visible.'],
+  ['Local-first control', 'The server starts on localhost; wider access is your choice.'],
+  ['Focused, not an IDE', 'Review and intervention stay close to agent work.'],
+  ['Extensions are core', 'Specific workflows can live as source you own.'],
+];
+---
+
+<BaseLayout title="Principles" description="The concise product principles and roadmap boundary behind pi-web.">
+  <MarketingHero eyebrow="Principles" title="Built for agents that do real work." lede="Protect the work. Show the result. Keep control with the operator.">
+    <ButtonLink href={`${base}getting-started/`}>Get started</ButtonLink>
+  </MarketingHero>
+
+  <Section eyebrow="Durable choices" title="Six product principles.">
+    <div class="principles-grid">{principles.map(([title, copy], index) => <article><span>0{index + 1}</span><h2>{title}</h2><p>{copy}</p></article>)}</div>
+  </Section>
+
+  <Section id="direction" tone="dark" narrow eyebrow="Direction boundary" title="Broaden without flattening.">
+    <p class="direction-lede"><code>pi</code> is the current default and full-capability reference harness. Typed events, capabilities, and interaction plumbing are enabling foundations. They are not multi-harness product support.</p>
+    <p class="boundary-copy">Alternate harnesses, per-session remote runtimes, generic cross-harness approvals, harness-neutral add-ons, hosted access, and multi-user operation do not ship today.</p>
+    <div class="direction-links"><a href={`${repo}/blob/main/docs/multi-harness-design.md`}>Multi-harness design ↗</a><a href={`${repo}/blob/main/docs/runtime-binding-design.md`}>Runtime design ↗</a><a href={`${repo}/issues/92`}>Issue #92 ↗</a></div>
+  </Section>
+
+  <BottomCTA eyebrow="What ships now" title="Use pi-web with pi today." primaryHref={`${base}getting-started/`} primaryLabel="Get started" secondaryHref={`${base}features/`} secondaryLabel="See the product" />
+</BaseLayout>

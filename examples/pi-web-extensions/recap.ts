@@ -1,4 +1,5 @@
 import { generateSummary } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";
 
 const RECAP_INSTRUCTIONS = [
@@ -13,24 +14,30 @@ const RECAP_INSTRUCTIONS = [
 async function buildRecap(ctx: PiWebExtensionContext) {
   const model = ctx.model;
   if (!model) throw new Error("No model is configured for this session");
-  const messages = ctx.sessionManager.buildSessionContext().messages;
+  const messages = buildSessionContext(ctx.sessionManager.getBranch()).messages;
   if (!messages.length) throw new Error("This session has no messages to recap yet");
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  const markdown = await generateSummary(messages, model, 4096, auth.apiKey, auth.headers, ctx.signal, RECAP_INSTRUCTIONS);
+  if (!auth.ok) throw new Error(auth.error);
+  const headers = auth.headers
+    ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => entry[1] !== null))
+    : undefined;
+  const markdown = await generateSummary(messages, model, 4096, auth.apiKey, headers, ctx.signal, RECAP_INSTRUCTIONS);
   return { markdown: markdown.trim() };
 }
 
 export default function recapExtension(pi: PiWebExtensionAPI) {
   const add = (_event: unknown, ctx: PiWebExtensionContext) => {
-    ctx.ui.web.setHeaderAction("recap", {
+    ctx.ui.web.contribute("recap", {
+      slot: "header-action",
+      kind: "rendered",
       icon: "scroll-text",
       title: "Session recap",
       label: "Recap",
-      invoke: () => buildRecap(ctx),
+      render: () => buildRecap(ctx),
     });
   };
 
   pi.on("session_start", add);
   pi.on("session_before_switch", add);
-  pi.on("session_shutdown", (_event, ctx) => ctx.ui.web.setHeaderAction("recap", undefined));
+  pi.on("session_shutdown", (_event, ctx) => ctx.ui.web.contribute("recap", undefined));
 }
