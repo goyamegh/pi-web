@@ -49,6 +49,14 @@ export AWS_EC2_METADATA_DISABLED="${AWS_EC2_METADATA_DISABLED:-true}"
 # bootstrap a password/passkey. Remove this once real credentials are set up.
 export PI_WEB_AUTH_POLICY="${PI_WEB_AUTH_POLICY:-open}"
 
+# Same merge added Origin validation shared by cookie mutations AND WebSocket
+# upgrades, defaulting to http://localhost:$PORT. That never matches a real
+# browser's Origin through the tunnel (curl sends no Origin header, so this
+# passed every manual check) -- every WS upgrade (the app's /ws AND Vite's
+# HMR socket) got 403'd, which is what caused the reconnect/reload loop.
+# Pin the exact public origin so trustedOrigin() matches.
+export PI_WEB_AUTH_ORIGIN="${PI_WEB_AUTH_ORIGIN:-https://goyamegh-piweb-origin.c.tunnels.lab.aws.dev}"
+
 # Singleton: supervisor already running?
 if [[ -f "$PID_FILE" ]]; then
   pid=$(cat "$PID_FILE" 2>/dev/null)
