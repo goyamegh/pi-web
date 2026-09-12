@@ -41,6 +41,14 @@ export AWS_PROFILE="${AWS_PROFILE:-Bedrock}"
 export AWS_REGION="${AWS_REGION:-us-west-2}"
 export AWS_EC2_METADATA_DISABLED="${AWS_EC2_METADATA_DISABLED:-true}"
 
+# 2026-09-12: origin/main merged a new passkey/password auth kernel. An
+# unconfigured store defaults to policy=authenticated with zero enrolled
+# methods, i.e. a hard lockout, on first boot. This is a personal,
+# single-operator instance already gated by the tunnel's Midway ALLOW_USERS
+# list, so keep the previous no-app-login behavior explicitly rather than
+# bootstrap a password/passkey. Remove this once real credentials are set up.
+export PI_WEB_AUTH_POLICY="${PI_WEB_AUTH_POLICY:-open}"
+
 # Singleton: supervisor already running?
 if [[ -f "$PID_FILE" ]]; then
   pid=$(cat "$PID_FILE" 2>/dev/null)
