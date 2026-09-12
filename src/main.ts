@@ -35,19 +35,22 @@ import {
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { initActionLauncher, type ActionLauncherController } from "./app/actionLauncher.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
+import { createActiveWorkerDock, type ActiveWorkerDockController } from "./composer/activeWorkerDock.js";
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createRepoInfoBar, type RepoInfoBarController } from "./composer/repoInfoBar.js";
 import { createWebPanels, type WebPanelsController } from "./extensions/webPanels.js";
+import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/artifactPreviews.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
-import { configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
+import { configureArtifactPanelOpener, configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
 import { initSessionDrawerResize } from "./sessions/sessionDrawerResize.js";
+import type { WaitingInfo } from "./sessions/lineage.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSystemInfo, type SystemInfoController } from "./systemInfo/systemInfo.js";
@@ -100,11 +103,14 @@ initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
 configureArtifactPreviewActions({ headers: api.headers, getSessionId: () => state.currentSessionId });
+configureArtifactPreviews({ headers: api.headers, getSessionId: () => state.currentSessionId });
 
 let messages: MessageList;
 let composer: ComposerController;
 let contextMeter: ContextMeterController;
 let repoInfoBar: RepoInfoBarController;
+let activeWorkerDock: ActiveWorkerDockController;
+let legacyWaitingInfo: WaitingInfo | undefined;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
 let settings: SettingsController;
@@ -114,7 +120,7 @@ let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
 let gitPanel: GitPanelController;
 let filesPanel: FilesPanelController;
-let webPanels: WebPanelsController;
+const webPanels: WebPanelsController = createWebPanels({ rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 let actionLauncher: ActionLauncherController;
 let realtime: RealtimeController;
 async function submitPromptFromMessageAction(message: string) {
@@ -197,8 +203,16 @@ const quoteReplies = createQuoteReplies({
   onChange: () => composer?.updatePrimaryAction(),
 });
 const markdown = createMarkdownRenderer(elements.messagesEl, quoteReplies.restoreSubmittedReferences);
-messages = createMessageList({ messagesEl: elements.messagesEl, markdown, apiHeaders: api.headers, quoteReplies, onMessageAction: handleMessageAction, openSession: (sessionId) => void sessions.openSessionById(sessionId) });
-const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId));
+messages = createMessageList({
+  messagesEl: elements.messagesEl,
+  markdown,
+  apiHeaders: api.headers,
+  quoteReplies,
+  onMessageAction: handleMessageAction,
+  openSession: (sessionId) => void sessions.openSessionById(sessionId),
+  openPanel: (key, initialEvent) => webPanels.open(key, initialEvent),
+});
+const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId), messages.reconcileActivity);
 
 const webHeaderActions = createWebHeaderActions({
   container: elements.headerActionsEl,
@@ -254,6 +268,7 @@ function renderActiveSessionRuntime(
   contextMeter?.update({ stats: view?.stats, isCompacting: runtime.isCompacting });
   sessionInfo?.update();
   renderRuntimeActivity(runtime, previous, activity);
+  activeWorkerDock?.refresh();
 }
 
 function renderActiveSessionMetadata() {
@@ -275,8 +290,10 @@ function renderActiveSessionMetadata() {
   renderWebFooters(elements.extensionFooterEl, inSlot("footer").map(({ key, view: footer }) => ({ key, footer })));
   webHeaderActions.render(inSlot("header-action"));
   setArtifactPreviewActions(inSlot("artifact-action").map((entry) => ({ ...entry, ...entry.match })));
+  setArtifactPreviews(inSlot("artifact-preview"));
   gitPanel?.setExtensionTabs(inSlot("git-tab"));
   webPanels?.setPanels(inSlot("panel"), state.currentSessionId);
+  systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
   actionLauncher?.setExtensionActions(inSlot("fab"));
   statusBar?.setStatusTitle(view?.name?.trim() || view?.title?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
@@ -309,7 +326,8 @@ function runtimePresentationChanged(
     || previous.isRunning !== next.isRunning
     || previous.isStreaming !== next.isStreaming
     || previous.isRetrying !== next.isRetrying
-    || previous.isCompacting !== next.isCompacting;
+    || previous.isCompacting !== next.isCompacting
+    || previous.pendingMessageCount !== next.pendingMessageCount;
 }
 
 function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptions = {}) {
@@ -396,6 +414,13 @@ async function refreshState() {
   const query = requestedSessionId ? `?sessionId=${encodeURIComponent(requestedSessionId)}` : "";
   const res = await fetch(`/api/state${query}`, { headers: api.headers() });
   if (res.status === 401) {
+    try {
+      const challenge = await fetch("/api/auth/challenge");
+      if (challenge.ok) {
+        const value = await challenge.json() as { mode?: string; url?: string };
+        if (value.mode === "redirect" && value.url) { location.assign(value.url); return; }
+      }
+    } catch { /* legacy servers have no challenge endpoint */ }
     elements.tokenOverlay.hidden = false;
     elements.tokenInput.focus();
     return;
@@ -451,7 +476,10 @@ statusBar = createStatusBar({
   sessionState,
   addMessage: messages.addMessage,
   refreshSessions: () => sessions.refreshSessions(),
-  openSession: (sessionId, cwd) => sessions.openSessionTab(sessionId, cwd),
+  onWaitingStatusChanged: (info) => {
+    legacyWaitingInfo = info;
+    activeWorkerDock?.refresh();
+  },
   refreshState,
 });
 
@@ -473,6 +501,11 @@ settings = createSettings({
   onNavWidthChange: (width) => {
     document.documentElement.style.setProperty("--session-drawer-width", `${width}px`);
   },
+  onAppearanceChange: () => {
+    activeWorkerDock?.refresh();
+    messages.reconcileActivity();
+    if (state.initialSyncComplete) void refreshMessages().catch(showSystemError);
+  },
 });
 
 systemInfo = createSystemInfo({
@@ -480,6 +513,8 @@ systemInfo = createSystemInfo({
   rightPanels,
   trigger: elements.sessionDrawerInfoButton,
   focusOnClose: elements.sessionButton,
+  apiHeaders: api.headers,
+  getSessionId: () => state.currentSessionId,
   onError: (message) => messages.addMessage("system", message, "error"),
 });
 
@@ -498,13 +533,24 @@ sessions = createSessions({
   refreshMessages,
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
-  onDerivedSessionStateChanged: () => statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || "")),
+  onDerivedSessionStateChanged: () => {
+    statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
+    activeWorkerDock?.refresh();
+  },
   clearMessages: () => {
     tools.clearActiveToolCards();
     messages.clear();
   },
   addMessage: messages.addMessage,
 });
+
+activeWorkerDock = createActiveWorkerDock({
+  container: elements.waitingSessionsEl,
+  getWorkers: () => sessions.activeWorkersFor(state.currentSessionId),
+  getWaiting: () => legacyWaitingInfo,
+  openSession: (sessionId) => void sessions.openSessionById(sessionId),
+});
+activeWorkerDock.refresh();
 
 sessionInfo = createSessionInfo({
   state,
@@ -565,7 +611,6 @@ realtime = createRealtime({
 });
 
 initStaticIcons();
-webPanels = createWebPanels({ rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 actionLauncher = initActionLauncher(elements, {
   onSessionDetails: () => sessionInfo.open(),
   onExtensionAction: (opensPanelKey) => webPanels.open(opensPanelKey),
@@ -733,6 +778,7 @@ filesPanel = initFilesPanel({
   getSessionId: () => state.currentSessionId,
   onError: showSystemError,
 });
+configureArtifactPanelOpener((url) => filesPanel.openArtifact(url));
 gitPanel = initGitPanel({
   button: elements.gitButton,
   panel: elements.gitPanel,

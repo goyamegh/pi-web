@@ -60,7 +60,15 @@ export type PiWebContribution =
   | { slot: "footer"; kind: "static"; view: PiWebFooter }
   | { slot: "fab"; kind: "static"; title: string; label?: string; icon?: string; opens: string }
   | {
-      slot: "header-action" | "artifact-action" | "git-tab" | "panel";
+      slot: "artifact-preview";
+      kind: "rendered";
+      title: string;
+      label?: string;
+      match: { kinds?: PiWebArtifactContext["kind"][]; extensions?: string[] };
+      render: (event?: PiWebContributionEvent) => PiWebArtifactPreviewView | Promise<PiWebArtifactPreviewView>;
+    }
+  | {
+      slot: "header-action" | "artifact-action" | "git-tab" | "panel" | "system-info";
       kind: "rendered";
       title: string;
       label?: string;
@@ -86,7 +94,21 @@ export type PiWebHeaderAction = {
 export type PiWebArtifactContext = {
   name: string;
   path: string;
-  kind: "markdown" | "html" | "video";
+  kind: "image" | "markdown" | "html" | "video" | "audio" | "pdf" | "file";
+};
+
+export type PiWebArtifactPreviewView = {
+  /** Complete document rendered in an opaque-origin iframe with scripts allowed. */
+  html: string;
+};
+
+export type PiWebArtifactPreview = {
+  title: string;
+  label?: string;
+  /** Built-in previews retain precedence; this matches otherwise generic artifacts. */
+  kinds?: PiWebArtifactContext["kind"][];
+  extensions?: string[];
+  render: (artifact: PiWebArtifactContext) => Promise<PiWebArtifactPreviewView> | PiWebArtifactPreviewView;
 };
 
 export type PiWebArtifactAction = {
@@ -170,6 +192,12 @@ export type PiWebPanel = {
   render: (event?: PiWebPanelEvent) => Promise<PiWebPanelView> | PiWebPanelView;
 };
 
+export type PiWebSystemInfo = {
+  title: string;
+  label?: string;
+  render: (event?: PiWebPanelEvent) => Promise<PiWebPanelView> | PiWebPanelView;
+};
+
 export type PiWebFabAction = {
   /** lucide icon name; unsupported names fall back to square-pen. */
   icon?: string;
@@ -248,7 +276,15 @@ export type PiWebCapabilities = Readonly<{
   effects: readonly string[];
 }>;
 
+export interface PiWebSettlementDependencies {
+  sessionIds: string[];
+}
+
+export type { PiWebHttpClient, PiWebHttpClientOptions, PiWebHttpScope } from "./extensionHttp.js";
+
 export type PiWebUi = {
+  /** Core-managed scoped HTTP access for trusted server-side extensions only. */
+  createApiClient?(options: import("./extensionHttp.js").PiWebHttpClientOptions): import("./extensionHttp.js").PiWebHttpClient;
   /** Runtime feature discovery for independently distributed extensions. */
   readonly capabilities: PiWebCapabilities;
 
@@ -275,6 +311,9 @@ export type PiWebUi = {
   /** Set or clear an action shown on matching inline artifact preview cards. */
   setArtifactAction(key: string, action: PiWebArtifactAction | undefined): void;
 
+  /** Set or clear a sandboxed renderer for matching generic artifacts. */
+  setArtifactPreview(key: string, preview: PiWebArtifactPreview | undefined): void;
+
   /** Set or clear a provider-specific tab in the built-in Git panel. */
   setGitTab(key: string, tab: PiWebGitTab | undefined): void;
 
@@ -284,6 +323,9 @@ export type PiWebUi = {
    * from a header action via an `open-panel` effect, or any future affordance.
    */
   setPanel(key: string, panel: PiWebPanel | undefined): void;
+
+  /** Set or clear a rendered section contributed to the built-in system-info panel. */
+  setSystemInfo(key: string, panel: PiWebSystemInfo | undefined): void;
 
   /** Set or clear a mascot-FAB launcher entry that opens a registered panel. */
   setFabAction(key: string, action: PiWebFabAction | undefined): void;
@@ -298,6 +340,12 @@ export type PiWebUi = {
 
   /** Read this owner's persisted settings (defaults if unset). */
   getSettings(id: string): Promise<PiWebStoredSettings>;
+
+  /**
+   * Atomically replace this session's tracked settlement dependencies.
+   * Passing an empty list reports that no dependency wakeups remain owed.
+   */
+  reportSettlementDependencies(dependencies: PiWebSettlementDependencies): void;
 };
 
 export type PiWebExtensionUIContext = ExtensionUIContext & {

@@ -17,7 +17,12 @@ import { assistantErrorBody, normalizeAssistantError } from "../messages/content
 import { playCompletionAlerts } from "../app/completionAlerts.js";
 
 export function shouldRefreshSessionsForPiEvent(event: PiEvent | undefined) {
-  return event?.type === "message_end";
+  // A run can emit many persisted message_end events (assistant/tool rounds).
+  // Refreshing the full session index for each one repeatedly scans every known
+  // session and rebuilds an open drawer. Terminal events give us one exact
+  // reconciliation point after the transcript has settled.
+  return event?.type === "agent_settled"
+    || (event?.type === "compaction_end" && !event.willRetry);
 }
 
 export type RealtimeController = {
@@ -732,9 +737,19 @@ export function createRealtime(options: {
     }
   }
 
-  function connect() {
-    const ws = new WebSocket(api.wsUrl());
+  let ticketRetryMs = 500;
+  async function connect() {
+    let ws: WebSocket;
+    try { ws = new WebSocket(await api.wsUrl()); }
+    catch {
+      status.markWebSocketClosed();
+      const delay = ticketRetryMs;
+      ticketRetryMs = Math.min(ticketRetryMs * 2, 30_000);
+      window.setTimeout(() => void connect(), delay);
+      return;
+    }
     ws.addEventListener("open", () => {
+      ticketRetryMs = 500;
       status.markWebSocketOpen();
       composer.updatePrimaryAction();
     });

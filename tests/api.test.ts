@@ -1,3 +1,4 @@
+import { isolatedAuthEnv } from "./auth-isolation.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -43,16 +44,18 @@ async function initGitRepo(path: string) {
 
 async function waitForServer(baseUrl: string) {
   const deadline = Date.now() + 15_000;
+  let lastFailure = "No response";
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${baseUrl}/api/state`);
+      const res = await fetch(`${baseUrl}/api/state`, { signal: AbortSignal.timeout(2_000) });
       if (res.ok) return;
-    } catch {
-      // retry
+      lastFailure = `HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`;
+    } catch (error) {
+      lastFailure = String(error);
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`Server did not start: ${baseUrl}`);
+  throw new Error(`Server did not start: ${baseUrl}; last failure: ${lastFailure}`);
 }
 
 async function waitForCondition(predicate: () => Promise<boolean> | boolean, timeoutMs = 5_000) {
@@ -74,7 +77,7 @@ describe("pi-web mock API", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -113,8 +116,17 @@ describe("pi-web mock API", () => {
     expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
   });
 
-  it("deletes a requested session", async () => {
+  it("deletes a requested session and its independent note", async () => {
     try {
+      const seedUiState = await fetch(`${baseUrl}/api/session-ui-state`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionNotes: [{ sessionId: "mock-older", note: "Delete with session", updatedAt: "2026-01-01T00:00:00.000Z" }],
+        }),
+      });
+      expect(seedUiState.status).toBe(200);
+
       const deleteRes = await fetch(`${baseUrl}/api/sessions/delete`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -126,6 +138,9 @@ describe("pi-web mock API", () => {
 
       const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
       expect(sessions.sessions.map((item: any) => item.id)).toEqual(["mock-current", "mock-cc"]);
+
+      const uiState = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
+      expect(uiState.sessionUiState.sessionNotes).toEqual([]);
     } finally {
       await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     }
@@ -217,6 +232,13 @@ describe("pi-web mock API", () => {
       body: JSON.stringify({ sessionId: "mock-current", message: "thinking card", mode: "steer", attachments: [] }),
     });
     await waitForCondition(() => events.some((event) => event.type === "agent_event" && event.event?.type === "agent_settled"));
+    await waitForCondition(() => events.some((event) => event.type === "session-settled" && event.sessionId === "mock-current"));
+    expect(events.find((event) => event.type === "session-settled")?.status).toMatchObject({
+      sessionId: "mock-current",
+      state: "idle",
+      pendingWakeups: 0,
+      settled: true,
+    });
     const lifecycle = events.filter((event) => event.type === "agent_event" || event.type === "session_runtime_changed");
     for (let index = 0; index < lifecycle.length; index += 1) {
       if (lifecycle[index].type === "agent_event") expect(lifecycle[index + 1]?.type).toBe("session_runtime_changed");
@@ -263,7 +285,7 @@ describe("pi-web mock API", () => {
   it("returns a very deep conversation tree without overflowing the stack", async () => {
     const port = await freePort();
     const deepChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", PI_WEB_MOCK_DEEP_TREE_DEPTH: "2500", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", PI_WEB_MOCK_DEEP_TREE_DEPTH: "2500", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     deepChild.stderr?.on("data", (data) => process.stderr.write(data));
@@ -347,6 +369,7 @@ describe("pi-web mock API", () => {
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(initial.sessionUiState.revision).toEqual(expect.any(Number));
     expect(initial.sessionUiState.lanes).toEqual([]);
+    expect(initial.sessionUiState.sessionNotes).toEqual([]);
     expect(initial.sessionUiState.pinnedFolders).toEqual([]);
     expect(initial.sessionUiState.sessionUnreadStates).toEqual([]);
     expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
@@ -357,6 +380,7 @@ describe("pi-web mock API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         pinnedSessions: [{ id: "mock-current", cwd: "." }],
+        sessionNotes: [{ sessionId: "mock-current", note: "  Keep after unpin  ", updatedAt: "2026-01-01T00:00:00.000Z" }],
         pinnedFolders: ["/tmp/pi-web", "/tmp/pi-web", ""],
         sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
         sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
@@ -369,6 +393,7 @@ describe("pi-web mock API", () => {
     expect(patched.sessionUiState.revision).toBeGreaterThan(initial.sessionUiState.revision);
     expect(patched.sessionUiState).toMatchObject({
       lanes: [{ sessionId: "mock-current", lane: "pinned", cwd: ".", since: expect.any(String) }],
+      sessionNotes: [{ sessionId: "mock-current", note: "Keep after unpin", updatedAt: "2026-01-01T00:00:00.000Z" }],
       pinnedFolders: ["/tmp/pi-web"],
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z" }],
@@ -386,11 +411,28 @@ describe("pi-web mock API", () => {
     expect(read.sessionUiState.revision).toBeGreaterThan(patched.sessionUiState.revision);
     expect(read.sessionUiState.sessionUnreadStates).toEqual([]);
 
+    const unreadRes = await fetch(`${baseUrl}/api/session-ui-state/unread`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-older" }),
+    });
+    expect(unreadRes.status).toBe(200);
+    const unread = await unreadRes.json();
+    expect(unread.sessionUiState.revision).toBeGreaterThan(read.sessionUiState.revision);
+    expect(unread.sessionUiState.sessionUnreadStates).toEqual([
+      expect.objectContaining({ sessionId: "mock-older", unreadAt: expect.any(String) }),
+    ]);
+
     const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(current.sessionUiState.selectedMarkerColor).toBe("green");
     expect(current.sessionUiState.pinnedFolders).toEqual(["/tmp/pi-web"]);
     expect(current.sessionUiState.allowedMarkerColors).toEqual(["green", "yellow"]);
-    expect(current.sessionUiState.sessionUnreadStates).toEqual([]);
+    expect(current.sessionUiState.sessionNotes).toEqual([
+      expect.objectContaining({ sessionId: "mock-current", note: "Keep after unpin" }),
+    ]);
+    expect(current.sessionUiState.sessionUnreadStates).toEqual([
+      expect.objectContaining({ sessionId: "mock-older", unreadAt: expect.any(String) }),
+    ]);
 
     // Reset for downstream tests.
     await fetch(`${baseUrl}/api/session-ui-state`, {
@@ -606,10 +648,26 @@ describe("pi-web mock API", () => {
     expect(older.isCurrent).toBe(false);
   });
 
+  it("exposes the current session's derived settlement status", async () => {
+    const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
+    const runtime = sessions.sessions.find((item: any) => item.id === "mock-current").runtime;
+    const response = await fetch(`${baseUrl}/api/sessions/mock-current/status`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      sessionId: "mock-current",
+      state: runtime.isRunning || runtime.pendingMessageCount > 0 ? "running" : "idle",
+      trackedWorkers: [],
+      pendingWakeups: 0,
+      settled: !runtime.isRunning && runtime.pendingMessageCount === 0,
+    });
+  });
+
   it("preserves missing-session status codes across session routes", async () => {
     const missing = "does-not-exist";
     const cases: Array<[string, RequestInit, number]> = [
       [`/api/state?sessionId=${missing}`, {}, 404],
+      [`/api/sessions/${missing}/status`, {}, 404],
       ["/api/state?sessionId=%20", {}, 404],
       [`/api/messages?sessionId=${missing}`, {}, 404],
       ["/api/sessions/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: missing }) }, 404],
@@ -675,7 +733,7 @@ describe("git repo discovery API", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: workspace },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: workspace },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -753,7 +811,7 @@ describe("artifact serving", () => {
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
 
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: process.cwd() },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -816,25 +874,21 @@ describe("artifact serving", () => {
     expect(Buffer.from(body).toString()).toBe("LEGACY");
   });
 
-  it("serves artifacts even when a token is configured", async () => {
+  it("protects artifacts with the same gate when a token is configured", async () => {
     const port = await freePort();
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "secret", PI_WEB_CWD: process.cwd() },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "secret", PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
-      // wait for server using the artifact endpoint itself (no auth needed)
       const tokenBaseUrl = `http://127.0.0.1:${port}`;
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline) {
-        try {
-          const r = await fetch(`${tokenBaseUrl}/api/artifacts/test.png`);
-          if (r.status === 200 || r.status === 404) break;
-        } catch { /* retry */ }
+        try { if ((await fetch(`${tokenBaseUrl}/api/state`)).status === 401) break; } catch { /* retry */ }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      // artifact accessible without token
-      const artifactRes = await fetch(`${tokenBaseUrl}/api/artifacts/test.png`);
+      expect((await fetch(`${tokenBaseUrl}/api/artifacts/test.png`)).status).toBe(401);
+      const artifactRes = await fetch(`${tokenBaseUrl}/api/artifacts/test.png`, { headers: { authorization: "Bearer secret" } });
       expect(artifactRes.status).toBe(200);
       // normal API routes, including diagnostics, still require the token
       const apiRes = await fetch(`${tokenBaseUrl}/api/state`);
@@ -875,7 +929,7 @@ describe("additional API coverage", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -895,7 +949,7 @@ describe("additional API coverage", () => {
   it("state includes tokenRequired:true when token is configured", async () => {
     const port = await freePort();
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "mytoken" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "mytoken" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
@@ -1095,7 +1149,7 @@ describe("Live session lifecycle", () => {
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
       env: {
-        ...process.env,
+        ...isolatedAuthEnv(),
         PI_WEB_MOCK: "1",
         PI_WEB_DEV: "1",
         HOST: "127.0.0.1",
@@ -1194,7 +1248,7 @@ describe("WebSocket authentication", () => {
   it("rejects WebSocket upgrade without a valid token when token is configured", async () => {
     const port = await freePort();
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "secret" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "secret" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
@@ -1222,9 +1276,12 @@ describe("WebSocket authentication", () => {
         })
       ).resolves.toBeUndefined();
 
-      // Attempt WS with correct token — expect hello message
+      // Mint a single-use ticket with the token, then expect a hello message.
+      const ticketResponse = await fetch(`http://127.0.0.1:${port}/api/ws-ticket`, { method: "POST", headers: { authorization: "Bearer secret" } });
+      expect(ticketResponse.status).toBe(201);
+      const { ticket } = await ticketResponse.json() as { ticket: string };
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=secret`);
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${encodeURIComponent(ticket)}`);
         ws.on("message", (data) => {
           const msg = JSON.parse(String(data));
           expect(msg.type).toBe("hello");
@@ -1241,7 +1298,7 @@ describe("WebSocket authentication", () => {
   it("sends a hello message with session info on WebSocket connect (no token)", async () => {
     const port = await freePort();
     const noTokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
@@ -1275,7 +1332,7 @@ describe("static asset cache headers (iOS service-worker freshness)", () => {
     // In dev mode Vite's middleware serves these files with its own headers,
     // which is not the code path real deployments use.
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "0", NODE_ENV: "production", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", NODE_ENV: "production", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -1329,7 +1386,7 @@ describe("service-worker kill switch (PI_WEB_SW_RESET)", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "0", NODE_ENV: "production", PI_WEB_SW_RESET: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", NODE_ENV: "production", PI_WEB_SW_RESET: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));

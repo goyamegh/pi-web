@@ -4,10 +4,14 @@ import type { AttachedImage, Role } from "../app/types.js";
 import type { MessageDto } from "../../server/session/dto.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
+import { createActivitySummaries, liveThinkingPreview, setActivityCardMetadata } from "./activitySummary.js";
+import { isCompactDensity, isMinimalDensity } from "../app/appearance.js";
+import { renderCustomMessageReport, type CustomMessageReportInput } from "./customMessageReports.js";
 import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
+import type { PiWebPanelEvent } from "../extensions.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -76,6 +80,7 @@ export type MessageList = {
   }) => Promise<void>;
   resetStreamingAssistant: () => void;
   invalidateRefreshes: () => void;
+  reconcileActivity: () => void;
   appendCommittedMessage: (message: MessageDto, options: {
     addToolHistoryCard: AddToolHistoryCard;
     addPendingToolCard: AddPendingToolCard;
@@ -273,13 +278,15 @@ function transcriptRuntimeState(messages: any[], isStreaming?: boolean): Transcr
 export function createMessageList(options: {
   /** Switch to a referenced session in place instead of reloading the app. */
   openSession?: (sessionId: string) => void;
+  /** Open an extension panel from a transcript deep link. */
+  openPanel?: (key: string, initialEvent: PiWebPanelEvent) => void;
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
   apiHeaders?: ApiHeaders;
   quoteReplies?: QuoteRepliesController;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction, openSession, apiHeaders, quoteReplies } = options;
+  const { messagesEl, markdown, onMessageAction, openSession, openPanel, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
   let currentStreamingTextKey = "current";
@@ -294,6 +301,17 @@ export function createMessageList(options: {
   let mutationSerial = 0;
   let applyingRefresh = false;
   let bulkRendering = false;
+  let thinkingSerial = 0;
+  const customReportExpansion = new Map<string, boolean>();
+  const activity = createActivitySummaries({
+    messagesEl, openSession, isStreaming: () => isStreaming,
+    onLayout: () => {
+      // A layout update must not cancel explicit scroll intent before the
+      // browser has physically moved the viewport (e.g. the first wheel event).
+      if (userScrollIntent && !shouldFollowStream) setJumpButtonVisible(true);
+      else showJumpButtonIfAwayFromBottom();
+    },
+  });
   const bottomThreshold = 48;
   const resumeBottomThreshold = bottomThreshold;
   const jumpButtonGap = 16;
@@ -392,12 +410,14 @@ export function createMessageList(options: {
     isStreaming = true;
     shouldFollowStream = true;
     userScrollIntent = false;
+    activity.schedule();
     forceScrollToBottom();
     setJumpButtonVisible(false);
   }
 
   function endStreamFollow() {
     isStreaming = false;
+    activity.schedule();
     if (isAtBottom()) setJumpButtonVisible(false);
   }
 
@@ -418,6 +438,22 @@ export function createMessageList(options: {
     setJumpButtonVisible(true);
   }
 
+  messagesEl.addEventListener("click", (event) => {
+    const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+    if (!anchor || !messagesEl.contains(anchor)) return;
+    const href = anchor.getAttribute("href")?.trim() || "";
+    if (!href.startsWith("#panel:")) return;
+    event.preventDefault();
+    const target = href.slice("#panel:".length);
+    const separator = target.indexOf(":");
+    const key = (separator < 0 ? target : target.slice(0, separator)).trim();
+    const query = separator < 0 ? "" : target.slice(separator + 1);
+    if (!key || key.length > 80 || query.length > 8_192) return;
+    const params = new URLSearchParams(query);
+    if (Array.from(params).length > 64) return;
+    const payload = Object.fromEntries(params);
+    openPanel?.(key, { action: "deep-link", payload });
+  });
   messagesEl.addEventListener("wheel", pauseStreamFollow, { passive: true });
   messagesEl.addEventListener("touchstart", pauseStreamFollow, { passive: true });
   messagesEl.addEventListener("pointerdown", pauseStreamFollow);
@@ -664,6 +700,10 @@ export function createMessageList(options: {
 
     const renderedQuoteReplies = role === "user" && quoteReplies?.renderSubmittedMessage(body, text, images);
     const standardAttachments = images.filter((attachment) => attachment.type !== "quote-reply");
+    const renderUserText = (container: HTMLElement, value: string) => {
+      container.textContent = value;
+      if (/\]\(\s*#panel:/i.test(value)) markdown.renderAssistantMarkdown(container, value);
+    };
     if (renderedQuoteReplies) {
       // Structured quote prompts render as a compact linked-excerpt summary.
     } else if (role === "user" && images.length > 0) {
@@ -671,13 +711,15 @@ export function createMessageList(options: {
       if (cleanText) {
         const textNode = document.createElement("span");
         textNode.className = "messageText";
-        textNode.textContent = cleanText;
+        renderUserText(textNode, cleanText);
         body.append(textNode);
       }
     } else if (role === "assistant" && text) {
       body.textContent = text;
       if (collapsible) markdown.queueAssistantMarkdownRender(body, text);
       else markdown.renderAssistantMarkdown(body, text);
+    } else if (role === "user") {
+      renderUserText(body, text || "");
     } else {
       body.textContent = text || "";
     }
@@ -759,6 +801,7 @@ export function createMessageList(options: {
 
     appendMessageActions(div, role, body, metadata.copyText ?? text, metadata);
     messagesEl.append(div);
+    activity.schedule();
     scrollToBottom();
     return div;
   }
@@ -777,11 +820,12 @@ export function createMessageList(options: {
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
-  function addCustomMessageCard(message: { text?: string; customType?: string; details?: unknown; isError?: boolean; raw?: any }) {
+  function addCustomMessageCard(message: CustomMessageReportInput & { entryId?: string }) {
     invalidatePendingRefreshes();
     const text = String(message.text || "").trim();
-    const customType = message.customType || message.raw?.customType || "";
-    const details = message.details ?? message.raw?.details;
+    const raw = message.raw && typeof message.raw === "object" ? message.raw as Record<string, unknown> : {};
+    const customType = message.customType || (typeof raw.customType === "string" ? raw.customType : "");
+    const details = message.details ?? raw.details;
     const sessionRefs = sessionRefsFromDetails(details);
     // Nothing to show: upstream drops text-less custom messages, so do not
     // leave an empty bordered strip in the conversation.
@@ -795,6 +839,22 @@ export function createMessageList(options: {
       const existing = Array.from(messagesEl.querySelectorAll<HTMLDivElement>(".customCard"))
         .find((card) => (card.dataset.sessionRefs || "").split(",").some((id) => refIds.has(id)));
       if (existing) return existing;
+    }
+
+    if (isMinimalDensity()) {
+      const key = message.entryId || `${customType}:${text}`;
+      const report = renderCustomMessageReport(message, {
+        markdown, openSession, entryId: key, expanded: customReportExpansion.get(key),
+        onExpandedChange: (id, expanded) => {
+          if (id) customReportExpansion.set(id, expanded);
+          while (customReportExpansion.size > 500) customReportExpansion.delete(customReportExpansion.keys().next().value!);
+        },
+      });
+      if (!report) return undefined;
+      messagesEl.append(report);
+      activity.schedule();
+      scrollToBottom();
+      return report;
     }
 
     const div = document.createElement("div");
@@ -836,8 +896,8 @@ export function createMessageList(options: {
       });
       div.append(toggle);
     }
-
     messagesEl.append(div);
+    activity.schedule();
     scrollToBottom();
     return div;
   }
@@ -868,14 +928,24 @@ export function createMessageList(options: {
     }
     if (subtitle) {
       const words = thinkingWordCount(displayText);
-      subtitle.textContent = streaming
-        ? words > 0 ? `${words.toLocaleString()} words · streaming` : "streaming"
-        : `${words.toLocaleString()} words`;
+      if (streaming && isMinimalDensity()) {
+        subtitle.classList.add("thinkingLivePreview");
+        let tail = subtitle.firstElementChild as HTMLSpanElement | null;
+        if (!tail) {
+          tail = document.createElement("span");
+          subtitle.replaceChildren(tail);
+        }
+        tail.textContent = liveThinkingPreview(displayText) || "Thinking…";
+        // Right-aligned overflow keeps the latest words visible at every update.
+        tail.getAnimations?.().forEach(animation => animation.cancel());
+        if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+          tail.animate?.([{ transform: "translateX(14px)", opacity: 0.7 }, { transform: "translateX(0)", opacity: 1 }], { duration: 180, easing: "ease-out" });
+        }
+      } else {
+        subtitle.classList.remove("thinkingLivePreview");
+        subtitle.textContent = streaming ? words > 0 ? `${words.toLocaleString()} words · streaming` : "streaming" : `${words.toLocaleString()} words`;
+      }
     }
-  }
-
-  function isCompactDensity() {
-    return document.documentElement.dataset.density === "compact";
   }
 
   function updateThinkingCompactToggle(toggle: HTMLButtonElement, collapsed: boolean) {
@@ -895,6 +965,7 @@ export function createMessageList(options: {
     invalidatePendingRefreshes();
     const card = document.createElement("div");
     card.className = `toolCard toolCard--thinking${streaming ? " toolCard--thinkingStreaming" : ""}`;
+    setActivityCardMetadata(card, { key: `thinking:${thinkingSerial++}` });
 
     const header = document.createElement("div");
     header.className = "toolCardHeader";
@@ -926,7 +997,7 @@ export function createMessageList(options: {
 
     header.addEventListener("click", (event) => {
       const target = event.target instanceof HTMLElement ? event.target : undefined;
-      if (!isCompactDensity() || target?.closest("button")) return;
+      if (!isCompactDensity() || target?.closest("button, a, input, summary")) return;
       setThinkingCompactCollapsed(card, !card.classList.contains("toolCard--compactCollapsed"));
     });
 
@@ -960,6 +1031,7 @@ export function createMessageList(options: {
     }
 
     messagesEl.append(card);
+    activity.schedule();
     scrollToBottom();
     if (streaming) playToolCardEntry(card);
     return card;
@@ -969,6 +1041,7 @@ export function createMessageList(options: {
     if (invalidate) invalidatePendingRefreshes();
     quoteReplies?.clear();
     messagesEl.textContent = "";
+    thinkingSerial = 0;
     streamingAssistant = null;
     streamingTextBlocks.clear();
     currentStreamingTextKey = "current";
@@ -978,6 +1051,8 @@ export function createMessageList(options: {
   }
 
   function clear() {
+    activity.reset();
+    customReportExpansion.clear();
     clearInternal(true);
   }
 
@@ -1080,6 +1155,7 @@ export function createMessageList(options: {
     }
     streamingThinkingCards.delete(key);
     streamingAssistant = null;
+    activity.schedule();
     scrollToBottom();
   }
 
@@ -1183,7 +1259,8 @@ export function createMessageList(options: {
         return;
       case "user": {
         const text = messageText(message);
-        if (text) addMessage("user", text, message.isError ? "error" : "", message.attachments || imagesFromRawContent(rawContent(message)), { entryId: message.entryId, parentEntryId: message.parentEntryId, timestamp: message.timestamp });
+        const attachments = message.attachments || imagesFromRawContent(rawContent(message));
+        if (text || attachments.length) addMessage("user", text, message.isError ? "error" : "", attachments, { entryId: message.entryId, parentEntryId: message.parentEntryId, timestamp: message.timestamp });
         return;
       }
       case "system":
@@ -1230,7 +1307,7 @@ export function createMessageList(options: {
     }
   }
 
-  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState }: {
+  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming: historyIsStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState }: {
     sessionId: string;
     headers: ApiHeaders;
     addToolHistoryCard: AddToolHistoryCard;
@@ -1252,11 +1329,14 @@ export function createMessageList(options: {
     const wasFollowing = shouldFollowStream;
     const previousScrollTop = messagesEl.scrollTop;
     applyingRefresh = true;
+    activity.capture();
+    let activityRestored = false;
     try {
+      isStreaming = Boolean(historyIsStreaming);
       clearInternal(false);
       clearActiveToolCards();
       const allMessages = (data.messages || []) as MessageDto[];
-      const runtimeState = transcriptRuntimeState(allMessages, isStreaming);
+      const runtimeState = transcriptRuntimeState(allMessages, historyIsStreaming);
       bulkRendering = true;
       const completedToolResults = new Map<string, MessageDto>();
       const renderedToolResultIds = new Set<string>();
@@ -1274,8 +1354,18 @@ export function createMessageList(options: {
           continue;
         }
 
-        renderMessage(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
+        const previousLast = messagesEl.lastElementChild;
+        renderMessage(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming: historyIsStreaming });
+        let added = previousLast ? previousLast.nextElementSibling : messagesEl.firstElementChild;
+        let partIndex = 0;
+        while (added) {
+          if (added instanceof HTMLElement && added.matches(".toolCard")) added.dataset.activityKey = `history:${message.entryId || index}:${partIndex}`;
+          partIndex++;
+          added = added.nextElementSibling;
+        }
       }
+      activity.restore();
+      activityRestored = true;
       bulkRendering = false;
       if (wasFollowing) scrollToBottom();
       else {
@@ -1291,6 +1381,7 @@ export function createMessageList(options: {
     } finally {
       bulkRendering = false;
       applyingRefresh = false;
+      if (!activityRestored) activity.restore();
     }
   }
 
@@ -1308,6 +1399,7 @@ export function createMessageList(options: {
     refreshMessages,
     resetStreamingAssistant,
     invalidateRefreshes: invalidateExternalRefreshes,
+    reconcileActivity: activity.schedule,
     scrollToBottom,
     startStreamingThinking,
   };

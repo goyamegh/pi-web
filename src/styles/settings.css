@@ -328,6 +328,48 @@
   color: var(--text);
   padding: 6px 8px;
 }
+.settingsBucketNamesField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.settingsBucketNamesTitle {
+  color: var(--muted);
+  font-size: 13px;
+}
+.settingsBucketNames {
+  display: grid;
+  gap: 8px;
+}
+.settingsBucketNameRow {
+  display: grid;
+  grid-template-columns: 14px minmax(60px, 1fr) minmax(120px, 2fr);
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.settingsBucketNameSwatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--session-marker-color);
+}
+.settingsBucketNameDefault { color: var(--muted); }
+.settingsBucketNameRow input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 6px 8px;
+}
+.settingsBucketNameRow input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .settingsAccentField {
   position: relative;
 }
@@ -605,90 +647,13 @@
 .extensionStatusError {
   color: var(--danger);
 }
-.tokenShareSection[hidden] { display: none; }
-.tokenShareQr[hidden] { display: none; }
-.tokenShareUrl[hidden] { display: none; }
-.tokenShareQr {
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: #fff;
-  padding: 10px;
-}
-.tokenShareQr svg {
-  width: min(220px, 100%);
-  height: auto;
-}
-.tokenShareUrl {
-  min-height: 34px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--panel);
-  color: var(--text);
-  padding: 6px 8px;
-  font: inherit;
-  font-size: 12px;
-}
-.tokenShareFullscreen {
-  position: fixed;
-  inset: 0;
-  z-index: 1200;
-  display: grid;
-  place-items: center;
-  overflow: auto;
-  background: #fff;
-  color: #111;
-  padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
-}
-.tokenShareFullscreen[hidden] { display: none; }
-.tokenShareFullscreenContent {
-  display: grid;
-  width: min(92vmin, 760px);
-  gap: min(3vmin, 22px);
-  place-items: center;
-  text-align: center;
-}
-.tokenShareFullscreenContent h2 {
-  margin: 0;
-  color: #111;
-  font-size: clamp(22px, 5vmin, 42px);
-}
-.tokenShareFullscreenContent p {
-  margin: 0;
-  color: #333;
-  font-size: clamp(14px, 2.5vmin, 20px);
-}
-.tokenShareFullscreenQr {
-  display: grid;
-  width: min(82vmin, 680px);
-  max-width: 100%;
-  place-items: center;
-}
-.tokenShareFullscreenQr svg {
-  width: 100%;
-  height: auto;
-}
-.tokenShareFullscreenClose {
-  position: fixed;
-  top: max(14px, env(safe-area-inset-top));
-  right: max(14px, env(safe-area-inset-right));
-  width: 48px;
-  min-width: 48px;
-  height: 48px;
-  min-height: 48px;
-  border: 1px solid rgba(0, 0, 0, .18);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, .92);
-  color: #111;
-  font-size: 28px;
-  line-height: 1;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, .16);
-}
-.tokenShareFullscreenClose:hover { border-color: rgba(0, 0, 0, .42); }
+.deviceGrantQr { display: grid; place-items: center; border: 1px solid var(--border); border-radius: 12px; background: #fff; padding: 10px; }
+.deviceGrantQr svg { width: min(220px, 100%); height: auto; }
 
 :root[data-density="compact"] .message {
-  padding: 8px 10px;
+  --message-inline-padding: 10px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 :root[data-density="compact"] .message.user {
   margin: 6px 12px 6px 0;

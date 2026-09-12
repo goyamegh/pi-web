@@ -69,7 +69,7 @@ const loadingAnimations = new Set<LoadingAnimation>(["fireworks", "glow", "pulse
 export type PiWebSettings = {
   version: 1;
   appearance: {
-    density: "comfortable" | "compact";
+    density: "comfortable" | "compact" | "minimal";
     navPinned: boolean;
     navWidth: number;
     accentColor: string;
@@ -306,7 +306,7 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   if (!isRecord(value)) return settings;
 
   const appearance = isRecord(value.appearance) ? value.appearance : undefined;
-  if (appearance?.density === "compact" || appearance?.density === "comfortable") {
+  if (appearance?.density === "compact" || appearance?.density === "comfortable" || appearance?.density === "minimal") {
     settings.appearance.density = appearance.density;
   }
   if (typeof appearance?.navPinned === "boolean") settings.appearance.navPinned = appearance.navPinned;
@@ -345,7 +345,7 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
   const next = cloneSettings(current);
 
   if (isRecord(patch.appearance)) {
-    if (patch.appearance.density === "comfortable" || patch.appearance.density === "compact") {
+    if (patch.appearance.density === "comfortable" || patch.appearance.density === "compact" || patch.appearance.density === "minimal") {
       next.appearance.density = patch.appearance.density;
     }
     if (typeof patch.appearance.navPinned === "boolean") next.appearance.navPinned = patch.appearance.navPinned;

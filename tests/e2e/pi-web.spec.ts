@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { ensurePreviewArtifact } from "./helpers/artifacts.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -116,6 +117,7 @@ test.describe("composer layout", () => {
     });
 
     await page.clock.install({ time: 0 });
+    await page.clock.pauseAt(0);
     await page.addInitScript(() => {
       const NativeWebSocket = window.WebSocket;
       const fakeSockets: any[] = [];
@@ -147,11 +149,12 @@ test.describe("composer layout", () => {
 
           this.url = parsed.href;
           fakeSockets.push(this);
-          setTimeout(() => {
+          queueMicrotask(() => {
             if (this.readyState !== FakeWebSocket.CONNECTING) return;
             if ((window as any).__piWebSocketAutoOpen) this.emitOpen();
-            else this.emitClose();
-          }, 0);
+            // A stalled handshake stays CONNECTING; reopening a CLOSED fake
+            // socket leaves a real reconnect timer pending and is not realistic.
+          });
         }
 
         send() {}
@@ -175,12 +178,17 @@ test.describe("composer layout", () => {
     });
 
     await page.goto("/");
-    await page.clock.runFor(1);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.at(-1)?.readyState)).toBe(1);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await expect(page.locator("#connectionStatus")).toBeHidden();
 
     await page.evaluate(() => (window as any).__piWebSockets.at(-1).emitClose());
-    await page.clock.runFor(2501);
+    // Advance only to the reconnect timer, then wait for asynchronous ticket
+    // issuance before crossing the UI's 2.5s warning threshold.
+    await page.clock.runFor(1500);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.length)).toBe(2);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.at(-1)?.readyState)).toBe(1);
+    await page.clock.runFor(1001);
     await expect(page.locator("#connectionStatus")).toBeHidden();
     await expect(page.locator(".message.system", { hasText: "Disconnected" })).toHaveCount(0);
     expect(messagesRequestCount).toBe(1);
@@ -192,6 +200,8 @@ test.describe("composer layout", () => {
     // Stay below reconnectNoticeDelayMs (4000ms) — pill must remain hidden so
     // brief tunnel hiccups don't flicker in/out.
     await page.clock.runFor(2501);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.length)).toBe(3);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.at(-1)?.readyState)).toBe(0);
     await expect(page.locator("#connectionStatus")).toBeHidden();
     // Cross reconnectNoticeDelayMs — pill should now appear.
     await page.clock.runFor(1_500);
@@ -213,9 +223,22 @@ test.describe("composer layout", () => {
   });
 
   test("connection warning badges refresh the page by click and keyboard", async ({ page }) => {
+    await page.addInitScript(() => {
+      const Native = window.WebSocket;
+      (window as any).__connectionReady = new Promise<void>(resolve => {
+        window.WebSocket = class extends Native {
+          constructor(url: string | URL, protocols?: string | string[]) {
+            super(url, protocols);
+            if (new URL(String(url), location.href).pathname === "/ws") this.addEventListener("open", () => queueMicrotask(resolve));
+          }
+        };
+      });
+    });
     await page.goto("/");
 
     const showWarning = async (kind: "offline" | "syncRequired", text: string) => {
+      // Initial WS open clears warning UI; wait for it instead of racing DOM injection.
+      await page.evaluate(() => (window as any).__connectionReady);
       await page.evaluate(({ kind, text }) => {
         const badge = document.querySelector<HTMLElement>("#connectionStatus")!;
         badge.className = `connectionStatus ${kind}`;
@@ -1024,14 +1047,14 @@ test.describe("sessions drawer", () => {
     await expect(drawer.getByText("Older mock session")).toBeVisible();
 
     await drawer.getByText("Older mock session").click();
-    const isMobile = (page.viewportSize()?.width || 0) <= 700;
-    if (isMobile) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    const isOverlayMode = (page.viewportSize()?.width || 0) <= 1024;
+    if (isOverlayMode) await expect(page.locator("#sessionDrawer")).toBeHidden();
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.getByText("Resumed older session.")).toBeVisible();
 
-    if (isMobile) await page.locator("#sessionButton").click();
+    if (isOverlayMode) await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
-    if (isMobile) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    if (isOverlayMode) await expect(page.locator("#sessionDrawer")).toBeHidden();
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
     const emptyState = page.locator(".emptyCwdChooser", { hasText: "Working directory" });
     await expect(emptyState).toBeVisible();
@@ -1138,7 +1161,11 @@ test.describe("attachments and prompt", () => {
     await page.locator("#prompt").focus();
     const chip = page.locator(".attachmentChip");
     await expect(chip).toBeVisible();
-    expect((await attachments.boundingBox())!.y).toBeLessThan((await page.locator("#promptForm").boundingBox())!.y);
+    await expect.poll(async () => {
+      const pill = await attachments.boundingBox();
+      const form = await page.locator("#promptForm").boundingBox();
+      return Boolean(pill && form && pill.y < form.y);
+    }).toBe(true);
     const pillBox = (await attachments.boundingBox())!;
     const fabBox = (await page.locator(".actionLauncherToggle").boundingBox())!;
     expect(pillBox.x + pillBox.width).toBeLessThanOrEqual(fabBox.x);
@@ -1151,7 +1178,11 @@ test.describe("attachments and prompt", () => {
     await page.locator("#prompt").blur();
     await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
     await expect(page.locator(".attachmentChip")).toBeVisible();
-    expect((await attachments.boundingBox())!.y).toBeLessThan((await page.locator("#promptForm").boundingBox())!.y);
+    await expect.poll(async () => {
+      const pill = await attachments.boundingBox();
+      const form = await page.locator("#promptForm").boundingBox();
+      return Boolean(pill && form && pill.y < form.y);
+    }).toBe(true);
   });
 
   test("supports dragging, dropping, and submitting generic attachments", async ({ page }) => {
@@ -1481,6 +1512,28 @@ test.describe("assistant markdown rendering", () => {
     await expect(frame).toBeVisible();
   });
 
+  test("keeps full-width and bare-text HTML previews from collapsing", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return stable html preview");
+    await page.locator("#primaryButton").click();
+
+    const assistant = page.locator(".message.assistant", { hasText: "Stable previews" }).last();
+    const previews = assistant.locator(".htmlPreview");
+    await expect(previews).toHaveCount(2);
+    await expect(previews.nth(0).locator("iframe").contentFrame().getByText("Full-width preview")).toBeVisible();
+    await expect(previews.nth(1).locator("iframe").contentFrame().getByText("Bare preview text")).toBeVisible();
+
+    const width = (index: number) => previews.nth(index).evaluate((element) => element.getBoundingClientRect().width);
+    const initialFullWidth = await width(0);
+    const initialBareWidth = await width(1);
+    expect(initialFullWidth).toBeGreaterThan(250);
+    expect(initialBareWidth).toBeGreaterThan(100);
+
+    await page.waitForTimeout(3_000);
+    expect(await width(0)).toBeGreaterThanOrEqual(initialFullWidth - 2);
+    expect(await width(1)).toBeGreaterThanOrEqual(initialBareWidth - 2);
+  });
+
   test("renders Mermaid code fences as diagrams", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("please return mermaid");
@@ -1719,47 +1772,14 @@ test.describe("context compaction", () => {
 test.describe("image rendering", () => {
   test.beforeAll(async () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
-    const htmlPreview = `<!doctype html><html><body>
-<h1>HTML artifact</h1>
-<p id="static">Rendered in a sandboxed iframe.</p>
-<p id="script-status">script did not run</p>
-<script>
-  const statuses = [];
-  document.getElementById("script-status").textContent = "script ran";
-  try {
-    parent.document.body.dataset.artifactAccess = "unexpected";
-    statuses.push("parent accessible");
-  } catch (error) {
-    statuses.push("parent blocked");
-  }
-  try {
-    localStorage.getItem("pi-web-token");
-    statuses.push("localStorage accessible");
-  } catch (error) {
-    statuses.push("localStorage blocked");
-  }
-  try {
-    statuses.push(document.cookie ? "cookies visible" : "cookies empty");
-  } catch (error) {
-    statuses.push("cookies blocked");
-  }
-  const list = document.createElement("ul");
-  list.id = "sandbox-status";
-  for (const status of statuses) {
-    const item = document.createElement("li");
-    item.textContent = status;
-    list.append(item);
-  }
-  document.body.append(list);
-</script>
-</body></html>`;
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
-    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n```ts\nconst preview = true;\n```\n");
+    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n```ts\nconst preview = true;\n```\n");
     await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
-    await writeFile(join(artifactDir, "preview.html"), htmlPreview);
+    await ensurePreviewArtifact();
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
     await writeFile(join(artifactDir, "e2e-audio-artifact.mp3"), Buffer.from("MP3"));
+    await writeFile(join(artifactDir, "e2e-toolpath.gcode"), "G1 X0 Y0\nG1 X10 Y10 E1\n");
   });
 
   test.beforeEach(async ({ page }) => {
@@ -1777,6 +1797,8 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
     await expect(preview.locator(".artifactPreviewContent strong")).toHaveText("markdown");
     await expect(preview.locator(".artifactPreviewContent pre code")).toContainText("const preview = true;");
+    await expect(page.locator(".artifactPreview--markdown")).toHaveCount(1);
+    await expect(preview.locator('.artifactPreviewContent a[href="/api/artifacts/report.md"]')).toHaveText("Self reference");
   });
 
   test("expands long artifacts in the chat flow without trapping the wheel", async ({ page }) => {
@@ -1862,6 +1884,7 @@ test.describe("image rendering", () => {
 
   test("keeps top-level artifact cards flush on phones", async ({ page }) => {
     test.skip((page.viewportSize()?.width || 0) > 700, "Phone-only geometry");
+    await page.locator("html").evaluate((root) => root.setAttribute("data-density", "compact"));
     await page.locator("#prompt").fill("show markdown artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
@@ -1870,31 +1893,38 @@ test.describe("image rendering", () => {
     const geometry = await preview.evaluate((card) => {
       const cardRect = card.getBoundingClientRect();
       const messageRect = card.closest(".message.assistant")!.getBoundingClientRect();
-      return { cardLeft: cardRect.left, cardRight: cardRect.right, messageLeft: messageRect.left, messageRight: messageRect.right };
+      const transcript = card.closest(".messages") as HTMLElement;
+      return {
+        cardLeft: cardRect.left,
+        cardRight: cardRect.right,
+        messageLeft: messageRect.left,
+        messageRight: messageRect.right,
+        transcriptClientWidth: transcript.clientWidth,
+        transcriptScrollWidth: transcript.scrollWidth,
+      };
     });
     expect(Math.abs(geometry.cardLeft - geometry.messageLeft)).toBeLessThanOrEqual(1);
     expect(Math.abs(geometry.cardRight - geometry.messageRight)).toBeLessThanOrEqual(1);
+    expect(geometry.transcriptScrollWidth).toBe(geometry.transcriptClientWidth);
   });
 
-  test("opens markdown artifacts in a rendered preview page", async ({ page }) => {
+  test("opens artifacts in the responsive Artifacts panel", async ({ page }) => {
     await page.locator("#prompt").fill("show markdown artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
-    const open = page.locator(".artifactPreview--markdown").last().getByRole("link", { name: "Open" });
-    await expect(open).toHaveAttribute("href", /\/artifact-preview\.html\?src=%2Fapi%2Fartifacts%2Freport\.md/);
+    const open = page.locator(".artifactPreview--markdown").last().getByRole("button", { name: "Open in Artifacts panel" });
+    await open.click();
 
-    const href = await open.getAttribute("href");
-    expect(href).toBeTruthy();
-    await page.goto(href!);
-
-    await expect(page.locator("#artifactPreviewTitle")).toHaveText("Artifact report");
-    await expect(page.getByRole("button", { name: "Back" })).toHaveClass(/artifactPreviewPageAction/);
-    await expect(page.getByRole("link", { name: "Raw" })).toHaveClass(/artifactPreviewPageAction/);
-    await expect(page.locator("#artifactPreviewBody h1")).toHaveText("Artifact report");
-    await expect(page.locator("#artifactPreviewBody strong")).toHaveText("markdown");
-    await expect(page.locator("#artifactPreviewBody pre code")).toContainText("const preview = true;");
-    await expect(page.locator("html")).toHaveCSS("overflow-y", "auto");
-    await expect(page.locator("body")).toHaveCSS("overflow-y", "auto");
+    const panel = page.locator("#filesPanel");
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveAttribute("data-files-scope", "artifacts");
+    await expect(panel).toHaveAttribute("data-artifact-view", "preview");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("report.md");
+    await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
+    const width = (await panel.boundingBox())?.width || 0;
+    const viewportWidth = page.viewportSize()?.width || 0;
+    if (viewportWidth <= 1024) expect(Math.abs(width - viewportWidth)).toBeLessThanOrEqual(1);
+    else expect(width).toBeLessThan(viewportWidth);
   });
 
   test("renders html artifact links in a sandboxed iframe", async ({ page }) => {
@@ -1906,7 +1936,8 @@ test.describe("image rendering", () => {
     const frame = preview.locator("iframe.artifactPreviewFrame");
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
     await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
-    await expect(frame).toHaveAttribute("src", "/api/artifacts/preview.html");
+    await expect(frame).toHaveAttribute("srcdoc", /HTML artifact/);
+    await expect(frame).not.toHaveAttribute("src");
     await expect(frame).toHaveCSS("pointer-events", "none");
     const shield = preview.locator(".artifactPreviewShield");
     await expect(shield).toBeVisible();
@@ -1921,6 +1952,42 @@ test.describe("image rendering", () => {
     await expect(artifactFrame.locator("#sandbox-status")).toContainText("parent blocked");
     await expect(artifactFrame.locator("#sandbox-status")).toContainText("localStorage blocked");
     await expect(artifactFrame.locator("#sandbox-status")).toContainText(/cookies (empty|blocked)/);
+  });
+
+  test("renders contributed artifact previews inline exactly once", async ({ page }) => {
+    await page.route("**/api/web-contributions/invoke", async (route) => {
+      const request = route.request().postDataJSON();
+      expect(request).toMatchObject({
+        slot: "artifact-preview",
+        key: "gcode-preview",
+        event: { context: { name: "e2e-toolpath.gcode", path: "/api/artifacts/e2e-toolpath.gcode", kind: "file" } },
+      });
+      await route.fulfill({ json: { ok: true, html: "<!doctype html><p id='toolpath'>Toolpath ready</p>" } });
+    });
+    await page.request.post("/api/mock/state", { data: {
+      webContributions: [{
+        version: 1,
+        key: "gcode-preview",
+        slot: "artifact-preview",
+        kind: "rendered",
+        title: "G-code preview",
+        match: { kinds: ["file"], extensions: [".gcode"] },
+      }],
+    } });
+    await page.reload();
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+
+    await page.locator("#prompt").fill("show gcode artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--file");
+    await expect(preview).toHaveCount(1);
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-toolpath.gcode");
+    const frame = preview.locator("iframe.artifactPreviewFrame");
+    await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
+    await expect(frame.contentFrame().locator("#toolpath")).toHaveText("Toolpath ready");
+    await expect(preview.locator(".artifactPreview .artifactPreview")).toHaveCount(0);
   });
 
   test("renders video artifact links inline", async ({ page }) => {

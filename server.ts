@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync, appendFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -24,10 +24,19 @@ import { createForkHarnessFactory } from "./server/agent/factory.js";
 import type { BaseSessionStateDto, InteractionResponseDto, SessionInfoDto } from "./server/session/dto.js";
 import { SessionActivity } from "./server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, decorateHostSessionState, resolveWebSocketHelloSession, type DecoratedSessionState, type WireSessionState } from "./server/session/hostEvents.js";
+import { SessionSettlementTracker } from "./server/session/settlement.js";
 import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
+import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
+import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
+import { ExtensionHttpRegistry, extensionHttpOrigin, hasExtensionCredential } from "./server/auth/extensionHttp.js";
+import { resolveAuthConfig } from "./server/auth/config.js";
+import { initializeAuth } from "./server/auth/bootstrap.js";
+import { handlePasskeyRoute } from "./server/auth/passkey.js";
+import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.js";
+import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
 
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -39,6 +48,19 @@ const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "develo
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
+const authConfig = resolveAuthConfig(process.env);
+const authMode = authConfig.legacyMode;
+const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
+const authOrigin = authUrl.origin;
+const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
+// Runtimes can initialize before the HTTP server is constructed or listening.
+let extensionHttpServer: ReturnType<typeof createServer> | undefined;
+const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
+const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
+const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
+await authKernel.startupDiagnostics();
+const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
+if (setupLink) console.log(`First-install setup (single use, expires in 10 minutes): ${setupLink}`);
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
 
@@ -99,17 +121,6 @@ function unauthorized(res: ServerResponse) {
   sendJson(res, 401, { ok: false, error: "Unauthorized" });
 }
 
-function requestToken(req: IncomingMessage): string {
-  const auth = req.headers.authorization || "";
-  if (auth.startsWith("Bearer ")) return auth.slice("Bearer ".length);
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  return url.searchParams.get("token") || "";
-}
-
-function isAuthorized(req: IncomingMessage): boolean {
-  return !token || requestToken(req) === token;
-}
-
 async function readBytes(req: IncomingMessage, maxBytes = 30_000_000): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
@@ -122,9 +133,17 @@ async function readBytes(req: IncomingMessage, maxBytes = 30_000_000): Promise<B
   return Buffer.concat(chunks);
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
-  const text = (await readBytes(req, 40_000_000)).toString("utf-8");
-  return text ? JSON.parse(text) : {};
+const jsonBodies = new WeakMap<IncomingMessage, Promise<unknown>>();
+function readBody(req: IncomingMessage): Promise<unknown> {
+  let body = jsonBodies.get(req);
+  if (!body) {
+    body = readBytes(req, hasExtensionCredential(req) ? 1_000_000 : 40_000_000).then(bytes => {
+      const text = bytes.toString("utf-8");
+      return text ? JSON.parse(text) : {};
+    });
+    jsonBodies.set(req, body);
+  }
+  return body;
 }
 
 async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionScoped = false) {
@@ -384,6 +403,20 @@ const sessionActivity = new SessionActivity(
 );
 let session: PiWebSession;
 
+const settlementTracker = new SessionSettlementTracker(
+  async (sessionId) => {
+    const target = await sessionService?.find(sessionId);
+    if (!target) return undefined;
+    const runtime = sessionActivity.runtimeForPath(target.sessionFile);
+    return {
+      sessionId: target.sessionId,
+      isRunning: runtime.isRunning,
+      pendingMessageCount: runtime.pendingMessageCount,
+    };
+  },
+  (event) => broadcast(event),
+);
+
 const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 let realtimeHub: RealtimeHub;
@@ -422,6 +455,8 @@ function cleanClientId(value: unknown) {
 }
 
 function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
+  // Extension operations must never acquire, move or otherwise use browser leases.
+  if (hasExtensionCredential(req)) return "";
   const raw = req.headers["x-pi-web-client-id"];
   const headerValue = Array.isArray(raw) ? raw[0] : raw;
   return cleanClientId(headerValue) || cleanClientId(fallback);
@@ -443,7 +478,7 @@ const mockHarness = createMockHarness({
   isCurrentSession: (value: PiWebSession) => value === session,
   currentState,
 });
-const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled } = mockHarness;
+const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled, setRecommendedAddonsExtensionEnabled } = mockHarness;
 
 function additionalExtensionPaths(cwd = piCwd) {
   return [
@@ -456,9 +491,10 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
   if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) return sessionUiStateStore.read();
   const current = await sessionUiStateStore.read();
   const oldLaneIndex = current.lanes.findIndex((item) => item.sessionId === oldSessionId);
+  const oldNote = current.sessionNotes.find((item) => item.sessionId === oldSessionId);
   const oldMarker = current.sessionMarkers.find((item) => item.sessionId === oldSessionId);
   const hasUnreadState = current.sessionUnreadStates.some((item) => item.sessionId === oldSessionId || item.sessionId === newSessionId);
-  if (oldLaneIndex === -1 && !oldMarker && !hasUnreadState) return current;
+  if (oldLaneIndex === -1 && !oldNote && !oldMarker && !hasUnreadState) return current;
 
   const lanes = current.lanes.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
   if (oldLaneIndex !== -1) {
@@ -466,13 +502,17 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
     lanes.splice(Math.min(oldLaneIndex, lanes.length), 0, { ...oldLane, sessionId: newSessionId, cwd });
   }
 
+  const sessionNotes = current.sessionNotes.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
+  if (oldNote) {
+    sessionNotes.unshift({ sessionId: newSessionId, note: oldNote.note, updatedAt: new Date().toISOString() });
+  }
   const sessionMarkers = current.sessionMarkers.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
   if (oldMarker) {
     sessionMarkers.unshift({ sessionId: newSessionId, color: oldMarker.color, updatedAt: new Date().toISOString() });
   }
   const sessionUnreadStates = current.sessionUnreadStates.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
 
-  const next = await sessionUiStateStore.write({ ...current, lanes, sessionMarkers, sessionUnreadStates });
+  const next = await sessionUiStateStore.write({ ...current, lanes, sessionNotes, sessionMarkers, sessionUnreadStates });
   broadcast({ type: "session_ui_state_changed", sessionUiState: next });
   return next;
 }
@@ -530,6 +570,7 @@ const harnessFactory = createForkHarnessFactory({
 });
 
 sessionService = new LocalSessionService({
+  extensionHttp,
   modelRuntime,
   sessionFactory: mockSessionFactory,
   // Fork: Claude Code harness hooks (create/list/locate/open) — the one seam
@@ -558,6 +599,17 @@ sessionService.subscribe((event) => {
     mockPromptCorrelations.delete(event.sessionId);
   }
   handleSessionServiceEvent(event);
+  if (event.type === "settlement_dependencies") {
+    settlementTracker.report(event.sessionId, event.childIds);
+  }
+  const settlementRelevant = event.type === "runtime" || event.type === "state"
+    || (event.type === "agent" && [
+      "agent_start", "agent_settled", "compaction_start", "compaction_end",
+      "auto_retry_start", "auto_retry_end", "queue_update",
+    ].includes(event.event?.type));
+  if (settlementRelevant && "sessionId" in event && typeof event.sessionId === "string") {
+    settlementTracker.noteRuntimeChanged(event.sessionId);
+  }
 });
 
 await ensurePiWebStorage();
@@ -565,12 +617,107 @@ session = await sessionService.initialize();
 
 let viteDevServer: ViteDevServer | undefined;
 
-const server = createServer(async (req, res) => {
-  try {
+// Owns ALL access-log concerns for a request and hands the handler a pre-parsed
+// URL. This keeps the URL parse inside a guard (a malformed Host header threw
+// and crashed the process when it was hoisted above the try/catch) and removes
+// the per-request write/end monkeypatching: response byte counts come from
+// `socket.bytesWritten` deltas, which are correct under HTTP/1.1 keep-alive
+// because responses on one socket are sequential.
+//
+// `finish` fires only on a completed response; a client timeout/disconnect (the
+// #112 symptom: `curl --max-time 10` giving up on /api/sessions) emits `close`
+// WITHOUT `finish`, so we log once on whichever comes first, marking aborts.
+function withAccessLog(
+  handler: (req: IncomingMessage, res: ServerResponse, url: URL) => void | Promise<void>,
+) {
+  return async (req: IncomingMessage, res: ServerResponse) => {
+    const start = performance.now();
+    const startBytes = req.socket.bytesWritten; // counts everything, headers included
     const method = req.method || "GET";
-    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    let pathname = "(malformed)";
+    let logged = false;
+    const log = (aborted: boolean) => {
+      if (logged) return;
+      logged = true;
+      logRequest(
+        method,
+        pathname,
+        res.statusCode,
+        performance.now() - start,
+        Math.max(0, req.socket.bytesWritten - startBytes),
+        aborted,
+        extensionHttp.caller(req),
+      );
+    };
+    res.on("finish", () => log(false));
+    res.on("close", () => log(!res.writableFinished));
+    let url: URL;
+    try {
+      url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      pathname = url.pathname;
+    } catch {
+      res.statusCode = 400;
+      res.end("Bad Request"); // hostile Host header -> 400, never a crash
+      return;
+    }
+    return handler(req, res, url);
+  };
+}
+
+import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+
+const server = createServer(withAccessLog(async (req, res, url) => {
+  const method = req.method || "GET";
+  try {
+
+    // TEMP diagnostic: log shell/SW requests so we can see whether a client
+    // (e.g. an iPhone) is actually hitting the server or being served entirely
+    // from its local service-worker cache. Toggle with a .pi-access-log
+    // sentinel file (checked per request, no restart needed to turn off).
+    if (existsSync(join(appDir, ".pi-access-log"))) {
+      const p = url.pathname;
+      if (p === "/" || p === "/sw.js" || p === "/registerSW.js" || p.startsWith("/assets/index-")) {
+        try {
+          const ua = (req.headers["user-agent"] || "").toString();
+          const tag = /iphone|ipad|ios/i.test(ua) ? "iOS" : /mac os x/i.test(ua) ? "mac" : "other";
+          appendFileSync("/tmp/pi-access.log", `${new Date().toISOString()} ${tag} ${method} ${p}\n`);
+        } catch { /* best-effort */ }
+      }
+    }
 
     if (url.pathname.startsWith("/api/")) {
+      // Scoped credentials must be checked before even public auth routes: no
+      // alternate resolver, open-policy fallback, or credential-management path.
+      const extensionAuth = hasExtensionCredential(req) ? await authKernel.gate(req) : undefined;
+      if (extensionAuth && !extensionAuth.ok) return sendJson(res, extensionAuth.status || 401, { ok: false, error: "Extension API authorization failed" });
+      if (!extensionAuth) await authKernel.refreshConfig();
+      if (method === "POST" && url.pathname.startsWith("/api/auth/") && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
+      if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
+      if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
+        if (url.pathname.endsWith("challenge")) return sendJson(res, 200, !req.headers.cookie?.includes("pi_web_session=") && authKernel.methods.size === 1 && authKernel.methods.has("legacy") ? { mode: "token" } : { mode: "redirect", url: "/api/auth/login" });
+        passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined); return;
+      }
+      if (await handlePasswordLogin(req, res, url, authKernel, authStore, authOrigin)) return;
+      if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
+      if (method === "POST" && url.pathname === "/api/auth/logout") {
+        if (!req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { error: "CSRF validation failed" });
+        await authKernel.revokeSession(req);
+        authKernel.clearSession(res);
+        return sendJson(res, 200, { ok: true });
+      }
+      const auth = extensionAuth || await authKernel.gate(req);
+      if (!auth.ok) return unauthorized(res);
+      if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
+        await authKernel.establishSession(res, auth.identity, auth.via, req);
+      }
+      if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+        const validOrigin = trustedOrigin(req, authOrigin);
+        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
+      }
+      if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
+      if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
+      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
+
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
         return await serveArtifact(req, res, true);
       }
@@ -578,14 +725,13 @@ const server = createServer(async (req, res) => {
         return await serveArtifact(req, res);
       }
 
-      if (!isAuthorized(req)) return unauthorized(res);
-
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
-        const body = await readBody(req) as { websiteWorkflowExtension?: unknown };
+        const body = await readBody(req) as { websiteWorkflowExtension?: unknown; recommendedAddonsExtension?: unknown };
         await sessionService.disposeAll("reset");
         mockPromptCorrelations.clear();
         mockStateOverrides = {};
         setWebsiteWorkflowExtensionEnabled(body.websiteWorkflowExtension === true);
+        setRecommendedAddonsExtensionEnabled(body.recommendedAddonsExtension === true);
         resetMockSessions();
         await sessionUiStateStore.write(defaultSessionUiState);
         session = await sessionService.initialize();
@@ -791,6 +937,13 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, system: systemInfoSnapshot() });
       }
 
+      const sessionStatusMatch = method === "GET" ? url.pathname.match(/^\/api\/sessions\/([^/]+)\/status$/) : null;
+      if (sessionStatusMatch) {
+        const requestedSessionId = decodeURIComponent(sessionStatusMatch[1]);
+        await sessionService.require(requestedSessionId);
+        return sendJson(res, 200, { ok: true, ...await settlementTracker.status(requestedSessionId) });
+      }
+
       if (method === "GET" && url.pathname === "/api/state") {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
         noteViewerLeaseFromRequest(req, await sessionService.require(requestedSessionId), url.searchParams.get("clientId"));
@@ -798,7 +951,7 @@ const server = createServer(async (req, res) => {
           ok: true,
           ...await decorateServiceState(await sessionService.state(requestedSessionId)),
           sessionUiState: await sessionUiStateStore.read(),
-          tokenRequired: Boolean(token),
+          tokenRequired: authKernel.methods.has("legacy") && Boolean(token),
         });
       }
 
@@ -922,10 +1075,12 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, sessionUiState });
       }
 
-      if (method === "POST" && url.pathname === "/api/session-ui-state/read") {
+      if (method === "POST" && (url.pathname === "/api/session-ui-state/read" || url.pathname === "/api/session-ui-state/unread")) {
         const body = await readBody(req) as { sessionId?: unknown };
         const sessionId = typeof body.sessionId === "string" && body.sessionId.trim() ? body.sessionId.trim() : session.sessionId;
-        const sessionUiState = await sessionUiStateStore.markRead(sessionId);
+        const sessionUiState = url.pathname.endsWith("/unread")
+          ? await sessionUiStateStore.markUnread(sessionId)
+          : await sessionUiStateStore.markRead(sessionId);
         broadcast({ type: "session_ui_state_changed", sessionUiState });
         return sendJson(res, 200, { ok: true, sessionUiState });
       }
@@ -939,6 +1094,7 @@ const server = createServer(async (req, res) => {
         try {
           const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined) as { id: string; disposition: "trashed" | "deleted" };
           const sessionUiState = await sessionUiStateStore.removeSession(result.id);
+          settlementTracker.clear(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, ...result });
@@ -1169,6 +1325,7 @@ const server = createServer(async (req, res) => {
         const requestedAgent = body.agent === "pi" || body.agent === "claude-code" ? body.agent : undefined;
         const baseState = await harnessFactory.withNextAgent(requestedAgent, () =>
           sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined));
+        extensionHttp.recordCreatedSession(req, baseState.sessionId);
         const state = await decorateServiceState(baseState);
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
         const origin = body.origin && typeof body.origin === "object" ? body.origin as { sessionId?: unknown; kind?: unknown } : undefined;
@@ -1269,25 +1426,44 @@ self.addEventListener('activate', (event) => {
     const status = error instanceof SessionServiceError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
-});
+}));
 
 const wss = new WebSocketServer({ noServer: true });
+const browserSockets = new Map<import("ws").WebSocket, string>();
+const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) => { const active = new Set([...state.sessions.filter(s => !s.revokedAt && s.expiresAt > Date.now()).map(s => s.hash), ...state.apiTokens.filter(t => !t.revokedAt && t.expiresAt > Date.now()).map(t => `token:${t.id}`)]); for (const [socket, hash] of browserSockets) if (!active.has(hash)) socket.close(1008, "Browser session revoked"); };
+authStore.listeners.add(enforceBrowserSessions);
+const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
+authSessionSweep.unref();
 server.on("upgrade", (req, socket, head) => {
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  if (url.pathname !== "/ws") return;
-
-  if (!isAuthorized(req)) {
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+  let url: URL;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  } catch {
+    // Malformed Host header must not crash the process (#112 review follow-up:
+    // same hostile-input class as the request-path guard this PR added).
     socket.destroy();
     return;
   }
+  if (url.pathname !== "/ws") return;
 
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  void (async () => {
+    const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authKernel.policy === "open" ? { identity: { id: "mock" }, sessionHash: undefined } : undefined);
+    const identity = ticket?.identity;
+    if (ticket?.sessionHash && !(await authStore.read()).sessions.some(s => s.hash === ticket.sessionHash && !s.revokedAt && s.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    if (identity?.id.startsWith("token:") && !(await authStore.read()).apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
+    (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
+    wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
+  })().catch(() => socket.destroy());
 });
 
-wss.on("connection", async (ws, req) => {
+wss.on("connection", async (ws, req, urlParam?: URL) => {
+  const wsStart = performance.now();
   const realtimeWs = ws;
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const url = urlParam ?? new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  logWebSocket(url.pathname, "open");
+  ws.on("close", () => logWebSocket(url.pathname, "close", performance.now() - wsStart));
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
   const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
 
@@ -1322,9 +1498,13 @@ if (isDev) {
   });
 }
 
+startEventLoopTelemetry();
+
+extensionHttpServer = server;
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
   console.log(isDev ? "Mode: development (Vite HMR enabled)" : "Mode: production");
-  console.log(token ? "Auth: bearer token required" : "Auth: disabled (set PI_WEB_TOKEN to enable)");
+  console.log(`Auth: ${authMode}${authMode === "legacy" && token ? " (bearer token required)" : ""}`);
+  if (authMode === "passkey") console.log(`Passkey origin: ${authOrigin}`);
 });

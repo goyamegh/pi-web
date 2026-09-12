@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { ensurePreviewArtifact } from "./helpers/artifacts.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 
 // These tests run against the auth-enabled server (PI_WEB_TOKEN=test-secret).
@@ -10,10 +11,105 @@ const WRONG_TOKEN = "wrong";
 test.beforeEach(async ({ page, context }) => {
   // Clear stored token before each test
   await context.clearCookies();
+  await context.request.post("/api/mock/reset", { headers: { authorization: `Bearer ${CORRECT_TOKEN}` }, data: {} });
   await context.addInitScript(() => localStorage.removeItem("pi-web-token"));
 });
 
 test.describe("token overlay", () => {
+  for (const failure of ["http", "network"] as const) test(`logout reports ${failure} failure without claiming revocation`, async ({ page }) => {
+    await page.goto(`/?token=${CORRECT_TOKEN}`);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.route("**/api/auth/logout", route => failure === "http" ? route.fulfill({ status: 500, json: { error: "store unavailable" } }) : route.abort("failed"));
+    await page.locator("#prompt").fill("/logout");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await expect(page.getByText(/Logout failed; your server session may still be active/)).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("pi-web-token"))).toBe(CORRECT_TOKEN);
+    expect((await page.context().cookies()).some(c => c.name === "pi_web_session")).toBe(true);
+    await expect(page.locator("#tokenOverlay")).toBeHidden();
+  });
+  test("security renders canonical authenticated policy despite legacy none preset", async ({ page }) => {
+    await page.goto(`/?token=${CORRECT_TOKEN}`);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.route("**/api/auth/security", async route => {
+      const response = await route.fetch(); const data = await response.json();
+      await route.fulfill({ json: { ...data, mode: "none", policy: "authenticated", methods: ["password"], passwordConfigured: true, passkeys: [{ id: "disabled-one", name: "Disabled key", createdAt: Date.now() }, { id: "disabled-two", name: "Disabled backup", createdAt: Date.now() }] } });
+    });
+    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "Settings"); await page.locator("#settingsNavAccess").click();
+    await expect(page.getByRole("heading", { name: "Sign-in methods", exact: true })).toBeVisible();
+    await expect(page.locator(".securityBanner")).toContainText("Your workspace access");
+    await expect(page.locator(".securityBanner")).not.toContainText("You have a backup sign-in method");
+    await page.getByRole("button", { name: "Change", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Change password", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("pi-web-token"))).toBeNull();
+    await expect(page.getByRole("button", { name: "Re-authenticate with saved token", exact: true })).toHaveCount(0);
+  });
+  test("saved-token reauthentication is explicit and token revocation defaults are visible", async ({ page }) => {
+    await page.goto(`/?token=${CORRECT_TOKEN}`);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    let reauth = 0;
+    await page.route("**/api/auth/legacy/login", async route => {
+      reauth++;
+      expect(route.request().postDataJSON().password).toBe(CORRECT_TOKEN);
+      await route.fulfill({ json: { ok: true } });
+    });
+    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "Settings"); await page.locator("#settingsNavAccess").click();
+    await page.getByRole("button", { name: "Authentication policy & reauthentication", exact: true }).click();
+    const saved = page.getByRole("button", { name: "Re-authenticate with saved token", exact: true });
+    await expect(saved).toBeVisible();
+    expect(reauth).toBe(0);
+    await saved.click(); expect(reauth).toBe(1);
+    await page.getByRole("button", { name: "‹ Security", exact: true }).click();
+    await page.getByRole("button", { name: "Sign out all devices", exact: true }).click();
+    await expect(page.getByRole("dialog").getByRole("checkbox", { name: /Also revoke API tokens/ })).toBeChecked();
+    await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.getByRole("button", { name: "Set up", exact: true }).click();
+    await expect(page.getByRole("checkbox", { name: /Also revoke API tokens/ })).toBeChecked();
+  });
+  test("mobile security confirms revocation, reports failures, and returns to explicit login", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/?token=${CORRECT_TOKEN}`);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.locator("#sessionButton").click();
+    await openSessionDrawerFooterAction(page, "Settings");
+    await page.locator("#settingsNavAccess").click();
+    const security = page.locator("#securitySettings");
+    await expect(security.getByRole("heading", { name: "Your access." })).toBeVisible();
+    expect(await page.locator("#settingsContent").evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    let requests = 0;
+    let fail = true;
+    await page.route("**/api/auth/sessions", async route => {
+      if (route.request().method() !== "DELETE") return route.continue();
+      requests++;
+      expect(route.request().postDataJSON()).toEqual({ revokeApiTokens: !fail });
+      if (fail) await route.fulfill({ status: 503, json: { error: "Temporary store unavailable" } });
+      else await route.continue();
+    });
+    const revoke = security.getByRole("button", { name: "Sign out all devices", exact: true });
+    await revoke.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator("#settingsPanel")).toBeVisible();
+    await expect(revoke).toBeFocused();
+    expect(requests).toBe(0);
+    await revoke.click();
+    await dialog.getByRole("checkbox").uncheck();
+    await dialog.getByRole("button", { name: "Confirm and sign out", exact: true }).click();
+    await expect(security.locator(".securityFeedback")).toHaveText("Temporary store unavailable");
+    await expect(revoke).toBeEnabled();
+    expect(await page.evaluate(() => localStorage.getItem("pi-web-token"))).toBe(CORRECT_TOKEN);
+    fail = false;
+    await revoke.click();
+    await expect(dialog.getByRole("checkbox")).toBeChecked();
+    await dialog.getByRole("button", { name: "Confirm and sign out", exact: true }).click();
+    await expect(page).toHaveURL(/\/api\/auth\/login$/);
+    expect(await page.evaluate(() => localStorage.getItem("pi-web-token"))).toBeNull();
+    expect(requests).toBe(2);
+    expect((await page.request.get("/api/state")).status()).toBe(401);
+  });
+
   test("shows overlay on page load when no token stored", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#tokenOverlay")).toBeVisible();
@@ -51,6 +147,56 @@ test.describe("token overlay", () => {
     await expect(page.locator("#messages")).toBeVisible();
   });
 
+  test("mints a session cookie and renders a sandboxed HTML artifact through srcdoc", async ({ page }) => {
+    await ensurePreviewArtifact();
+    await page.goto("/");
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
+    expect((await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
+
+    await expect(page.locator("#prompt")).toBeEnabled();
+    await page.waitForTimeout(500);
+    await page.locator("#prompt").fill("show html artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".artifactPreview--html iframe.artifactPreviewFrame").last();
+    await expect(frame).toHaveAttribute("srcdoc", /HTML artifact/);
+    await expect(frame.contentFrame().locator("#script-status")).toHaveText("script ran");
+  });
+
+  test("security inventory follows the normal gate while mutations are session-only", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
+
+    const created = await page.evaluate(async () => {
+      const headers = { "content-type": "application/json", "x-pi-web-client-id": "security-test" };
+      const response = await fetch("/api/auth/tokens", { method: "POST", headers, body: JSON.stringify({ name: "delegation check" }) });
+      return response.json() as Promise<{ id: string; secret: string }>;
+    });
+    const tokenContext = await page.context().browser()!.newContext({ baseURL: page.url() });
+    const bearerHeaders = { "content-type": "application/json", authorization: `Bearer ${created.secret}` };
+    const bearerResults = await Promise.all([
+      tokenContext.request.get("/api/auth/security", { headers: bearerHeaders }).then(r => r.status()),
+      tokenContext.request.post("/api/auth/tokens", { headers: bearerHeaders, data: {} }).then(r => r.status()),
+      tokenContext.request.delete("/api/auth/tokens/missing", { headers: bearerHeaders }).then(r => r.status()),
+    ]);
+    await tokenContext.close();
+    expect(bearerResults).toEqual([200, 403, 403]);
+
+    const missingResults = await page.evaluate(async () => {
+      const headers = { "content-type": "application/json", "x-pi-web-client-id": "security-test" };
+      return Promise.all([
+        fetch("/api/auth/tokens/missing", { method: "DELETE", headers }).then(r => r.status),
+        fetch("/api/auth/sessions/missing", { method: "DELETE", headers }).then(r => r.status),
+        fetch("/api/auth/passkeys/missing", { method: "DELETE", headers }).then(r => r.status),
+        fetch("/api/auth/device-grants/missing", { method: "DELETE", headers }).then(r => r.status),
+      ]);
+    });
+    expect(missingResults).toEqual([404, 404, 404, 404]);
+  });
+
   test("token persisted in localStorage after login", async ({ page }) => {
     await page.goto("/");
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
@@ -68,7 +214,7 @@ test.describe("token overlay", () => {
     expect(page.url()).not.toContain("token=");
   });
 
-  test("settings reveals token QR only after explicit action", async ({ page }) => {
+  test("Security settings uses revocable grants and one-time API-token secrets", async ({ page }) => {
     await page.goto("/");
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
     await page.locator("#tokenForm button[type=submit]").click();
@@ -77,23 +223,56 @@ test.describe("token overlay", () => {
     await page.locator("#sessionButton").click();
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
-    await expect(page.locator("#tokenShareSection")).toBeVisible();
-    await expect(page.locator("#tokenShareQr")).toBeHidden();
-    await expect(page.locator("#tokenShareUrl")).toBeHidden();
-    await expect(page.locator("#tokenShareUrl")).toHaveValue("");
+    const security = page.locator("#securitySettings");
+    await expect(security.getByRole("heading", { name: "Your access." })).toBeVisible();
+    await expect(security.getByText("Legacy token", { exact: true })).toBeVisible();
+    await expect(security.getByText("Devices & sessions")).toBeVisible();
+    await expect(page.locator("#tokenShareSection")).toHaveCount(0);
 
-    await page.locator("#tokenShareCopyButton").click();
-    await expect(page.locator("#tokenShareQr")).toBeHidden();
-    await expect(page.locator("#tokenShareUrl")).toBeHidden();
-    await expect(page.locator("#tokenShareUrl")).toHaveValue("");
+    const tokenName = `Playwright ${Date.now()}`;
+    const activeTokensBefore = Number.parseInt(await security.locator(".securityRow", { hasText: "API tokens" }).locator("small").innerText(), 10);
+    await security.locator(".securityRow", { hasText: "API tokens" }).getByRole("button", { name: "Manage" }).click();
+    await security.getByPlaceholder("Token name").fill(tokenName);
+    await security.getByRole("button", { name: "Create API token" }).click();
+    await expect(security.locator(".securitySecret code")).toHaveText(/^piw_/);
+    await expect(security.getByText("shown once", { exact: false })).toBeVisible();
 
-    await page.locator("#tokenShareFullscreenButton").click();
-    await expect(page.locator("#tokenShareQr svg")).toBeVisible();
-    await expect(page.locator("#tokenShareUrl")).toHaveValue(/token=test-secret/);
-    await expect(page.locator("#tokenShareFullscreen")).toBeVisible();
-    await expect(page.locator("#tokenShareFullscreenQr svg")).toBeVisible();
-    await page.locator("#tokenShareFullscreenCloseButton").click();
-    await expect(page.locator("#tokenShareFullscreen")).toBeHidden();
+    await security.getByRole("button", { name: "‹ Security", exact: true }).click();
+    const automation = security.locator(".securityRow", { hasText: "API tokens" });
+    await expect(automation.locator("small")).toHaveText(`${activeTokensBefore + 1} active`);
+    await automation.getByRole("button", { name: "Manage", exact: true }).click();
+    await expect(security.locator(".securityRow", { hasText: tokenName })).toBeVisible();
+    await expect(security.locator(".securitySecret code")).toHaveCount(0);
+    await security.getByRole("button", { name: "‹ Security", exact: true }).click();
+    await security.getByRole("button", { name: "＋ Connect a device", exact: true }).click();
+    await security.getByRole("button", { name: "Create add-device link" }).click();
+    const link = security.getByLabel("Add-device link");
+    await expect(link).toHaveValue(/\/api\/auth\/device\?grant=/);
+    await expect(link).not.toHaveValue(/token=test-secret/);
+    await expect(security.getByRole("img", { name: "Add device QR code" })).toBeVisible();
+    await security.locator(".deviceGrantOutput").getByRole("button", { name: "Cancel grant" }).click();
+    await expect(security.getByLabel("Add-device link")).toHaveCount(0);
+
+    await security.getByRole("button", { name: "Create add-device link" }).click();
+    const redeemUrl = await security.getByLabel("Add-device link").inputValue();
+    const addedContext = await page.context().browser()!.newContext();
+    const addedPage = await addedContext.newPage();
+    await addedPage.goto(redeemUrl);
+    await addedPage.getByRole("button", { name: "Continue" }).click();
+    await expect(addedPage).toHaveURL(/\/$/);
+    await expect(addedPage.locator("#prompt")).toBeVisible();
+    await addedContext.close();
+
+    await page.locator("#settingsCloseButton").click();
+    await page.locator("#sessionButton").click();
+    await openSessionDrawerFooterAction(page, "Settings");
+    await page.locator("#settingsNavAccess").click();
+    await expect(security.locator(".securitySecret code")).toHaveCount(0);
+    await security.locator(".securityRow", { hasText: "API tokens" }).getByRole("button", { name: "Manage" }).click();
+    const tokenRow = security.locator(".securityRow", { hasText: tokenName });
+    await expect(tokenRow).toBeVisible();
+    await tokenRow.getByRole("button", { name: "Revoke" }).click();
+    await expect(tokenRow).toHaveCount(0);
   });
 });
 

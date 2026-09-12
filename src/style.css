@@ -8,10 +8,13 @@
 @import "./styles/sessions.css";
 @import "./styles/repoInfoBar.css";
 @import "./styles/settings.css";
+@import "./styles/security.css";
 @import "./styles/systemInfo.css";
 @import "./styles/conversationTree.css";
 @import "./styles/folderPicker.css";
 @import "./styles/toolCards.css";
+@import "./styles/customMessageReports.css";
+@import "./styles/activeWorkerDock.css";
 @import "./styles/responsive.css";
 @import "./styles/token.css";
 @import "./styles/actionLauncher.css";

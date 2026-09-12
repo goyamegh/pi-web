@@ -4,9 +4,12 @@ import { openLauncherAction } from "./helpers/actionLauncher.js";
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
   pinnedSessions?: Array<{ id: string; cwd?: string }>;
   pinnedFolders?: string[];
-  lanes?: Array<{ sessionId: string; lane: "pinned" | "parked" | "bookmarks"; cwd?: string; note?: string; since: string }>;
+  lanes?: Array<{ sessionId: string; lane: "pinned" | "parked" | "bookmarks"; cwd?: string; since: string }>;
+  sessionNotes?: Array<{ sessionId: string; note: string; updatedAt: string }>;
   sessionMarkers?: Array<{ sessionId: string; color: string; updatedAt: string }>;
   sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string; updatedAt: string }>;
+  sessionOrigins?: Array<{ sessionId: string; originSessionId: string; kind: string; updatedAt: string }>;
+  bucketLabels?: Record<string, string>;
 }) {
   await page.request.patch("/api/session-ui-state", { data: state });
 }
@@ -275,6 +278,43 @@ test.describe("session quick bar", () => {
     await expect(olderRow.locator(".sessionItemUnreadDot")).toBeVisible();
   });
 
+  test("marks a read session unread from the drawer and tab inspector", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      pinnedSessions: [
+        { id: "mock-current" },
+        { id: "mock-older" },
+      ],
+    });
+    await page.goto("/");
+
+    const olderTab = page.locator(".sessionBarTab").filter({ hasText: "Older mock session" });
+    await page.locator("#sessionButton").click();
+    const olderRow = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
+    await olderRow.locator(".sessionItemActionsBtn").click();
+    await page.getByRole("menuitem", { name: "Mark as unread" }).click();
+    await expect(olderRow).toHaveClass(/\bunread\b/);
+    await expect(olderTab).toHaveClass(/\bunread\b/);
+
+    await olderRow.locator(".sessionItemActionsBtn").click();
+    await page.getByRole("menuitem", { name: "Mark as read" }).click();
+    await expect(olderTab).not.toHaveClass(/\bunread\b/);
+
+    // On mobile the open drawer overlays the tab bar; close it before opening
+    // the tab inspector.
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#sessionButton")).toHaveAttribute("aria-expanded", "false");
+    await olderTab.click({ button: "right" });
+    await page.getByRole("button", { name: "Mark as unread" }).click();
+    await expect(olderTab).toHaveClass(/\bunread\b/);
+    await page.locator("#sessionButton").click();
+    await expect(olderRow).toHaveClass(/\bunread\b/);
+
+    const uiState = await (await page.request.get("/api/session-ui-state")).json();
+    expect(uiState.sessionUiState.sessionUnreadStates).toEqual([
+      expect.objectContaining({ sessionId: "mock-older", unreadAt: expect.any(String) }),
+    ]);
+  });
+
   test("opening an unread session clears it in other browser views", async ({ page, context }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [
@@ -333,6 +373,7 @@ test.describe("session quick bar", () => {
         { id: "mock-older" },
         { id: "mock-current" },
       ],
+      sessionNotes: [{ sessionId: "mock-current", note: "Carry this forward", updatedAt: "2026-01-01T00:00:00.000Z" }],
       sessionMarkers: [{ sessionId: "mock-current", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
     });
 
@@ -351,6 +392,7 @@ test.describe("session quick bar", () => {
     await expect(activeAfter).toContainText("New session");
     await expect(activeAfter).toHaveClass(/\bpinned\b/);
     await expect(activeAfter).toHaveClass(/marker-green/);
+    await expect(activeAfter.locator(".sessionBarNoteIndicator")).toHaveAttribute("title", "Carry this forward");
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).toHaveCount(0);
 
     const uiState = await (await page.request.get("/api/session-ui-state")).json();
@@ -363,15 +405,50 @@ test.describe("session quick bar", () => {
     expect(uiState.sessionUiState.sessionMarkers).toEqual([
       expect.objectContaining({ sessionId: pinnedLanes[1].sessionId, color: "green" }),
     ]);
+    expect(uiState.sessionUiState.sessionNotes).toEqual([
+      expect.objectContaining({ sessionId: pinnedLanes[1].sessionId, note: "Carry this forward" }),
+    ]);
   });
 
-  test("pinned tab inspector sets a session bucket", async ({ page }) => {
-    await seedServerPinned(page, { id: "mock-current" }); await page.goto("/");
+  test("pinned tab inspector sets a session bucket and color-codes its note fold", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      lanes: [{ sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" }],
+      sessionNotes: [{ sessionId: "mock-current", note: "Follow up", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.goto("/");
     const tab = page.locator(".sessionBarTab.pinned").filter({ hasText: "Current mock session" });
+    const noteIndicator = tab.locator(".sessionBarNoteIndicator");
+    await expect(noteIndicator).toBeVisible();
     await tab.click({ button: "right" }); await expect(page.locator(".sessionInspector")).toBeVisible();
     await page.locator(".sessionInspectorBuckets .marker-green").click(); await expect(tab).toHaveClass(/marker-green/);
+    await expect.poll(() => noteIndicator.evaluate((element) => getComputedStyle(element.closest(".sessionBarTab")!).getPropertyValue("--session-tab-accent").trim())).toBe("#4ade80");
     const uiState = await (await page.request.get("/api/session-ui-state")).json();
     expect(uiState.sessionUiState.sessionMarkers).toEqual([expect.objectContaining({ sessionId: "mock-current", color: "green" })]);
+  });
+
+  test("mobile inspector omits Open for tabs and keeps lane footer actions on one row", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "Mobile footer layout coverage");
+    await seedServerPinned(page, { id: "mock-current" });
+    await page.goto("/");
+
+    const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
+    await tab.click({ button: "right" });
+    let footer = page.locator(".sessionInspector > footer");
+    await expect(footer.getByRole("button")).toHaveCount(2);
+    await expect(footer.getByRole("button", { name: "↗ Open" })).toHaveCount(0);
+    let boxes = await footer.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().toJSON()));
+    expect(new Set(boxes.map((box) => box.y)).size).toBe(1);
+
+    await page.keyboard.press("Escape");
+    await page.locator(".sessionLayersButton").click();
+    await page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"] .sessionLaneDrawerActions').click();
+    footer = page.locator(".sessionInspector > footer");
+    await expect(footer.getByRole("button")).toHaveCount(3);
+    await expect(footer.getByRole("button", { name: "↗ Open" })).toBeVisible();
+    boxes = await footer.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().toJSON()));
+    expect(new Set(boxes.map((box) => box.y)).size).toBe(1);
+    const footerBox = await footer.boundingBox();
+    expect(Math.max(...boxes.map((box) => box.right))).toBeLessThanOrEqual(footerBox!.x + footerBox!.width + 0.5);
   });
 
   test("parking commits immediately and offers a non-blocking optional note", async ({ page }) => {
@@ -384,66 +461,124 @@ test.describe("session quick bar", () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.find((entry: { sessionId: string }) => entry.sessionId === "mock-current");
     }).toMatchObject({ lane: "parked" });
-    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toBeVisible();
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toHaveCount(0);
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toHaveCount(0);
     const value = await (await page.request.get("/api/session-ui-state")).json();
-    expect(value.sessionUiState.lanes.find((entry: { sessionId: string }) => entry.sessionId === "mock-current")).toEqual(expect.not.objectContaining({ note: expect.anything() }));
+    expect(value.sessionUiState.sessionNotes).toEqual([]);
   });
 
-  test("session notes can be edited in every lane and survive moves and reloads", async ({ page }) => {
+  test("session notes use one read-only menu and shared editor, surviving unpin and lane moves", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-current" });
     await page.goto("/");
 
+    const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
     const openTabInspector = async () => {
-      await page.locator('.sessionBarTab[data-session-id="mock-current"]').click({ button: "right" });
+      await tab.click({ button: "right" });
       await expect(page.locator(".sessionInspector")).toBeVisible();
     };
-    const expectStoredLane = async (lane: string, note: string) => {
+    const expectStoredLane = async (lane?: string) => {
       await expect.poll(async () => {
         const value = await (await page.request.get("/api/session-ui-state")).json();
-        const entry = value.sessionUiState.lanes.find((item: { sessionId: string }) => item.sessionId === "mock-current");
-        return entry ? { lane: entry.lane, note: entry.note } : undefined;
-      }).toEqual({ lane, note });
+        return value.sessionUiState.lanes.find((item: { sessionId: string }) => item.sessionId === "mock-current")?.lane;
+      }).toBe(lane);
+    };
+    const expectStoredNote = async (note?: string) => {
+      await expect.poll(async () => {
+        const value = await (await page.request.get("/api/session-ui-state")).json();
+        return value.sessionUiState.sessionNotes.find((item: { sessionId: string }) => item.sessionId === "mock-current")?.note;
+      }).toBe(note);
+    };
+    const saveOpenEditor = async (note: string) => {
+      const editor = page.locator(".sessionNoteEditor");
+      await expect(editor).toBeVisible();
+      await editor.locator(".sessionNoteEditorInput").fill(note);
+      await editor.getByRole("button", { name: "Save" }).click();
     };
 
     await openTabInspector();
-    await page.locator(".sessionInspectorNote").fill("Pinned note");
-    await page.locator(".sessionInspectorNote").press("Enter");
-    await expectStoredLane("pinned", "Pinned note");
+    const inspectorNote = page.locator(".sessionInspectorNote");
+    await expect(inspectorNote).toHaveJSProperty("tagName", "BUTTON");
+    await expect(inspectorNote).toContainText("Add a note");
+    await inspectorNote.click();
+    await saveOpenEditor("Pinned note\nwith more detail");
+    await expectStoredNote("Pinned note\nwith more detail");
+    await expectStoredLane("pinned");
+
+    const tabNoteIndicator = tab.locator(".sessionBarNoteIndicator");
+    await expect(tabNoteIndicator).toBeVisible();
+    await expect(tabNoteIndicator).toHaveAttribute("title", "Pinned note\nwith more detail");
+    await expect(tab.locator(".sessionBarTabOpen > .sessionBarNoteIndicator")).toHaveCount(1);
+    await expect(tabNoteIndicator).toHaveCSS("pointer-events", "auto");
+
+    // Unpinning removes only lane membership; the independent note and folded
+    // corner remain on the active temporary tab.
+    await tab.locator(".sessionBarTabAction").click();
+    await expectStoredLane(undefined);
+    await expectStoredNote("Pinned note\nwith more detail");
+    await expect(tab).toHaveClass(/temporary/);
+    await expect(tabNoteIndicator).toBeVisible();
 
     await openTabInspector();
-    await expect(page.locator(".sessionInspectorNote")).toHaveValue("Pinned note");
+    await expect(inspectorNote).toContainText("Pinned note\nwith more detail");
+    await inspectorNote.click();
+    await expect(page.locator(".sessionNoteEditorInput")).toHaveValue("Pinned note\nwith more detail");
+    await saveOpenEditor("Parked note");
+    await expectStoredNote("Parked note");
+
+    await openTabInspector();
     await page.getByRole("button", { name: "Move to Parked" }).click();
-    // The move commits immediately; the follow-up prompt is optional and may be dismissed.
-    await expectStoredLane("parked", "Pinned note");
-    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toHaveCount(0);
+    await expectStoredLane("parked");
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toHaveCount(0);
 
-    await openTabInspector();
-    await page.locator(".sessionInspectorNote").fill("Parked note");
-    await page.locator(".sessionInspectorNote").press("Enter");
-    await expectStoredLane("parked", "Parked note");
-
-    await openTabInspector();
-    await page.getByRole("button", { name: "Move to Bookmarks" }).click();
-    await expectStoredLane("bookmarks", "Parked note");
-    await openTabInspector();
-    await page.locator(".sessionInspectorNote").fill("Bookmark note");
-    await page.locator(".sessionInspectorNote").press("Enter");
-    await expectStoredLane("bookmarks", "Bookmark note");
+    // The lane-card menu is the same shared Inspector and launches the same editor.
+    await page.locator(".sessionLayersButton").click();
+    let row = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    await row.locator(".sessionLaneDrawerActions").click();
+    await expect(page.locator(".sessionInspectorNote")).toContainText("Parked note");
+    await page.locator(".sessionInspectorNote").click();
+    await expect(page.locator(".sessionNoteEditorInput")).toHaveValue("Parked note");
+    await saveOpenEditor("Bookmark note");
+    await expectStoredNote("Bookmark note");
 
     await page.reload();
     await page.locator(".sessionLayersButton").click();
-    const row = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    row = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
     await expect(row.locator(".sessionLaneDrawerItemNote")).toHaveText("Bookmark note");
     await row.locator(".sessionLaneDrawerActions").click();
-    await expect(page.locator(".sessionInspectorNote")).toHaveValue("Bookmark note");
-    await page.locator(".sessionInspectorNote").fill("");
-    await page.locator(".sessionInspectorNote").press("Enter");
-    await expect.poll(async () => {
-      const value = await (await page.request.get("/api/session-ui-state")).json();
-      return value.sessionUiState.lanes.find((item: { sessionId: string }) => item.sessionId === "mock-current")?.note ?? null;
-    }).toBeNull();
+    await expect(page.locator(".sessionInspectorNote")).toContainText("Bookmark note");
+    await page.locator(".sessionInspectorNote").click();
+    await saveOpenEditor("");
+    await expectStoredNote(undefined);
+    await expect(page.locator('.sessionBarTab[data-session-id="mock-current"] .sessionBarNoteIndicator')).toHaveCount(0);
+  });
+
+  test("lane drawer filters all lanes by custom bucket names", async ({ page }) => {
+    const since = "2026-01-01T00:00:00.000Z";
+    await seedServerSessionUiState(page, {
+      lanes: [
+        { sessionId: "mock-current", lane: "pinned", since },
+        { sessionId: "mock-older", lane: "bookmarks", since },
+      ],
+      sessionMarkers: [
+        { sessionId: "mock-current", color: "cyan", updatedAt: since },
+        { sessionId: "mock-older", color: "pink", updatedAt: since },
+      ],
+      bucketLabels: { cyan: "Builds" },
+    });
+    await page.goto("/");
+    await page.locator(".sessionLayersButton").click();
+
+    const filters = page.getByRole("group", { name: "Filter lanes by bucket" });
+    await expect(filters.getByRole("button")).toHaveCount(9);
+    await filters.getByRole("button", { name: "Show Builds bucket" }).click();
+    await expect(page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]')).toBeVisible();
+    await expect(page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]')).toHaveCount(0);
+    await expect(page.locator(".sessionLaneDragHandle")).toBeDisabled();
+    await expect(page.locator(".sessionLaneDrawerSummary")).toHaveText("1 of 2 sessions");
+
+    await filters.getByRole("button", { name: "All" }).click();
+    await expect(page.locator(".sessionLaneDrawerCard")).toHaveCount(2);
   });
 
   test("a stale mark-read response cannot revert a lane drawer move", async ({ page }) => {
@@ -493,6 +628,28 @@ test.describe("session quick bar", () => {
     }).toBe("bookmarks");
   });
 
+  test("dragging a background session clears stale source focus without replacing destination focus", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.goto("/");
+    await page.evaluate(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
+    await page.reload();
+    await page.locator(".sessionLayersButton").click();
+    const handle = page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"] .sessionLaneDragHandle');
+    const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
+    const handleBox = await handle.boundingBox(); const destinationBox = await destination.boundingBox();
+    expect(handleBox).not.toBeNull(); expect(destinationBox).not.toBeNull();
+    const pointer = { pointerId: 29, pointerType: "touch", isPrimary: true, button: 0 };
+    await handle.dispatchEvent("pointerdown", { ...pointer, clientX: handleBox!.x + 5, clientY: handleBox!.y + 5 });
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: destinationBox!.x + 20, clientY: destinationBox!.y + destinationBox!.height / 2 });
+    await page.locator("body").dispatchEvent("pointerup", { ...pointer, clientX: destinationBox!.x + 20, clientY: destinationBox!.y + destinationBox!.height / 2 });
+
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", bookmarks: "destination-focus" });
+  });
+
   test("removing the active lane entry keeps it visible as a temporary tab", async ({ page }) => {
     await seedServerSessionUiState(page, { lanes: [{ sessionId: "mock-current", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" }] });
     await page.goto("/");
@@ -526,7 +683,7 @@ test.describe("session quick bar", () => {
     await expect.poll(() => openedCwd).toBe("/saved/workspace");
   });
 
-  test("clicking a lane drawer header does not change the active tab lane", async ({ page }) => {
+  test("lane focus persists across reload and switching restores each lane's session", async ({ page }) => {
     await seedServerSessionUiState(page, { lanes: [
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
@@ -534,10 +691,81 @@ test.describe("session quick bar", () => {
     await page.goto("/");
     await page.locator(".sessionLayersButton").click();
     await page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] .sessionLaneDrawerHeading').click();
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
 
-    await expect(page.locator(".sessionLaneDrawer")).toBeVisible();
-    await expect(page.locator('.sessionBarTab.pinned[data-session-id="mock-current"]')).toHaveClass(/\bactive\b/);
-    await expect(page.locator('.sessionBarTab[data-session-id="mock-older"]')).toHaveCount(0);
+    await page.locator(".sessionLayersButton").click();
+    await page.locator('.sessionLaneDrawerSection[data-lane="pinned"] .sessionLaneDrawerHeading').click();
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.reload();
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toHaveClass(/\bactive\b/);
+
+    await page.locator(".sessionLayersButton").click();
+    await page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] .sessionLaneDrawerHeading').click();
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+  });
+
+  test("moving the active session follows it, while a background move preserves lane and destination focus", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.goto("/");
+    await page.locator(".sessionLayersButton").click();
+    let current = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    await current.locator(".sessionLaneDrawerActions").click();
+    await page.getByRole("button", { name: "Move to Parked" }).click();
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toHaveCount(0);
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toHaveClass(/\bactive\b/);
+    await expect(page.locator(".sessionLayersButton")).toHaveClass(/\baway\b/);
+
+    await page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] .sessionLaneDrawerHeading').click();
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await page.locator(".sessionLayersButton").click();
+    current = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    await current.locator(".sessionLaneDrawerActions").click();
+    await page.getByRole("button", { name: "Move to Bookmarks" }).click();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-older"]')).toHaveClass(/\bactive\b/);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toMatchObject({ bookmarks: "mock-older" });
+  });
+
+  test("a real downward touch swipe cycles focused lanes", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.route("**/api/sessions/open", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      await route.continue();
+    });
+    await page.goto("/");
+    const tabBox = await page.locator('.sessionBarTab.laned[data-session-id="mock-current"]').boundingBox();
+    expect(tabBox).not.toBeNull();
+    const x = tabBox!.x + tabBox!.width / 2;
+    const viewportHeight = page.viewportSize()?.height;
+    expect(viewportHeight).toBeDefined();
+    const y = Math.max(tabBox!.y + 1, viewportHeight! - 27);
+    const endY = y + 24;
+    expect(endY).toBeLessThan(viewportHeight!);
+    expect(endY).toBeLessThanOrEqual(tabBox!.y + tabBox!.height);
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+    await page.waitForTimeout(32);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + 12, id: 1 }] });
+    await page.waitForTimeout(32);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: endY, id: 1 }] });
+    await page.waitForTimeout(32);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+
+    await expect(page.locator("#sessionBar")).toHaveClass(/\blane-swipe-exit\b/);
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-older"]')).toBeVisible();
+    await expect(page.locator("#sessionBar")).toHaveClass(/\blane-swipe-enter\b/);
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
   });
 
   test("opening a session from the lane drawer focuses that session's lane tabs", async ({ page }) => {
@@ -592,7 +820,7 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#sessionDrawer")).toBeHidden();
   });
 
-  test("new session preserves the drawer state on wide viewports and closes on mobile", async ({ page }) => {
+  test("new session preserves the drawer state in pane mode and closes in overlay mode", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#sessionDrawer")).toBeHidden();
 
@@ -602,7 +830,7 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#sessionDrawer")).toBeHidden();
 
     const width = page.viewportSize()?.width || 0;
-    if (width > 700) {
+    if (width >= 1025) {
       await page.locator("#sessionButton").click();
       await expect(page.locator("#sessionDrawer")).toBeVisible();
       await openLauncherAction(page, "New session");
@@ -614,7 +842,8 @@ test.describe("session quick bar", () => {
   test("session drawer drops folders with no filter matches", async ({ page }) => {
     await seedServerSessionUiState(page, { sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }] });
     await page.goto("/"); await page.locator("#sessionButton").click();
-    await page.locator(".sessionBucketFilter.marker-green").click();
+    await page.locator(".sessionColorFilterButton").click();
+    await page.getByRole("menuitemcheckbox", { name: "Green" }).click();
     await expect(page.locator(".sessionFolderGroup")).toHaveCount(1);
     await expect(page.locator(".sessionItem")).toContainText("Older mock session");
   });
@@ -624,12 +853,13 @@ test.describe("session quick bar", () => {
     const older = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
     await older.locator(".sessionItemActionsBtn").click(); await page.locator(".sessionActionsMarkerButton.marker-red").click();
     await expect(older).toHaveClass(/marker-red/); await expect(older.locator(".sessionItemMarkerDot")).toHaveCount(1);
-    await page.locator(".sessionBucketFilter.marker-red").click(); await expect(page.locator(".sessionItem")).toHaveCount(1); await expect(page.locator(".sessionItem")).toContainText("Older mock session");
+    await page.locator(".sessionColorFilterButton").click(); await page.getByRole("menuitemcheckbox", { name: "Red" }).click();
+    await expect(page.locator(".sessionItem")).toHaveCount(1); await expect(page.locator(".sessionItem")).toContainText("Older mock session");
   });
 
   test("session drawer recolors rows from the row menu while bucket filters are active", async ({ page }) => {
     await seedServerSessionUiState(page, { sessionMarkers: [{ sessionId: "mock-older", color: "red", updatedAt: "2026-01-01T00:00:00.000Z" }] });
-    await page.goto("/"); await page.locator("#sessionButton").click(); await page.locator(".sessionBucketFilter.marker-red").click();
+    await page.goto("/"); await page.locator("#sessionButton").click(); await page.locator(".sessionColorFilterButton").click(); await page.getByRole("menuitemcheckbox", { name: "Red" }).click();
     const older = page.locator(".sessionItem").filter({ hasText: "Older mock session" }); await older.locator(".sessionItemActionsBtn").click(); await page.locator(".sessionActionsMarkerButton.marker-blue").click();
     await expect(page.locator(".sessionItem")).toHaveCount(0); const uiState = await (await page.request.get("/api/session-ui-state")).json(); expect(uiState.sessionUiState.sessionMarkers).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: "mock-older", color: "blue" })]));
   });
@@ -644,6 +874,181 @@ test.describe("session quick bar", () => {
     await page.goto("/"); await page.locator("#sessionButton").click(); const older = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
     await older.locator(".sessionItemActionsBtn").click(); await page.locator(".sessionActionsMarkerButton.marker-green").click(); await expect(older.locator(".sessionItemMarkerDot")).toHaveCount(1);
     await older.locator(".sessionItemMarkerBtn").click(); await expect(older).toHaveClass(/pinned/); await expect(older.locator(".sessionItemMarkerDot")).toHaveCount(1);
+  });
+
+  test("uses one filter menu, keeps quick buckets visible, and preserves row geometry", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
+      sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const filters = page.locator(".sessionLaneFilters");
+    await expect(filters.locator(".sessionColorFilterButton")).toHaveCount(1);
+    await expect(filters.locator(".sessionBucketFilter")).toHaveCount(8);
+    await expect(filters).toHaveCSS("overflow", "visible");
+    const filterBox = await filters.boundingBox();
+    const listBox = await page.locator("#sessionList").boundingBox();
+    expect(Math.abs(filterBox!.y - listBox!.y)).toBeLessThanOrEqual(1);
+    expect(filterBox!.height).toBeGreaterThanOrEqual(42);
+    const filterButtonBox = await filters.locator(".sessionColorFilterButton").boundingBox();
+    for (const bucket of await filters.locator(".sessionBucketFilter").all()) {
+      const box = await bucket.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.y).toBeGreaterThanOrEqual(filterBox!.y);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(filterBox!.y + filterBox!.height);
+    }
+    expect(filterButtonBox!.y).toBeGreaterThanOrEqual(filterBox!.y);
+    expect(filterButtonBox!.y + filterButtonBox!.height).toBeLessThanOrEqual(filterBox!.y + filterBox!.height);
+
+    await filters.locator(".sessionColorFilterButton").click();
+    await page.getByRole("menuitemradio", { name: "Pinned" }).click();
+    await expect(page.locator(".sessionItem")).toHaveCount(0);
+    await filters.locator(".sessionColorFilterButton").click();
+    await page.getByRole("menuitemradio", { name: "All lanes" }).click();
+
+    const parent = page.locator('.sessionItem[data-session-id="mock-current"]');
+    const markerIcon = parent.locator(".sessionItemMarkerBtn svg");
+    const chevron = parent.locator(".sessionWorkerBranchChevron");
+    const nav = parent.locator(".sessionItemNavBtn");
+    const markerBox = await markerIcon.boundingBox();
+    const chevronBox = await chevron.boundingBox();
+    const navBox = await nav.boundingBox();
+    const leftGap = chevronBox!.x - (markerBox!.x + markerBox!.width);
+    const rightGap = navBox!.x - (chevronBox!.x + chevronBox!.width);
+    expect(Math.abs(leftGap - rightGap)).toBeLessThanOrEqual(1);
+
+    await parent.locator(".sessionWorkerBranchToggle").click();
+    const worker = page.locator('.sessionItem[data-session-id="mock-older"]');
+    await expect(worker.locator(".sessionWorkerBranchSpacer")).toHaveCount(0);
+
+    const quickBlue = filters.locator(".sessionBucketFilter.marker-blue");
+    await quickBlue.click();
+    await expect(quickBlue).toHaveAttribute("aria-pressed", "true");
+    await parent.locator(".sessionItemMarkerBtn").click();
+    await worker.locator(".sessionItemMarkerBtn").click();
+    await expect(parent).toHaveClass(/marker-blue/);
+    await expect(worker).toHaveClass(/marker-blue/);
+    await expect(page.locator(".sessionItem")).toHaveCount(2);
+    await quickBlue.click();
+    await expect(parent.locator(".sessionItemMarkerBtn")).toHaveClass(/toolPin/);
+  });
+
+  test("collapses spawned workers under their parent and reveals filtered matches", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const parent = page.locator('.sessionItem[data-session-id="mock-current"]');
+    const worker = page.locator('.sessionItem[data-session-id="mock-older"]');
+    await expect(parent).toContainText("1 worker");
+    await expect(parent.locator(".sessionWorkerBranchToggle")).toHaveAttribute("aria-expanded", "false");
+    await expect(worker).toHaveCount(0);
+
+    await parent.locator(".sessionWorkerBranchToggle").click();
+    await expect(worker).toBeVisible();
+    await expect(worker).toHaveClass(/sessionItemWorker/);
+    await expect(page.locator(".sessionWorkerCollapseAllButton")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-expanded-worker-branches"))).toContain("mock-current");
+    await page.reload();
+    await expect(worker).toBeVisible();
+
+    await page.locator(".sessionWorkerCollapseAllButton").click();
+    await expect(worker).toHaveCount(0);
+    await page.locator(".sessionDrawerSearch").fill("Older mock session");
+    await expect(parent).toBeVisible();
+    await expect(parent).toHaveClass(/sessionItemContext/);
+    await expect(worker).toBeVisible();
+  });
+
+  test("groups workers whose parent is unavailable under Unattached workers", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      sessionOrigins: [{ sessionId: "mock-older", originSessionId: "missing-parent", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const group = page.locator(".sessionUnattachedWorkerGroup");
+    const worker = page.locator('.sessionItem[data-session-id="mock-older"]');
+    await expect(group).toContainText("Unattached workers");
+    await expect(worker).toHaveCount(0);
+    await group.locator(".sessionFolderToggle").click();
+    await expect(worker).toBeVisible();
+  });
+
+  test("worker branches do not consume folder preview slots", async ({ page }) => {
+    const cwd = "/Users/ashwin/projects/pi-web";
+    const now = "2026-01-01T00:00:00.000Z";
+    await seedServerSessionUiState(page, {
+      sessionOrigins: [
+        { sessionId: "worker-a", originSessionId: "parent-0", kind: "spawn", updatedAt: now },
+        { sessionId: "worker-b", originSessionId: "parent-0", kind: "spawn", updatedAt: now },
+      ],
+    });
+    await page.route(/\/api\/sessions(?:\?.*)?$/, (route) => route.fulfill({ json: {
+      ok: true,
+      sessions: [
+        ...Array.from({ length: 10 }, (_, index) => ({ id: `parent-${index}`, name: `Parent ${index}`, created: now, modified: now, messageCount: 1, cwd, isCurrent: false, unread: false })),
+        { id: "worker-a", name: "Worker A", created: now, modified: now, messageCount: 1, cwd, isCurrent: false, unread: false },
+        { id: "worker-b", name: "Worker B", created: now, modified: now, messageCount: 1, cwd, isCurrent: false, unread: false },
+      ],
+    } }));
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator(".sessionItem")).toHaveCount(8);
+    await expect(page.locator('.sessionItem[data-session-id="parent-0"]')).toContainText("2 workers");
+    await expect(page.locator(".sessionFolderMoreButton")).toHaveText("Show all 10 sessions");
+  });
+
+  test("runtime changes patch one drawer branch instead of rebuilding unrelated rows", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-older" });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    const unaffected = page.locator('.sessionItem[data-session-id="mock-current"]');
+    await unaffected.evaluate((row) => { row.dataset.renderToken = "preserved"; });
+
+    await page.request.post("/api/mock/event", { data: {
+      type: "session_runtime_changed",
+      sessionId: "mock-older",
+      runtime: { loaded: true, isRunning: true, isStreaming: true, isRetrying: false, isCompacting: false, pendingMessageCount: 0 },
+    } });
+
+    await expect(page.locator('.sessionItem[data-session-id="mock-older"] .sessionSpinner')).toBeVisible();
+    await expect(unaffected).toHaveAttribute("data-render-token", "preserved");
+  });
+
+  test("an open drawer refreshes the session index once after a pinned run settles", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-older" });
+    let sessionListRequests = 0;
+    await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+      sessionListRequests += 1;
+      await route.continue();
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator(".sessionItem")).toHaveCount(2);
+    sessionListRequests = 0;
+
+    for (let index = 0; index < 5; index += 1) {
+      await page.request.post("/api/mock/event", { data: {
+        type: "agent_event",
+        sessionId: "mock-older",
+        event: { type: "message_end", message: { role: "assistant", content: `round ${index}` } },
+      } });
+    }
+    await page.waitForTimeout(400);
+    expect(sessionListRequests).toBe(0);
+
+    await page.request.post("/api/mock/event", { data: {
+      type: "agent_event",
+      sessionId: "mock-older",
+      event: { type: "agent_settled" },
+    } });
+    await expect.poll(() => sessionListRequests).toBe(1);
   });
 
   test("session actions menu can pin and unpin a session", async ({ page }) => {
@@ -727,6 +1132,35 @@ test.describe("session quick bar", () => {
     resolveOpen();
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
     await expect(page.locator("#messages")).toContainText("Review the mobile composer layout");
+  });
+
+  test("note fold stays hoverable and anchored bottom-left with running tab styles", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      pinnedSessions: [{ id: "mock-current" }],
+      sessionNotes: [{ sessionId: "mock-current", note: "Keep the fold in place", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+
+    await page.goto("/");
+    const tab = page.locator(".sessionBarTab").filter({ hasText: "Current mock session" });
+    await tab.evaluate((element) => element.classList.add("running"));
+
+    const layout = await tab.evaluate((element) => {
+      const note = element.querySelector<HTMLElement>(".sessionBarTabOpen > .sessionBarNoteIndicator")!;
+      const style = getComputedStyle(note);
+      const tabRect = element.getBoundingClientRect();
+      const noteRect = note.getBoundingClientRect();
+      return {
+        position: style.position,
+        left: style.left,
+        bottom: style.bottom,
+        zIndex: style.zIndex,
+        pointerEvents: style.pointerEvents,
+        alignedLeft: Math.abs(tabRect.left - noteRect.left) < 0.5,
+        bottomDelta: Math.round((tabRect.bottom - noteRect.bottom) * 100) / 100,
+      };
+    });
+    expect(layout).toEqual({ position: "absolute", left: "0px", bottom: "0px", zIndex: "3", pointerEvents: "auto", alignedLeft: true, bottomDelta: 0 });
+    await expect(tab.locator(".sessionBarNoteIndicator")).toHaveAttribute("title", "Keep the fold in place");
   });
 
   test("running session tab gets the running class and loses it after the session ends", async ({ page }) => {

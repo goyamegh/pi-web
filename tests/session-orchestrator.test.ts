@@ -111,6 +111,12 @@ function makeCtx(options: {
     },
     ui: {
       web: {
+        createApiClient: vi.fn(() => ({
+          request: (method: string, path: string, options?: { body?: unknown }) => globalThis.fetch(path, {
+            method, ...(options?.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+          }),
+          dispose: vi.fn(),
+        })),
         registerSettings: vi.fn(async () => ({ registered: true, migrated: false, usedBackup: false })),
         getSettings: vi.fn(async () => ({
           schemaVersion: 1,
@@ -119,6 +125,7 @@ function makeCtx(options: {
             defaultCategory: options.defaultCategory ?? "",
           },
         })),
+        reportSettlementDependencies: vi.fn(),
       },
     },
     __parentModelId: options.parentModelId ?? "fast-1",
@@ -203,6 +210,26 @@ afterEach(() => {
 });
 
 describe("sessions_spawn tool surface", () => {
+  it("requests explicit scoped cross-session access and disposes it at shutdown", async () => {
+    const ctx = makeCtx();
+    await activate(ctx);
+    expect(ctx.ui.web.createApiClient).toHaveBeenCalledWith({
+      name: "session-orchestrator", sessionIds: "all",
+      scopes: ["sessions.read", "sessions.create", "sessions.write", "sessions.delete"],
+    });
+    const client = ctx.ui.web.createApiClient.mock.results[0].value;
+    handlers.get("session_shutdown")?.({}, ctx);
+    expect(client.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("fails clearly on older hosts without falling back to browser tokens", async () => {
+    const ctx: any = makeCtx();
+    delete ctx.ui.web.createApiClient;
+    const result = await spawn(ctx, { name: "worker", task: "read" });
+    expect(resultText(result)).toContain("scoped extension HTTP API");
+    expect(calls).toEqual([]);
+  });
+
   it("registers the orchestration tools", async () => {
     await activate(makeCtx());
     expect([...tools.keys()].sort()).toEqual([
@@ -304,6 +331,7 @@ describe("sessions_spawn fail-closed resolution", () => {
     // Task dispatched only after the model was pinned.
     expect(calls.findIndex((c) => c.path === "/api/model")).toBeLessThan(calls.findIndex((c) => c.path === "/api/prompt"));
     expect(pathsFor("POST")).not.toContain("/api/sessions/delete");
+    expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenLastCalledWith({ sessionIds: ["worker-1"] });
   });
 
   it("returns only the category name after a successful spawn and keeps the model mapping private", async () => {
@@ -581,6 +609,15 @@ describe("watcher lifecycle and wakeup retries", () => {
 
     expect(pi.sendMessage).toHaveBeenCalledTimes(1);
     expect(String(pi.sendMessage.mock.calls[0][0].content)).toContain("finished after restart");
+    expect(pi.sendMessage.mock.calls[0][0].details).toMatchObject({
+      workers: [{ sessionId: "ledger-worker", name: "ledger worker", status: "idle" }],
+      presentation: {
+        kind: "expandable-report",
+        label: "ledger worker · finished",
+        preview: "finished after restart",
+        tone: "accent",
+      },
+    });
     expect(pi.appendEntry).toHaveBeenCalledWith("orchestrator-watch-resolved", { childId: "ledger-worker" });
     expect(stateCalls).toBe(6); // re-arm failure + status check + four settled polls
   });

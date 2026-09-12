@@ -37,7 +37,7 @@ import type {
   SessionServiceEvent,
   SlashCommandDto,
 } from "./dto.js";
-import { shallowListSessions, shallowSessionCwd } from "./shallowList.js";
+import { createShallowLister, shallowSessionCwd } from "./shallowList.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -81,6 +81,7 @@ export interface LocalSessionConfiguration {
 }
 
 export interface LocalSessionServiceDependencies {
+  extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
   modelRuntime: ModelRuntime;
   sessionFactory?: LocalSessionFactory;
   /**
@@ -229,6 +230,10 @@ export class LocalSessionService implements SessionService {
   private readonly sessionListRequests = new Map<string, Promise<SessionInfoDto[]>>();
   private readonly viewerLeases = new Map<string, ViewerLease>();
   private readonly viewerConnections = new Map<symbol, string>();
+  // Instance-owned shallow list cache: each SessionService owns its lister so the
+  // per-cwd cache lifecycle rides along with the service (PR #43 Stage 3), and
+  // concurrent scans of different cwds never share/evict each other's maps.
+  private readonly shallowLister = createShallowLister();
   private readonly extensionLoaders = new WeakMap<object, ResilientResourceLoader>();
   private readonly blockedModelIds = new Set<string>();
   private readonly pendingPromptCorrelations = new Map<string, PendingPromptCorrelation[]>();
@@ -245,11 +250,18 @@ export class LocalSessionService implements SessionService {
   constructor(private readonly deps: LocalSessionServiceDependencies) {
     this.knownSessionCwds.add(resolve(deps.globalCwd()));
     this.webUiBridge = createWebUiBridge({
+      extensionHttp: deps.extensionHttp,
       emit: (input) => {
         const value = input as Record<string, unknown>;
         const request = interactionRequestFromWire(value);
         if (request) {
           this.emit({ type: "interaction", request });
+        } else if (value.type === "settlement_dependencies" && typeof value.sessionId === "string" && Array.isArray(value.childIds)) {
+          this.emit({
+            type: "settlement_dependencies",
+            sessionId: value.sessionId,
+            childIds: value.childIds.filter((id): id is string => typeof id === "string"),
+          });
         } else {
           this.emit({ type: "wire", value: value as JsonValue });
         }
@@ -637,7 +649,7 @@ export class LocalSessionService implements SessionService {
             const infos = await this.deps.sessionFactory.list(cwd);
             return infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
           }
-          const piRows = (await shallowListSessions(cwd, this.defaultSessionDir(cwd))).map((info) => {
+          const piRows = (await this.shallowLister.list(cwd, this.defaultSessionDir(cwd))).map((info) => {
             this.rememberSessionLocation(info, cwd);
             return this.overlaySessionName(info);
           });

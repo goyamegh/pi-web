@@ -283,10 +283,11 @@ describe("LocalSessionService contract", () => {
     expect(order).toEqual(["session_ui_state_changed", "state_changed"]);
   });
 
-  it("keeps the dependency surface to seven true externals (six upstream + fork harness hooks)", async () => {
+  it("keeps the dependency surface to eight true externals (base six + fork harness hooks + scoped extension transport)", async () => {
     const source = await readFile(new URL("../server/session/service.ts", import.meta.url), "utf8");
     const body = source.slice(source.indexOf("export interface LocalSessionServiceDependencies"), source.indexOf("}\n\ntype WorkLeaseKind"));
-    expect(body.match(/^  \w+[^\n]*;/gm)).toHaveLength(7);
+    expect(body.match(/^  \w+[^\n]*;/gm)).toHaveLength(8);
+    expect(body).toContain("extensionHttp?");
     expect(body).not.toContain("decorateState");
     expect(body).not.toContain("resolve(sessionId");
   });

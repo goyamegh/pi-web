@@ -35,9 +35,10 @@
 }
 
 .message {
+  --message-inline-padding: 14px;
   position: relative;
   max-width: 88%;
-  padding: 12px 14px;
+  padding: 12px var(--message-inline-padding);
   border: 1px solid var(--border);
   border-radius: 14px;
   white-space: pre-wrap;
@@ -515,9 +516,9 @@ body.artifactPreviewDocument {
 .artifactPreview--minimized .artifactPreviewHeader { border-bottom: 0; }
 @media (max-width: 700px) {
   .message.assistant > .body > .artifactPreview {
-    width: calc(100% + 28px);
-    margin-right: -14px;
-    margin-left: -14px;
+    width: auto;
+    margin-right: calc(-1 * var(--message-inline-padding));
+    margin-left: calc(-1 * var(--message-inline-padding));
     border-right: 0;
     border-left: 0;
     border-radius: 0;
@@ -803,7 +804,7 @@ body.artifactPreviewDocument {
   background: rgba(250, 204, 21, .14);
 }
 .message.error { border-color: var(--danger); color: #fecdd3; }
-/* Extension-injected messages, including orchestrator worker updates. */
+/* Extension-injected custom messages. */
 .message.customCard {
   --message-bg: color-mix(in srgb, var(--accent) 4%, var(--panel));
   align-self: flex-start;

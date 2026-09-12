@@ -133,7 +133,7 @@ export type LoadingAnimation = "fireworks" | "glow" | "pulse";
 export type PiWebSettings = {
   version: 1;
   appearance: {
-    density: "comfortable" | "compact";
+    density: "comfortable" | "compact" | "minimal";
     navPinned: boolean;
     navWidth: number;
     accentColor: string;
@@ -209,22 +209,25 @@ export type AttachedImage = {
 
 export type PinnedSession = { id: string; cwd?: string }; // legacy bootstrap/runtime projection
 export type SessionLaneId = "pinned" | "parked" | "bookmarks";
-export type SessionLaneEntry = { sessionId: string; lane: SessionLaneId; cwd?: string; note?: string; since: string };
-export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
+export type SessionLaneEntry = { sessionId: string; lane: SessionLaneId; cwd?: string; since: string };
+export type SessionNote = { sessionId: string; note: string; updatedAt: string };
+export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green" | "orange" | "cyan" | "pink";
 export type SessionMarkerColor = { id: SessionMarkerColorId; label: string };
-export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; note?: string; updatedAt: string };
+export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; updatedAt: string };
 export type SessionUnreadState = { sessionId: string; unreadAt: string; updatedAt: string };
 export type SessionOrigin = { sessionId: string; originSessionId: string; kind: string; updatedAt: string };
 export type SessionUiState = {
-  version: 2;
+  version: 3;
   revision: number;
   lanes: SessionLaneEntry[];
+  sessionNotes: SessionNote[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
+  bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
 };
 
 export const sessionMarkerColors: SessionMarkerColor[] = [
@@ -233,18 +236,23 @@ export const sessionMarkerColors: SessionMarkerColor[] = [
   { id: "yellow", label: "Yellow" },
   { id: "red", label: "Red" },
   { id: "green", label: "Green" },
+  { id: "orange", label: "Orange" },
+  { id: "cyan", label: "Cyan" },
+  { id: "pink", label: "Pink" },
 ];
 
 export const defaultSessionUiState: SessionUiState = {
-  version: 2,
+  version: 3,
   revision: 0,
   lanes: [],
+  sessionNotes: [],
   pinnedFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
   sessionOrigins: [],
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
+  bucketLabels: {},
 };
 
 const markerColorIds = new Set<SessionMarkerColorId>(sessionMarkerColors.map((color) => color.id));
@@ -304,13 +312,26 @@ export function normalizeSessionLanes(value: unknown): SessionLaneEntry[] {
     seen.add(sessionId);
     const sinceDate = typeof item.since === "string" ? new Date(item.since) : new Date(NaN);
     const cwd = typeof item.cwd === "string" && item.cwd.trim() ? item.cwd.trim() : undefined;
-    const note = typeof item.note === "string" && item.note.trim() ? item.note.trim() : undefined;
-    result.push({ sessionId, lane, ...(cwd ? { cwd } : {}), ...(note ? { note } : {}), since: Number.isNaN(sinceDate.getTime()) ? new Date().toISOString() : sinceDate.toISOString() });
+    result.push({ sessionId, lane, ...(cwd ? { cwd } : {}), since: Number.isNaN(sinceDate.getTime()) ? new Date().toISOString() : sinceDate.toISOString() });
   }
   return result;
 }
 
 
+
+export function normalizeSessionNotes(value: unknown): SessionNote[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: SessionNote[] = [];
+  for (const item of value) {
+    const sessionId = typeof item?.sessionId === "string" ? item.sessionId.trim() : "";
+    const note = typeof item?.note === "string" ? item.note.trim() : "";
+    if (!sessionId || !note || seen.has(sessionId)) continue;
+    seen.add(sessionId);
+    result.push({ sessionId, note, updatedAt: typeof item?.updatedAt === "string" && item.updatedAt.trim() ? item.updatedAt : new Date().toISOString() });
+  }
+  return result;
+}
 
 export function normalizeSessionMarkers(value: unknown): SessionMarker[] {
   if (!Array.isArray(value)) return [];
@@ -337,6 +358,17 @@ export function normalizeSessionUnreadStates(value: unknown): SessionUnreadState
     const unreadAt = typeof item?.unreadAt === "string" && item.unreadAt.trim() ? item.unreadAt : new Date().toISOString();
     const updatedAt = typeof item?.updatedAt === "string" && item.updatedAt.trim() ? item.updatedAt : unreadAt;
     result.push({ sessionId, unreadAt, updatedAt });
+  }
+  return result;
+}
+
+export function normalizeBucketLabels(value: unknown): Partial<Record<SessionMarkerColorId, string>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Partial<Record<SessionMarkerColorId, string>> = {};
+  for (const [key, rawLabel] of Object.entries(value)) {
+    const color = normalizeMarkerColor(key);
+    const label = typeof rawLabel === "string" ? rawLabel.trim().slice(0, 40) : "";
+    if (color && label) result[color] = label;
   }
   return result;
 }
@@ -373,16 +405,21 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const legacy = normalizePinnedSessions(raw.pinnedSessions);
   const lanes = normalizeSessionLanes(raw.lanes);
+  const sessionNotes = normalizeSessionNotes(raw.sessionNotes);
+  const migratedLaneNotes = normalizeSessionNotes(Array.isArray(raw.lanes) ? raw.lanes : []);
+  const noteIds = new Set(sessionNotes.map((item) => item.sessionId));
   return {
-    version: 2,
+    version: 3,
     revision: typeof raw.revision === "number" && Number.isSafeInteger(raw.revision) && raw.revision >= 0 ? raw.revision : 0,
     lanes: lanes.length ? lanes : legacy.map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
+    sessionNotes: [...sessionNotes, ...migratedLaneNotes.filter((item) => !noteIds.has(item.sessionId))],
     pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
     sessionOrigins: normalizeSessionOrigins(raw.sessionOrigins),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
     allowedMarkerColors: normalizeMarkerColors(raw.allowedMarkerColors),
+    bucketLabels: normalizeBucketLabels(raw.bucketLabels),
   };
 }
 
@@ -489,6 +526,7 @@ export type AppState = {
   reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
   lanes: SessionLaneEntry[];
+  sessionNotes: SessionNote[];
   sessionsById: Record<string, SessionViewState>;
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
@@ -497,8 +535,10 @@ export type AppState = {
   selectedMarkerColor: SessionMarkerColorId;
   currentAgent: AgentKind;
   currentCapabilities: AgentCapabilities;
+  bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
+  expandedWorkerBranches: Set<string>;
   queueMode: QueueMode;
   attachedImages: FileAttachment[];
   editorExpanded: boolean;
@@ -538,6 +578,7 @@ export const defaultPiWebSettings: PiWebSettings = {
 
 const tokenStorageKey = "pi-web-token";
 const collapsedFoldersStorageKey = "pi-web-collapsed-session-folders";
+const expandedWorkerBranchesStorageKey = "pi-web-expanded-worker-branches";
 const sessionIdUrlParam = "sessionId";
 const sessionIdHistoryStateKey = "piWebSessionId";
 const sessionScopedHistoryStateKeys = ["piWebArtifactView", "piWebWorkspaceView"] as const;
@@ -596,6 +637,19 @@ export function persistCollapsedSessionFolders(folders: Set<string>) {
   localStorage.setItem(collapsedFoldersStorageKey, JSON.stringify(Array.from(folders)));
 }
 
+function readExpandedWorkerBranches() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(expandedWorkerBranchesStorageKey) || "[]");
+    return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string" && value.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function persistExpandedWorkerBranches(sessionIds: Set<string>) {
+  localStorage.setItem(expandedWorkerBranchesStorageKey, JSON.stringify(Array.from(sessionIds)));
+}
+
 export function createAppState(): AppState {
   consumeUrlToken();
 
@@ -619,6 +673,7 @@ export function createAppState(): AppState {
     pinnedSessions: readLegacyPinnedSessions(),
     pinnedFolders: readLegacyPinnedFolders(),
     lanes: readLegacyPinnedSessions().map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
+    sessionNotes: [],
     sessionsById: {},
     sessionMarkers: readLegacySessionMarkers(),
     sessionUnreadStates: [],
@@ -626,8 +681,10 @@ export function createAppState(): AppState {
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     currentAgent: "pi",
     currentCapabilities: defaultAgentCapabilities,
+    bucketLabels: {},
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
+    expandedWorkerBranches: new Set(readExpandedWorkerBranches()),
     queueMode: "steer",
     attachedImages: [],
     editorExpanded: defaultPiWebSettings.composer.expanded,

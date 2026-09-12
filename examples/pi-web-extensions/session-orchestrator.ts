@@ -19,7 +19,7 @@
  */
 
 import { Type } from "typebox";
-import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebSettingsSchema } from "@ashwin-pc/pi-web/extensions";
+import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebSettingsSchema, PiWebHttpClient } from "@ashwin-pc/pi-web/extensions";
 
 const WORKER_MARKER = "[pi-web orchestrated worker]";
 const EXT_VERSION = "v9";
@@ -66,10 +66,6 @@ const SETTINGS_SCHEMA: PiWebSettingsSchema = {
     },
   ],
 };
-
-const PORT = Number(process.env.PORT || 8787);
-const TOKEN = process.env.PI_WEB_TOKEN || "";
-const BASE = `http://127.0.0.1:${PORT}`;
 
 // ---------------------------------------------------------------------------
 // Global helpers: token parsing, resolution
@@ -130,23 +126,6 @@ class ApiError extends Error {
   }
 }
 
-async function api(method: string, path: string, body?: unknown): Promise<any> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: {
-      ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(20_000),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || json?.ok === false) {
-    throw new ApiError(`${method} ${path} failed (${res.status}): ${json?.error || "unknown error"}`, res.status);
-  }
-  return json;
-}
-
 function trunc(value: unknown, max: number): string {
   const text = String(value ?? "").trim();
   if (text.length <= max) return text;
@@ -157,14 +136,14 @@ function shortId(id: string): string {
   return id.length > 8 ? id.slice(-8) : id;
 }
 
+/** Generic pi-web custom-message presentation metadata; semantics stay here. */
+function reportPresentation(label: string, preview: string, tone: "accent" | "danger" = "accent") {
+  return { kind: "expandable-report", label, preview: trunc(preview, 320), tone };
+}
+
 // ---------------------------------------------------------------------------
 // Transcript helpers (uses /api/messages simplified message shape)
 // ---------------------------------------------------------------------------
-
-async function fetchMessages(sessionId: string): Promise<any[]> {
-  const json = await api("GET", `/api/messages?sessionId=${encodeURIComponent(sessionId)}`);
-  return Array.isArray(json.messages) ? json.messages : [];
-}
 
 function lastAssistantText(messages: any[]): { text: string; isError: boolean } {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -214,6 +193,18 @@ function formatTranscript(messages: any[], tail: number): string {
 // ---------------------------------------------------------------------------
 
 export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
+  let client: PiWebHttpClient | undefined;
+  async function api(method: "GET" | "POST", path: string, body?: Record<string, unknown>): Promise<any> {
+    if (!client) throw new Error("Session orchestration requires pi-web's scoped extension HTTP API; update pi-web and reload extensions.");
+    const res = await client.request(method, path, { body });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json?.ok === false) throw new ApiError(`${method} ${path} failed (${res.status}): ${json?.error || "unknown error"}`, res.status);
+    return json;
+  }
+  async function fetchMessages(sessionId: string): Promise<any[]> {
+    const json = await api("GET", `/api/messages?sessionId=${encodeURIComponent(sessionId)}`);
+    return Array.isArray(json.messages) ? json.messages : [];
+  }
   type Watched = {
     id: string;
     name: string;
@@ -233,6 +224,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   let timer: ReturnType<typeof setInterval> | undefined;
   let pollInFlight = false;
   let selfSessionId = "";
+  let reportSettlementDependencies: ((dependencies: { sessionIds: string[] }) => void) | undefined;
   let disposed = false;
   let generation = 0;
 
@@ -244,8 +236,21 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   // wakeups through /api/prompt (the same battle-tested path the web UI uses
   // for steering), which works both when the parent is idle and mid-turn.
   function captureSelf(ctx: PiWebExtensionContext) {
+    if (!client && !disposed) client = ctx.ui?.web?.createApiClient?.({
+      name: "session-orchestrator",
+      scopes: ["sessions.read", "sessions.create", "sessions.write", "sessions.delete"],
+      // The existing tools deliberately accept arbitrary user-selected sessions,
+      // including restored workers; cross-session access is explicit, not implicit.
+      sessionIds: "all",
+    });
     const id = ownSessionId(ctx);
     if (id && id !== "unknown") selfSessionId = id;
+    const reporter = ctx?.ui?.web?.reportSettlementDependencies;
+    if (typeof reporter === "function") reportSettlementDependencies = reporter.bind(ctx.ui.web);
+  }
+
+  function reportWatchedDependencies() {
+    reportSettlementDependencies?.({ sessionIds: Array.from(watched.keys()) });
   }
 
   function isWorkerSession(ctx: PiWebExtensionContext): boolean {
@@ -304,12 +309,14 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   function watch(id: string, name: string, categoryName = "Unknown") {
     if (!isActive()) return;
     watched.set(id, { id, name, categoryName, sawRunning: false, idlePolls: 0, errorPolls: 0, aborted: false });
+    reportWatchedDependencies();
     ensureTimer();
   }
 
   function unwatch(id: string) {
     watched.delete(id);
     spawnedWorkers.delete(id);
+    reportWatchedDependencies();
     stopTimerIfIdle();
   }
 
@@ -731,9 +738,15 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration)) return;
     const outstanding = outstandingWatches(ctx);
     for (const id of watched.keys()) outstanding.delete(id);
-    if (outstanding.size === 0) return;
+    if (outstanding.size === 0) {
+      reportWatchedDependencies();
+      return;
+    }
     for (const [id, worker] of outstanding) {
       if (worker.spawned) spawnedWorkers.add(id);
+      // Report every durable obligation synchronously before the first status
+      // request so the host can never observe this parent as settled mid-rearm.
+      watch(id, worker.name, worker.categoryName);
     }
 
     const finished: { id: string; name: string; categoryName: string; summary: { text: string; isError: boolean } }[] = [];
@@ -743,10 +756,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         const state = await api("GET", `/api/state?sessionId=${encodeURIComponent(childId)}`);
         if (!isActive(expectedGeneration)) return;
         const running = Boolean(state?.runtime?.isRunning) || Number(state?.runtime?.pendingMessageCount || 0) > 0;
-        if (running) {
-          watch(childId, worker.name, worker.categoryName);
-          continue;
-        }
+        if (running) continue;
         let summary = { text: "", isError: false };
         try {
           const messages = await fetchMessages(childId);
@@ -761,23 +771,32 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         if (!isActive(expectedGeneration)) return;
         if (error instanceof ApiError && error.status === 404) {
           // A definitive not-found means the child is genuinely gone.
-          spawnedWorkers.delete(childId);
+          unwatch(childId);
           appendLedger(RESOLVED_ENTRY, childId);
         } else {
           // Timeouts, network failures, and 5xx responses are transient. Hand
           // the outstanding ledger entry to the normal paced poller, which
           // retries and eventually emits its existing "lost track" wakeup.
-          watch(childId, worker.name, worker.categoryName);
+          // It is already registered with the normal paced poller.
         }
       }
     }
     if (!isActive(expectedGeneration) || finished.length === 0) return;
 
+    const finishedIds = new Set(finished.map((worker) => worker.id));
+    const catchUpFailed = finished.some((worker) => worker.summary.isError);
     const details = {
       kind: "wakeup",
       catchUp: true,
       workers: finished.map((f) => ({ sessionId: f.id, name: f.name, status: f.summary.isError ? "error" : "idle" })),
-      stillRunning: Array.from(watched.values()).map((o) => ({ sessionId: o.id, name: o.name })),
+      stillRunning: Array.from(watched.values())
+        .filter((worker) => !finishedIds.has(worker.id))
+        .map((o) => ({ sessionId: o.id, name: o.name })),
+      presentation: reportPresentation(
+        finished.length === 1 ? `${finished[0].name} · ${catchUpFailed ? "failed" : "finished"}` : `${finished.length} workers · ${catchUpFailed ? "completed with errors" : "finished"}`,
+        finished.map((worker) => worker.summary.text || "No final message captured").join(" · "),
+        catchUpFailed ? "danger" : "accent",
+      ),
     };
     const sections = finished.map((f) => [
       `Worker "${f.name}" (session ${f.id}) finished while this session was offline.`,
@@ -795,7 +814,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration)) return;
     if (ok) {
       for (const f of finished) {
-        spawnedWorkers.delete(f.id);
+        unwatch(f.id);
         appendLedger(RESOLVED_ENTRY, f.id);
         markChildRead(f.id);
       }
@@ -901,7 +920,11 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           if (w.errorPolls >= 20) {
             const ok = await deliverWakeup(
               `🔔 [orchestrator] Lost track of worker "${w.name}" (session ${w.id}): status polling kept failing (it may have been deleted). Check it with sessions_status or in the sidebar.`,
-              { kind: "wakeup", workers: [{ sessionId: w.id, name: w.name, status: "error" }] },
+              {
+                kind: "wakeup",
+                workers: [{ sessionId: w.id, name: w.name, status: "error" }],
+                presentation: reportPresentation(`${w.name} · unavailable`, "Status polling repeatedly failed", "danger"),
+              },
               expectedGeneration,
             );
             if (!isActive(expectedGeneration)) return;
@@ -920,6 +943,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         const completedIds = new Set(completed.map(({ w }) => w.id));
         const activeWorkers = Array.from(watched.values()).filter((w) => !completedIds.has(w.id));
         const stillRunning = activeWorkers.map((o) => `"${o.name}"`).join(", ");
+        const completedWithError = completed.some(({ summary }) => summary.isError);
+        const allAborted = completed.every(({ w }) => w.aborted);
         const details = {
           kind: "wakeup",
           workers: completed.map(({ w, summary }) => ({
@@ -928,6 +953,13 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             status: w.aborted ? "aborted" : summary.isError ? "error" : "idle",
           })),
           stillRunning: activeWorkers.map((o) => ({ sessionId: o.id, name: o.name })),
+          presentation: reportPresentation(
+            completed.length === 1
+              ? `${completed[0].w.name} · ${completed[0].w.aborted ? "stopped" : completedWithError ? "failed" : "finished"}`
+              : `${completed.length} workers · ${allAborted ? "stopped" : completedWithError ? "completed with errors" : "finished"}`,
+            completed.map(({ summary }) => summary.text || "No final message captured").join(" · "),
+            completedWithError ? "danger" : "accent",
+          ),
         };
         const sections = completed.map(({ w, summary }) => [
           `Worker "${w.name}" (session ${w.id}) is now ${w.aborted ? "stopped (aborted)" : "idle"}.`,
@@ -1072,6 +1104,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   // Lifecycle
   // -------------------------------------------------------------------------
   pi.on("session_shutdown", () => {
+    client?.dispose();
+    client = undefined;
     disposed = true;
     generation += 1;
     if (timer) clearInterval(timer);
