@@ -48,6 +48,8 @@ export AWS_EC2_METADATA_DISABLED="${AWS_EC2_METADATA_DISABLED:-true}"
 # list, so keep the previous no-app-login behavior explicitly rather than
 # bootstrap a password/passkey. Remove this once real credentials are set up.
 export PI_WEB_AUTH_POLICY="${PI_WEB_AUTH_POLICY:-open}"
+# Orchestrator extension: allow heavier worker fan-out than the upstream default of 4.
+export PI_WEB_ORCHESTRATOR_MAX_WORKERS="${PI_WEB_ORCHESTRATOR_MAX_WORKERS:-100}"
 
 # Same merge added Origin validation shared by cookie mutations AND WebSocket
 # upgrades, defaulting to http://localhost:$PORT. That never matches a real

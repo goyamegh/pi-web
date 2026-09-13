@@ -94,7 +94,8 @@ yourself.
 ## Etiquette and limits
 
 - Depth cap: workers must not spawn sub-workers (`sessions_spawn` refuses).
-- At most 4 workers spawned by `sessions_spawn` may be running/tracked at once;
+- A capped number of workers spawned by `sessions_spawn` may be running/tracked at
+  once (default 4; deployments may raise it via `PI_WEB_ORCHESTRATOR_MAX_WORKERS`);
   sessions merely watched after `sessions_prompt` do not consume spawn slots.
   Prefer 2–3 focused workers over a swarm.
 - The user sees every worker in the sidebar and may type into one directly —

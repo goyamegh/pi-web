@@ -29,7 +29,12 @@ const WAKEUP_CUSTOM_TYPE = "session-orchestrator";
 // its watchers or deliver catch-up wakeups. Resolved = wakeup was DELIVERED.
 const WATCH_ENTRY = "orchestrator-watch";
 const RESOLVED_ENTRY = "orchestrator-watch-resolved";
-const MAX_WORKERS = 4;
+// Concurrent spawn cap. Default 4; override per deployment with
+// PI_WEB_ORCHESTRATOR_MAX_WORKERS (positive integer) for heavier fan-out.
+const MAX_WORKERS = (() => {
+  const raw = Number(process.env.PI_WEB_ORCHESTRATOR_MAX_WORKERS);
+  return Number.isInteger(raw) && raw > 0 ? raw : 4;
+})();
 const POLL_MS = 2500;
 const WAKEUP_SUMMARY_CHARS = 2000;
 

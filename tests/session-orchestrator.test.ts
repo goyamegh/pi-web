@@ -542,6 +542,34 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(resultText(overflow)).toMatch(/cap/i);
   });
 
+  it("honours PI_WEB_ORCHESTRATOR_MAX_WORKERS as the spawn cap", async () => {
+    vi.stubEnv("PI_WEB_ORCHESTRATOR_MAX_WORKERS", "6");
+    vi.resetModules();
+    try {
+      const fresh = (await import("../examples/pi-web-extensions/session-orchestrator.js")).default;
+      const localTools = new Map<string, any>();
+      const localHandlers = new Map<string, any>();
+      fresh({
+        registerTool: (tool: any) => localTools.set(tool.name, tool),
+        on: (event: string, handler: any) => localHandlers.set(event, handler),
+        sendMessage: vi.fn(), sendUserMessage: vi.fn(), appendEntry: vi.fn(),
+      } as any);
+      const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+      await localHandlers.get("session_start")?.({}, ctx);
+      const tool = localTools.get("sessions_spawn");
+      for (let i = 0; i < 6; i += 1) {
+        const result = await tool.execute(`call-${i}`, { name: `worker-${i}`, task: "work" }, undefined, undefined, ctx);
+        expect(result.isError).toBeFalsy();
+      }
+      const overflow = await tool.execute("call-7", { name: "worker-7", task: "work" }, undefined, undefined, ctx);
+      expect(overflow.isError).toBe(true);
+      expect(resultText(overflow)).toMatch(/spawn cap 6/);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("reserves spawn slots before awaits so concurrent calls cannot exceed the cap", async () => {
     const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
     await activate(ctx);
