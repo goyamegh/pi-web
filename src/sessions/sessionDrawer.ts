@@ -107,7 +107,7 @@ const sessionDrawerOpenStorageKey = "pi-web-session-drawer-open";
 const sessionLaneFocusStorageKey = "pi-web-session-lane-focus";
 // The session explicitly requested by the page URL at boot (deep link / reload).
 // Captured at module load, before the app rewrites the URL to whatever becomes active.
-const bootRequestedSessionId = readActiveSessionIdFromUrl();
+const bootRequestedSessionId = typeof location === "undefined" ? "" : readActiveSessionIdFromUrl();
 const sessionLaneOrder: SessionLaneId[] = ["pinned", "parked", "bookmarks"];
 
 type PersistedLaneFocus = { lane: SessionLaneId; sessions: Partial<Record<SessionLaneId, string>> };

@@ -31,10 +31,10 @@ const WATCH_ENTRY = "orchestrator-watch";
 const RESOLVED_ENTRY = "orchestrator-watch-resolved";
 // Concurrent spawn cap. Default 4; override per deployment with
 // PI_WEB_ORCHESTRATOR_MAX_WORKERS (positive integer) for heavier fan-out.
-const MAX_WORKERS = (() => {
+function maxWorkers(): number {
   const raw = Number(process.env.PI_WEB_ORCHESTRATOR_MAX_WORKERS);
   return Number.isInteger(raw) && raw > 0 ? raw : 4;
-})();
+}
 const POLL_MS = 2500;
 const WAKEUP_SUMMARY_CHARS = 2000;
 
@@ -452,9 +452,10 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           };
         }
         const spawnSlotsInUse = spawnedWorkers.size + reservedSpawnSlots;
-        if (spawnSlotsInUse >= MAX_WORKERS) {
+        const cap = maxWorkers();
+        if (spawnSlotsInUse >= cap) {
           return {
-            content: [{ type: "text", text: `Refused: already running or starting ${spawnSlotsInUse} spawned workers (spawn cap ${MAX_WORKERS}; sessions watched after sessions_prompt do not count). Wait for a wakeup or abort one first.` }],
+            content: [{ type: "text", text: `Refused: already running or starting ${spawnSlotsInUse} spawned workers (spawn cap ${cap}; sessions watched after sessions_prompt do not count). Wait for a wakeup or abort one first.` }],
             isError: true,
             details: {},
           };
