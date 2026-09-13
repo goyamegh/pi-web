@@ -696,12 +696,58 @@ test.describe("session quick bar", () => {
     await page.locator(".sessionLayersButton").click();
     await page.locator('.sessionLaneDrawerSection[data-lane="pinned"] .sessionLaneDrawerHeading').click();
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    // The URL is written once the open completes; reloading before that would
+    // legitimately restore the previous session from the (stale) URL.
+    await expect(page).toHaveURL(/sessionId=mock-current/);
     await page.reload();
     await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toHaveClass(/\bactive\b/);
 
     await page.locator(".sessionLayersButton").click();
     await page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] .sessionLaneDrawerHeading').click();
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+  });
+
+  test("a ?sessionId deep link to an unpinned session is not overridden by persisted lane focus", async ({ page }) => {
+    // Regression: on first load the persisted lane focus opened the remembered /
+    // first session of the focused lane, replacing the explicitly requested
+    // session and rewriting the URL ("wrong session opens from a shared link").
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.addInitScript(() => {
+      localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current" } }));
+    });
+    const opens: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/api/sessions/open")) opens.push(JSON.parse(request.postData() || "{}").sessionId);
+    });
+
+    await page.goto("/?sessionId=mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    // Give the deferred lane-focus restore a chance to (wrongly) fire.
+    await page.waitForTimeout(500);
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    expect(new URL(page.url()).searchParams.get("sessionId")).toBe("mock-older");
+    expect(opens).not.toContain("mock-current");
+  });
+
+  test("a ?sessionId deep link to a pinned session becomes that lane's focus", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.addInitScript(() => {
+      localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current" } }));
+    });
+
+    await page.goto("/?sessionId=mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await page.waitForTimeout(500);
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-older"]')).toHaveClass(/\bactive\b/);
+    const focus = await page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}"));
+    expect(focus.lane).toBe("bookmarks");
+    expect(focus.sessions.bookmarks).toBe("mock-older");
   });
 
   test("moving the active session follows it, while a background move preserves lane and destination focus", async ({ page }) => {
@@ -930,7 +976,8 @@ test.describe("session quick bar", () => {
     await worker.locator(".sessionItemMarkerBtn").click();
     await expect(parent).toHaveClass(/marker-blue/);
     await expect(worker).toHaveClass(/marker-blue/);
-    await expect(page.locator(".sessionItem")).toHaveCount(2);
+    // Fork: the mock list also carries the Claude Code session (mock-cc).
+    await expect(page.locator(".sessionItem")).toHaveCount(3);
     await quickBlue.click();
     await expect(parent.locator(".sessionItemMarkerBtn")).toHaveClass(/toolPin/);
   });
@@ -1030,7 +1077,8 @@ test.describe("session quick bar", () => {
     });
     await page.goto("/");
     await page.locator("#sessionButton").click();
-    await expect(page.locator(".sessionItem")).toHaveCount(2);
+    // Fork: the mock list also carries the Claude Code session (mock-cc).
+    await expect(page.locator(".sessionItem")).toHaveCount(3);
     sessionListRequests = 0;
 
     for (let index = 0; index < 5; index += 1) {

@@ -6,7 +6,7 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import { panelOverlayModeQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
+import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, readActiveSessionIdFromUrl, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
@@ -105,6 +105,9 @@ function shouldCloseDrawerAfterSessionSwitch() {
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
 const sessionDrawerOpenStorageKey = "pi-web-session-drawer-open";
 const sessionLaneFocusStorageKey = "pi-web-session-lane-focus";
+// The session explicitly requested by the page URL at boot (deep link / reload).
+// Captured at module load, before the app rewrites the URL to whatever becomes active.
+const bootRequestedSessionId = readActiveSessionIdFromUrl();
 const sessionLaneOrder: SessionLaneId[] = ["pinned", "parked", "bookmarks"];
 
 type PersistedLaneFocus = { lane: SessionLaneId; sessions: Partial<Record<SessionLaneId, string>> };
@@ -690,7 +693,16 @@ export function createSessions(options: {
     if ((state.pinnedSessions.length > 0 || state.pinnedFolders.length > 0 || spawnOrigins().length > 0) && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
     if (!restoredPersistedLaneFocus) {
       restoredPersistedLaneFocus = true;
-      window.setTimeout(() => { void switchFocusedLane(focusedLane); }, 0);
+      if (bootRequestedSessionId && state.currentSessionId === bootRequestedSessionId) {
+        // An explicit ?sessionId deep link wins over persisted lane focus. Adopt
+        // the requested session as the focus instead of switching away to the
+        // remembered (or first) session of the previously focused lane.
+        const lane = laneOf(bootRequestedSessionId);
+        if (lane) { focusedLane = lane; focusedSessionByLane[lane] = bootRequestedSessionId; saveLaneFocus(); }
+        renderSessionBar();
+      } else {
+        window.setTimeout(() => { void switchFocusedLane(focusedLane); }, 0);
+      }
     }
   }
 
