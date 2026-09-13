@@ -33,6 +33,62 @@ test.describe("composer layout", () => {
     await expect(bar.locator(".repoInfoHash")).toBeVisible();
   });
 
+  test("repo-info bar keeps a single-column layout while the active worker dock is shown", async ({ page }) => {
+    // Regression: in Minimal density with running spawned workers, upstream's worker dock shifts
+    // the extension footer to grid row 6 — the fork's repo bar's row. Two
+    // auto-column items in one row made CSS grid auto-place the bar into an
+    // implicit second column, squeezing the chat to roughly half the width and
+    // parking the bar in the dead space on the right.
+    const now = "2026-01-01T00:00:00.000Z";
+    await page.request.post("/api/mock/reset");
+    // The worker dock only renders in Minimal density.
+    await page.request.patch("/api/settings", { data: { appearance: { density: "minimal" } } });
+    await page.route("**/api/settings", (route) => route.request().method() === "GET"
+      ? route.fulfill({ json: { settings: { appearance: { density: "minimal" } } } })
+      : route.continue());
+    await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: [
+      { sessionId: "worker-run", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
+    ] } });
+    // An extension footer (e.g. a status line) must be present: the collision
+    // only manifests when the footer and the repo bar both occupy a row.
+    await page.route("**/api/state**", async (route) => {
+      const response = await route.fetch();
+      const state = await response.json();
+      state.webContributions = [{ version: 1, key: "test-footer", slot: "footer", kind: "static", view: { kind: "text", lines: ["footer status"] } }];
+      await route.fulfill({ response, json: state });
+    });
+    await page.route(/\/api\/sessions(?:\?.*)?$/, (route) => route.fulfill({ json: { ok: true, sessions: [
+      { id: "mock-current", name: "Current parent", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: true, unread: false },
+      { id: "worker-run", name: "Compile assets", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: false, unread: false },
+    ] } }));
+    await page.goto("/");
+    await page.request.post("/api/mock/event", { data: { type: "session_runtime_changed", sessionId: "worker-run", runtime: {
+      loaded: true, isRunning: true, isStreaming: true, isRetrying: false, isCompacting: false, pendingMessageCount: 0,
+    } } });
+    await expect(page.locator("#waitingSessions.activeWorkerDock")).toBeVisible();
+    const bar = page.locator("#repoInfoBar");
+    await expect(bar).toBeVisible();
+    await expect(page.locator("#extensionFooter")).toBeVisible();
+
+    const layout = await page.evaluate(() => {
+      const app = document.querySelector(".app")!;
+      const rect = (el: Element | null) => el ? el.getBoundingClientRect() : null;
+      const app_ = rect(app)!; const messages = rect(document.querySelector("#messages"))!;
+      const bar = rect(document.querySelector("#repoInfoBar"))!; const footer = rect(document.querySelector("#extensionFooter"));
+      return {
+        columns: getComputedStyle(app).gridTemplateColumns.trim().split(/\s+/).length,
+        appW: Math.round(app_.width), messagesW: Math.round(messages.width), barX: Math.round(bar.x), barW: Math.round(bar.width),
+        barBelowFooter: footer ? bar.top >= footer.bottom - 1 : true,
+        barRow: getComputedStyle(document.querySelector("#repoInfoBar")!).gridRowStart,
+      };
+    });
+    expect(layout.columns).toBe(1);
+    expect(layout.messagesW).toBe(layout.appW);
+    expect(layout.barW).toBe(layout.appW);
+    expect(layout.barBelowFooter).toBe(true);
+    expect(layout.barRow).toBe("7");
+  });
+
   test("repo-info bar passes activeCwd to /api/repo-info when set", async ({ page }) => {
     // Intercept /api/repo-info and capture the cwd parameter
     const cwdParams: string[] = [];

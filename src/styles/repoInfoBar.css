@@ -1,8 +1,14 @@
 .repoInfoBar {
   /* Row 6 of the .app grid — upstream renumbered rows in v0.5.0 (pending
      messages row 3, composer 4, extension footer 5); the repo bar sits between
-     the footer and the session tabs (7). */
+     the footer and the session tabs (7). When the active worker dock is shown
+     (#waitingSessions), every row below the composer shifts down by one — see
+     activeWorkerDock.css — so the repo bar moves to row 7 and the tabs to 8.
+     Always pin to column 1: an implicit row collision with grid-column:auto
+     would otherwise auto-place this bar into a phantom second column and
+     squeeze the whole chat. */
   grid-row: 6;
+  grid-column: 1;
   display: flex;
   flex-wrap: wrap;
   align-items: center;

@@ -1,9 +1,13 @@
-/* Keep queued prompts and workers in separate flow rows above the composer. */
-.app:has(> #waitingSessions:not([hidden])) { grid-template-rows: auto minmax(0, 1fr) auto auto auto auto auto; }
+/* Keep queued prompts and workers in separate flow rows above the composer.
+   Fork: the repo info bar (row 6 in the base layout) shifts along with the
+   footer so it never shares a row with it — a shared row auto-placed the bar
+   into an implicit second grid column. */
+.app:has(> #waitingSessions:not([hidden])) { grid-template-rows: auto minmax(0, 1fr) auto auto auto auto auto auto; }
 .app:has(> #waitingSessions:not([hidden])) > #waitingSessions { grid-row: 4; }
 .app:has(> #waitingSessions:not([hidden])) > .composer { grid-row: 5; }
 .app:has(> #waitingSessions:not([hidden])) > .extensionFooter { grid-row: 6; }
-.app:has(> #waitingSessions:not([hidden])) > .sessionBar { grid-row: 7; }
+.app:has(> #waitingSessions:not([hidden])) > .repoInfoBar { grid-row: 7; }
+.app:has(> #waitingSessions:not([hidden])) > .sessionBar { grid-row: 8; }
 
 .waitingSessions.activeWorkerDock {
   position: relative;
