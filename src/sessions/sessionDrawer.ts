@@ -2292,6 +2292,10 @@ export function createSessions(options: {
       currentId = byId.get(currentId)?.node.parentId;
     }
     for (const affectedId of affectedIds) {
+      // Fork: never swap out the row that is being inline-renamed — replacing it
+      // removes the focused <input>, whose blur would save a partial value.
+      // finish() re-renders the list once the rename ends.
+      if (affectedId === activeRenameSessionId) continue;
       const branch = byId.get(affectedId);
       if (!branch) continue;
       const rows = elements.sessionListEl.querySelectorAll<HTMLElement>(`.sessionItem[data-session-id="${CSS.escape(affectedId)}"]`);

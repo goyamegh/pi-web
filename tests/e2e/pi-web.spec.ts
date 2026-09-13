@@ -416,6 +416,47 @@ test.describe("composer layout", () => {
     await expect(page.locator("#statusTitle")).toHaveText("Renamed on iPhone");
   });
 
+  test("drawer rename button is styled as a flat hover icon, not a default button", async ({ page }) => {
+    // Regression: the .sessionRenameBtn / .sessionRenameInput rules were dropped
+    // during an upstream merge, leaving the pencil as an unstyled native <button>
+    // (visible border, padding, always shown) that broke row alignment.
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+    const row = page.locator(".sessionItem.current").first();
+    const rename = row.locator(".sessionRenameBtn");
+    const actions = row.locator(".sessionItemActionsBtn");
+
+    const renameStyle = await rename.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { border: s.borderTopWidth, bg: s.backgroundColor, width: s.width, height: s.height, opacity: s.opacity };
+    });
+    expect(renameStyle.border).toBe("0px");
+    expect(renameStyle.bg).toBe("rgba(0, 0, 0, 0)");
+    expect(renameStyle.width).toBe("28px");
+    expect(renameStyle.height).toBe("32px");
+    // Hidden until hover (desktop project); touch projects show it dimmed.
+    expect(["0", "0.55"]).toContain(renameStyle.opacity);
+
+    // Same row height as its neighbour and laid out immediately before the kebab.
+    const [renameBox, actionsBox, rowBox] = await Promise.all([rename.boundingBox(), actions.boundingBox(), row.boundingBox()]);
+    expect(renameBox && actionsBox && rowBox).toBeTruthy();
+    expect(Math.round(renameBox!.height)).toBe(Math.round(actionsBox!.height));
+    expect(Math.round(renameBox!.x + renameBox!.width)).toBe(Math.round(actionsBox!.x));
+    // The row must not overflow its drawer column.
+    expect(actionsBox!.x + actionsBox!.width).toBeLessThanOrEqual(rowBox!.x + rowBox!.width + 1);
+
+    await row.hover();
+    await expect(rename).toHaveCSS("opacity", "0.55");
+
+    await rename.click();
+    const input = row.locator(".sessionRenameInput");
+    await expect(input).toBeVisible();
+    await expect(input).toHaveCSS("border-top-width", "1px");
+    await expect(input).toHaveCSS("height", "26px");
+    await input.press("Escape");
+  });
+
   test("inline rename of a streaming session is not clobbered by runtime updates", async ({ page }) => {
     // Regression: while a session is streaming, session_runtime_changed events
     // (and pi_event-driven session refreshes) used to call renderSessionList,
