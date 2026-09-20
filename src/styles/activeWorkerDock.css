@@ -1,4 +1,4 @@
-/* Keep queued prompts and workers in separate flow rows above the composer.
+/* Keep queued prompts and declared session dependencies in separate flow rows.
    Fork: the repo info bar (row 6 in the base layout) shifts along with the
    footer so it never shares a row with it — a shared row auto-placed the bar
    into an implicit second grid column. */
@@ -16,7 +16,7 @@
   max-width: none;
   margin: 0 30px 7px;
   display: flex;
-  height: 32px;
+  height: 29px;
   align-items: center;
   gap: 6px;
   overflow-x: auto;
@@ -34,12 +34,12 @@
 .activeWorkerPill {
   display: inline-flex;
   flex: 0 0 auto;
-  min-height: 25px;
-  max-width: 220px;
+  min-height: 24px;
+  max-width: 180px;
   box-sizing: border-box;
   align-items: center;
-  gap: 6px;
-  padding: 0 9px;
+  gap: 5px;
+  padding: 0 8px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
   border-radius: 999px;
@@ -69,12 +69,6 @@
   text-overflow: ellipsis;
 }
 
-.activeWorkerStatus {
-  flex: 0 0 auto;
-  color: #a69b83;
-  font-size: 9px;
-}
-
 .activeWorkerDot {
   width: 6px;
   height: 6px;
@@ -84,10 +78,6 @@
   animation: activeWorkerPulse 1.4s ease-in-out infinite;
 }
 
-.activeWorkerDot--queued {
-  background: #facc15;
-  animation-duration: 2s;
-}
 
 @keyframes activeWorkerPulse {
   0%, 100% { opacity: .5; }
@@ -96,13 +86,18 @@
 
 .pendingMessages:not([hidden]) ~ .waitingSessions.activeWorkerDock { margin-bottom: 12px; }
 
+/* Density changes spacing only; membership and status stay canonical. */
+:root[data-density="comfortable"] .waitingSessions.activeWorkerDock { height: 33px; gap: 8px; }
+:root[data-density="comfortable"] .activeWorkerPill { min-height: 28px; padding-inline: 10px; }
+:root[data-density="compact"] .waitingSessions.activeWorkerDock { height: 31px; }
+
 @media (max-width: 600px) {
   .waitingSessions.activeWorkerDock { margin-inline: 22px; }
 }
 
 @media (pointer: coarse) {
-  .activeWorkerPill { min-height: 44px; padding-inline: 12px; }
-  .waitingSessions.activeWorkerDock { height: 44px; padding-block: 0; }
+  .activeWorkerPill { min-height: 32px; padding-inline: 10px; }
+  .waitingSessions.activeWorkerDock { height: 34px; padding-block: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -36,6 +36,11 @@ test("Minimal is selectable, persisted across reload, and can switch back", asyn
 });
 
 test("every activity run folds; prose, notices, and errors remain boundaries", async ({ page }) => {
+  // Density is global on the shared mock server, so another project can change it
+  // between beforeEach's PATCH and this page's startup settings request.
+  await page.route("**/api/settings", route => route.request().method() === "GET"
+    ? route.fulfill({ json: { settings: { appearance: { density: "minimal" } } } })
+    : route.continue());
   await page.route("**/api/messages?*", route => route.fulfill({ json: { messages: [
     user("request"), thought("first reasoning", "t1"), tool("read", "contents", "r1"),
     prose("between runs"), tool("write", "done", "single"),
@@ -71,6 +76,11 @@ test("every activity run folds; prose, notices, and errors remain boundaries", a
 });
 
 test("standalone tools use independent quiet summaries in Minimal, including session spawns", async ({ page }) => {
+  // Density is global on the shared mock server, so pin this test's startup read
+  // while other viewport projects mutate their own density settings.
+  await page.route("**/api/settings", route => route.request().method() === "GET"
+    ? route.fulfill({ json: { settings: { appearance: { density: "minimal" } } } })
+    : route.continue());
   const worker = { sessionId: "worker-single", name: "Single worker", status: "running" };
   await page.route("**/api/messages?*", route => route.fulfill({ json: { messages: [
     tool("read", "ordinary result body", "single-read"), prose("first boundary"),

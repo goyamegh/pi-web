@@ -233,12 +233,11 @@ describe("sessions_spawn tool surface", () => {
     expect(calls).toEqual([]);
   });
 
-  it("registers the orchestration tools", async () => {
+  it("registers worker-management tools, leaving sessions_read to core", async () => {
     await activate(makeCtx());
     expect([...tools.keys()].sort()).toEqual([
       "sessions_abort",
       "sessions_prompt",
-      "sessions_read",
       "sessions_spawn",
       "sessions_status",
     ]);
@@ -335,6 +334,17 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(calls.findIndex((c) => c.path === "/api/model")).toBeLessThan(calls.findIndex((c) => c.path === "/api/prompt"));
     expect(pathsFor("POST")).not.toContain("/api/sessions/delete");
     expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenLastCalledWith({ sessionIds: ["worker-1"] });
+  });
+
+  it("keeps the last declaration across shutdown for atomic reload or idle handoff", async () => {
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    await spawn(ctx, { name: "scout", task: "look around" });
+    const callsBeforeShutdown = ctx.ui.web.reportSettlementDependencies.mock.calls.length;
+
+    await handlers.get("session_shutdown")?.({}, ctx);
+
+    expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenLastCalledWith({ sessionIds: ["worker-1"] });
+    expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenCalledTimes(callsBeforeShutdown);
   });
 
   it("returns only the category name after a successful spawn and keeps the model mapping private", async () => {

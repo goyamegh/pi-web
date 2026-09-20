@@ -1,6 +1,6 @@
 import type { ApiHeaders } from "../app/api.js";
 import { iconElement, type IconName } from "../app/icons.js";
-import type { AttachedImage, Role } from "../app/types.js";
+import { sessionCitationFromHref, type AttachedImage, type Role, type SessionCitation } from "../app/types.js";
 import type { MessageDto } from "../../server/session/dto.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
@@ -29,6 +29,8 @@ export type MessageMetadata = {
   parentEntryId?: string;
   copyText?: string;
   timestamp?: string;
+  /** Internal identity for prose blocks belonging to one assistant response. */
+  responseKey?: string;
 };
 
 export type TranscriptTerminalFailure = {
@@ -88,6 +90,9 @@ export type MessageList = {
     isStreaming?: boolean;
   }) => void;
   scrollToBottom: () => void;
+  /** Center, focus, and briefly highlight a normal persisted message. */
+  scrollToEntry: (entryId: string) => boolean;
+  copyCitation: (reference: SessionCitation) => Promise<void>;
 };
 
 function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, apiHeaders?: ApiHeaders, onMissing?: () => void) {
@@ -278,6 +283,10 @@ function transcriptRuntimeState(messages: any[], isStreaming?: boolean): Transcr
 export function createMessageList(options: {
   /** Switch to a referenced session in place instead of reloading the app. */
   openSession?: (sessionId: string) => void;
+  /** Open a Markdown citation; structured session chips keep openSession. */
+  openCitation?: (reference: SessionCitation) => void | Promise<void>;
+  getSessionId?: () => string;
+  citationHref?: (reference: SessionCitation) => string;
   /** Open an extension panel from a transcript deep link. */
   openPanel?: (key: string, initialEvent: PiWebPanelEvent) => void;
   messagesEl: HTMLDivElement;
@@ -286,17 +295,28 @@ export function createMessageList(options: {
   apiHeaders?: ApiHeaders;
   quoteReplies?: QuoteRepliesController;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction, openSession, openPanel, apiHeaders, quoteReplies } = options;
+  const { messagesEl, markdown, onMessageAction, openSession, openCitation, getSessionId = () => "", citationHref, openPanel, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
+  const streamingTextContent = new Map<string, string>();
+  const streamingTextBodies = new Map<HTMLElement, string>();
+  const assistantMessageText = new WeakMap<HTMLDivElement, string>();
   let currentStreamingTextKey = "current";
+  let assistantResponseSerial = 0;
+  let currentAssistantResponseKey = "";
+  let currentStreamingResponseKey = `stream:${assistantResponseSerial}`;
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
   const thinkingCardRawText = new WeakMap<HTMLDivElement, string>();
   let currentStreamingThinkingKey = "current";
   let isStreaming = false;
   let shouldFollowStream = true;
   let programmaticScroll = false;
-  let userScrollIntent = false;
+  // A gesture can arrive before its corresponding scroll event. Keep that
+  // pending intent separate from the settled follow state so layout work in
+  // between cannot pull the viewport back to the tail.
+  let pendingUserScrollIntent = false;
+  let pendingUserScrollTop = 0;
+  let pendingUserScrollDirection = 0;
   let refreshSerial = 0;
   let mutationSerial = 0;
   let applyingRefresh = false;
@@ -308,7 +328,7 @@ export function createMessageList(options: {
     onLayout: () => {
       // A layout update must not cancel explicit scroll intent before the
       // browser has physically moved the viewport (e.g. the first wheel event).
-      if (userScrollIntent && !shouldFollowStream) setJumpButtonVisible(true);
+      if (!shouldFollowStream) setJumpButtonVisible(true);
       else showJumpButtonIfAwayFromBottom();
     },
   });
@@ -338,7 +358,12 @@ export function createMessageList(options: {
     const composerEl = document.querySelector<HTMLElement>(".composer");
     if (!composerEl) return;
     const composerRect = composerEl.getBoundingClientRect();
-    const bottom = Math.max(jumpButtonGap, window.innerHeight - composerRect.top + jumpButtonGap);
+    const attachmentsEl = composerEl.querySelector<HTMLElement>(".attachments:not(:empty)");
+    const attachmentsRect = attachmentsEl?.getBoundingClientRect();
+    const obstructionTop = attachmentsRect && attachmentsRect.height > 0
+      ? Math.min(composerRect.top, attachmentsRect.top)
+      : composerRect.top;
+    const bottom = Math.max(jumpButtonGap, window.innerHeight - obstructionTop + jumpButtonGap);
     jumpButton.style.setProperty("--jump-to-latest-bottom", `${Math.ceil(bottom)}px`);
   }
 
@@ -346,7 +371,10 @@ export function createMessageList(options: {
   window.addEventListener("resize", updateJumpButtonOffset);
   const composerEl = document.querySelector<HTMLElement>(".composer");
   if (composerEl && "ResizeObserver" in window) {
-    new ResizeObserver(updateJumpButtonOffset).observe(composerEl);
+    const jumpOffsetObserver = new ResizeObserver(updateJumpButtonOffset);
+    jumpOffsetObserver.observe(composerEl);
+    const attachmentsEl = composerEl.querySelector<HTMLElement>(".attachments");
+    if (attachmentsEl) jumpOffsetObserver.observe(attachmentsEl);
   }
 
   function invalidatePendingRefreshes() {
@@ -393,7 +421,7 @@ export function createMessageList(options: {
   function scrollToBottom() {
     if (bulkRendering) return;
     if (!shouldFollowStream) {
-      if (isAtBottom() && !userScrollIntent) {
+      if (isAtBottom() && !pendingUserScrollIntent) {
         shouldFollowStream = true;
         setJumpButtonVisible(false);
       } else {
@@ -405,11 +433,28 @@ export function createMessageList(options: {
     setJumpButtonVisible(false);
   }
 
+  function scrollToEntry(entryId: string) {
+    const target = Array.from(messagesEl.querySelectorAll<HTMLDivElement>(".message[data-entry-id]"))
+      .find((message) => message.dataset.entryId === entryId);
+    if (!target) return false;
+    shouldFollowStream = false;
+    pendingUserScrollIntent = false;
+    target.scrollIntoView({ block: "center", inline: "nearest" });
+    target.tabIndex = -1;
+    target.classList.add("sessionCitationTarget");
+    target.focus({ preventScroll: true });
+    window.setTimeout(() => target.isConnected && target.classList.remove("sessionCitationTarget"), 1_200);
+    setJumpButtonVisible(!isAtBottom());
+    return true;
+  }
+
   function beginStreamFollow() {
     invalidatePendingRefreshes();
+    currentStreamingResponseKey = `stream:${++assistantResponseSerial}`;
+    currentAssistantResponseKey = currentStreamingResponseKey;
     isStreaming = true;
     shouldFollowStream = true;
-    userScrollIntent = false;
+    pendingUserScrollIntent = false;
     activity.schedule();
     forceScrollToBottom();
     setJumpButtonVisible(false);
@@ -418,30 +463,57 @@ export function createMessageList(options: {
   function endStreamFollow() {
     isStreaming = false;
     activity.schedule();
-    if (isAtBottom()) setJumpButtonVisible(false);
+    // A wheel/key intent can arrive before the browser physically moves the
+    // viewport. Settlement must not erase that explicit intent merely because
+    // layout still reports the old bottom position.
+    if (!shouldFollowStream) setJumpButtonVisible(true);
+    else if (isAtBottom()) setJumpButtonVisible(false);
   }
 
-  function isScrollIntentAwayFromBottom(event: Event) {
-    if (event instanceof WheelEvent) return event.deltaY < 0;
-    if (event instanceof KeyboardEvent) {
-      return event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey);
-    }
-    return false;
+  function userScrollDirection(event: Event) {
+    if (event instanceof WheelEvent) return Math.sign(event.deltaY);
+    if (!(event instanceof KeyboardEvent)) return 0;
+    if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) return -1;
+    if (["ArrowDown", "PageDown", "End"].includes(event.key) || event.key === " ") return 1;
+    return 0;
   }
 
   function pauseStreamFollow(event: Event) {
     if (programmaticScroll) return;
-    userScrollIntent = true;
+    const direction = userScrollDirection(event);
+    const canScroll = messagesEl.scrollHeight > messagesEl.clientHeight + 1;
+    const atPhysicalBottom = distanceFromBottom() <= 1;
+    const canMove = canScroll
+      && !(direction < 0 && messagesEl.scrollTop <= 1)
+      && !(direction > 0 && atPhysicalBottom);
+    // A no-op gesture at an edge must not leave stale intent behind.
+    if ((!canMove && direction !== 0) || !canScroll) {
+      pendingUserScrollIntent = false;
+      if (atPhysicalBottom) {
+        shouldFollowStream = true;
+        setJumpButtonVisible(false);
+      }
+      return;
+    }
+    pendingUserScrollIntent = true;
+    pendingUserScrollTop = messagesEl.scrollTop;
+    pendingUserScrollDirection = direction;
     if (!isStreaming) return;
-    if (isAtBottom() && !isScrollIntentAwayFromBottom(event)) return;
     shouldFollowStream = false;
     setJumpButtonVisible(true);
   }
 
   messagesEl.addEventListener("click", (event) => {
     const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
-    if (!anchor || !messagesEl.contains(anchor)) return;
+    if (!anchor || !messagesEl.contains(anchor) || event.defaultPrevented) return;
     const href = anchor.getAttribute("href")?.trim() || "";
+    if (anchor.dataset.sessionCitation) {
+      const reference = sessionCitationFromHref(href);
+      if (!reference || !openCitation || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      event.preventDefault();
+      void Promise.resolve(openCitation(reference));
+      return;
+    }
     if (!href.startsWith("#panel:")) return;
     event.preventDefault();
     const target = href.slice("#panel:".length);
@@ -454,29 +526,59 @@ export function createMessageList(options: {
     const payload = Object.fromEntries(params);
     openPanel?.(key, { action: "deep-link", payload });
   });
+  function settlePointerIntent() {
+    if (!pendingUserScrollIntent || Math.abs(messagesEl.scrollTop - pendingUserScrollTop) > 1) return;
+    pendingUserScrollIntent = false;
+    if (isAtBottom()) {
+      shouldFollowStream = true;
+      setJumpButtonVisible(false);
+    }
+  }
+
   messagesEl.addEventListener("wheel", pauseStreamFollow, { passive: true });
   messagesEl.addEventListener("touchstart", pauseStreamFollow, { passive: true });
+  messagesEl.addEventListener("touchend", settlePointerIntent, { passive: true });
+  messagesEl.addEventListener("touchcancel", settlePointerIntent, { passive: true });
   messagesEl.addEventListener("pointerdown", pauseStreamFollow);
+  messagesEl.addEventListener("pointerup", settlePointerIntent);
+  messagesEl.addEventListener("pointercancel", settlePointerIntent);
   messagesEl.addEventListener("keydown", (event) => {
     if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) pauseStreamFollow(event);
   });
   messagesEl.addEventListener("scroll", () => {
     if (!actionMenu.hidden) closeActionMenu();
     if (programmaticScroll) return;
+    // Ignore layout/anchoring events until the viewport has moved in the
+    // gesture's direction. Once it has, the settled position is authoritative.
+    if (pendingUserScrollIntent) {
+      const delta = messagesEl.scrollTop - pendingUserScrollTop;
+      if (Math.abs(delta) <= 1 || (pendingUserScrollDirection !== 0 && Math.sign(delta) !== pendingUserScrollDirection)) return;
+      if (!isAtBottom()) {
+        if (pendingUserScrollDirection === 0) pendingUserScrollDirection = Math.sign(delta);
+        // The gesture moved away. Pause now, but retain its intent so a later
+        // layout/anchoring event at the bottom cannot silently resume follow.
+        shouldFollowStream = false;
+        setJumpButtonVisible(true);
+        return;
+      }
+      // Upward intent can coincide with anchoring that changes scrollTop while
+      // remaining at the bottom; only return/toward-bottom intent may resume.
+      if (pendingUserScrollDirection < 0) return;
+      pendingUserScrollIntent = false;
+    }
+    if (isAtBottom()) {
+      shouldFollowStream = true;
+      setJumpButtonVisible(false);
+      return;
+    }
     if (shouldFollowStream && !isNearBottom()) {
       shouldFollowStream = false;
       setJumpButtonVisible(true);
-      return;
-    }
-    if (!shouldFollowStream && isAtBottom()) {
-      shouldFollowStream = true;
-      userScrollIntent = false;
-      setJumpButtonVisible(false);
     }
   }, { passive: true });
   jumpButton.addEventListener("click", () => {
     shouldFollowStream = true;
-    userScrollIntent = false;
+    pendingUserScrollIntent = false;
     forceScrollToBottom();
     setJumpButtonVisible(false);
   });
@@ -571,16 +673,26 @@ export function createMessageList(options: {
       }
     }
 
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     const textarea = document.createElement("textarea");
     textarea.value = text;
     textarea.setAttribute("readonly", "true");
     textarea.style.position = "fixed";
     textarea.style.left = "-9999px";
     textarea.style.top = "0";
-    document.body.append(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    textarea.remove();
+    try {
+      document.body.append(textarea);
+      textarea.select();
+      if (!document.execCommand("copy")) throw new Error("Clipboard unavailable");
+    } finally {
+      textarea.remove();
+      if (previousFocus?.isConnected) try { previousFocus.focus({ preventScroll: true }); } catch { previousFocus.focus(); }
+    }
+  }
+
+  function copyCitation(reference: SessionCitation) {
+    if (!citationHref) return Promise.reject(new Error("Citation copying is unavailable"));
+    return copyTextToClipboard(citationHref(reference));
   }
 
   function renderMessageActionIcon(button: HTMLButtonElement, icon: IconName, title: string) {
@@ -663,8 +775,8 @@ export function createMessageList(options: {
 
     const actionText = () => copyText || body.textContent || "";
     const entryId = metadata.entryId?.trim();
+    if (entryId) messageEl.dataset.entryId = entryId;
     if (entryId && onMessageAction) {
-      messageEl.dataset.entryId = entryId;
       const runAction = (action: MessageActionKind) => {
         void onMessageAction({ action, entryId, parentEntryId: metadata.parentEntryId?.trim(), role, text: actionText() });
       };
@@ -683,9 +795,58 @@ export function createMessageList(options: {
         () => flashActionButton(copyButton, "x", "Copy failed"),
       );
     });
+    const sessionId = getSessionId().trim();
+    if (entryId && sessionId && citationHref) {
+      const copyLinkButton = appendMessageActionButton(actions, "copy", "Copy link to this message", "Copy link", () => {
+        void copyCitation({ sessionId, entryId }).then(
+          () => flashActionButton(copyLinkButton, "check", "Copied link"),
+          () => flashActionButton(copyLinkButton, "x", "Copy failed"),
+        );
+      });
+    }
 
     messageEl.append(actions);
     bindMobileActionMenu(messageEl, actions);
+  }
+
+  function reconcileAssistantMessageCollapse() {
+    const prose = Array.from(messagesEl.querySelectorAll<HTMLDivElement>(".message.assistant"));
+    const latestResponseKey = prose.at(-1)?.dataset.assistantResponseKey;
+    for (const message of prose) {
+      if (!message.classList.contains("collapsible") || message.dataset.collapsePreference) continue;
+      const latest = Boolean(latestResponseKey && message.dataset.assistantResponseKey === latestResponseKey);
+      message.classList.toggle("collapsed", !latest);
+      const toggle = message.querySelector<HTMLButtonElement>(".messageToggle");
+      if (toggle) toggle.textContent = latest ? "Show less" : "Show more";
+      if (latest && !bulkRendering) {
+        const body = message.querySelector<HTMLElement>(":scope > .body");
+        const text = assistantMessageText.get(message) || "";
+        if (body && text && !streamingTextBodies.has(body) && !body.dataset.markdownRendered) {
+          markdown.unobserve(body);
+          markdown.renderAssistantMarkdown(body, text);
+        }
+      }
+    }
+  }
+
+  function appendMessageCollapseToggle(div: HTMLDivElement, role: Role, body: HTMLElement) {
+    if (div.querySelector(":scope > .messageToggle")) return;
+    div.classList.add("collapsible");
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "messageToggle";
+    toggle.textContent = div.classList.contains("collapsed") ? "Show more" : "Show less";
+    toggle.addEventListener("click", () => {
+      const collapsed = div.classList.toggle("collapsed");
+      div.dataset.collapsePreference = collapsed ? "collapsed" : "expanded";
+      const text = assistantMessageText.get(div) || "";
+      if (!collapsed && role === "assistant" && text && !body.dataset.markdownRendered) {
+        markdown.unobserve(body);
+        markdown.renderAssistantMarkdown(body, text);
+      }
+      toggle.textContent = collapsed ? "Show more" : "Show less";
+    });
+    div.insertBefore(toggle, div.querySelector(":scope > .messageActions"));
   }
 
   function addMessage(role: Role, text: string, extraClass = "", images: AttachedImage[] = [], metadata: MessageMetadata = {}) {
@@ -693,8 +854,15 @@ export function createMessageList(options: {
     const div = document.createElement("div");
     const entryId = metadata.entryId?.trim();
     if (entryId) div.dataset.entryId = entryId;
+    if (role === "user") currentAssistantResponseKey = "";
+    if (role === "assistant") {
+      const responseKey = metadata.responseKey || currentAssistantResponseKey || entryId || `message:${++assistantResponseSerial}`;
+      currentAssistantResponseKey = responseKey;
+      div.dataset.assistantResponseKey = responseKey;
+    }
     const collapsible = shouldCollapseMessage(text);
-    div.className = `message ${role} ${extraClass}${collapsible ? " collapsible collapsed" : ""}`.trim();
+    div.className = `message ${role} ${extraClass}${collapsible ? ` collapsible${role === "assistant" ? "" : " collapsed"}` : ""}`.trim();
+    if (role === "assistant") assistantMessageText.set(div, text);
     const body = document.createElement("div");
     body.className = "body";
 
@@ -783,24 +951,11 @@ export function createMessageList(options: {
       div.append(baseline);
     }
 
-    if (collapsible) {
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "messageToggle";
-      toggle.textContent = "Show more";
-      toggle.addEventListener("click", () => {
-        const collapsed = div.classList.toggle("collapsed");
-        if (!collapsed && role === "assistant" && text && !body.dataset.markdownRendered) {
-          markdown.unobserve(body);
-          markdown.renderAssistantMarkdown(body, text);
-        }
-        toggle.textContent = collapsed ? "Show more" : "Show less";
-      });
-      div.append(toggle);
-    }
+    if (collapsible) appendMessageCollapseToggle(div, role, body);
 
     appendMessageActions(div, role, body, metadata.copyText ?? text, metadata);
     messagesEl.append(div);
+    reconcileAssistantMessageCollapse();
     activity.schedule();
     scrollToBottom();
     return div;
@@ -1037,14 +1192,27 @@ export function createMessageList(options: {
     return card;
   }
 
+  function clearStreamingText(flush = false) {
+    const hadStreamingText = streamingTextBodies.size > 0;
+    for (const [body, text] of streamingTextBodies) {
+      if (flush) markdown.finalizeStreamingAssistantMarkdown(body, text);
+      else markdown.cancelStreamingAssistantMarkdown(body);
+    }
+    streamingTextBodies.clear();
+    streamingTextBlocks.clear();
+    streamingTextContent.clear();
+    currentStreamingTextKey = "current";
+    if (flush && hadStreamingText) scrollToBottom();
+  }
+
   function clearInternal(invalidate = true) {
     if (invalidate) invalidatePendingRefreshes();
     quoteReplies?.clear();
+    clearStreamingText();
     messagesEl.textContent = "";
     thinkingSerial = 0;
+    currentAssistantResponseKey = "";
     streamingAssistant = null;
-    streamingTextBlocks.clear();
-    currentStreamingTextKey = "current";
     streamingThinkingCards.clear();
     currentStreamingThinkingKey = "current";
     setJumpButtonVisible(false);
@@ -1058,8 +1226,9 @@ export function createMessageList(options: {
 
   function resetStreamingAssistant() {
     streamingAssistant = null;
-    streamingTextBlocks.clear();
-    currentStreamingTextKey = "current";
+    // Unlike a transcript clear, a runtime boundary must not discard a final
+    // provider prefix when text_end was omitted.
+    clearStreamingText(true);
     streamingThinkingCards.clear();
     currentStreamingThinkingKey = "current";
   }
@@ -1068,20 +1237,20 @@ export function createMessageList(options: {
     return contentIndex === undefined || contentIndex === null ? currentStreamingTextKey : String(contentIndex);
   }
 
-  function beginStreamingAssistant() {
+  function createStreamingTextBlock(key: string) {
     invalidatePendingRefreshes();
-    if (!streamingAssistant?.isConnected) streamingAssistant = addMessage("assistant", "");
+    // Each indexed text part is a distinct persisted transcript part. Sharing
+    // one body lets independent buffers overwrite each other.
+    streamingAssistant = addMessage("assistant", "", "", [], { responseKey: currentStreamingResponseKey });
+    streamingTextBlocks.set(key, streamingAssistant);
+    streamingTextContent.set(key, "");
+    return streamingAssistant;
   }
 
   function startStreamingText(contentIndex?: number | string) {
     const key = textKey(contentIndex);
     currentStreamingTextKey = key;
-    let card = streamingTextBlocks.get(key);
-    if (!card?.isConnected) {
-      beginStreamingAssistant();
-      card = streamingAssistant!;
-      streamingTextBlocks.set(key, card);
-    }
+    if (!streamingTextBlocks.get(key)?.isConnected) createStreamingTextBlock(key);
   }
 
   function appendStreamingDelta(delta: string, contentIndex?: number | string) {
@@ -1089,24 +1258,36 @@ export function createMessageList(options: {
     const key = textKey(contentIndex);
     currentStreamingTextKey = key;
     let card = streamingTextBlocks.get(key);
-    if (!card?.isConnected || messagesEl.lastElementChild !== card) {
-      streamingAssistant = addMessage("assistant", "");
-      card = streamingAssistant;
-      streamingTextBlocks.set(key, card);
-    }
+    if (!card?.isConnected || messagesEl.lastElementChild !== card) card = createStreamingTextBlock(key);
+    const text = `${streamingTextContent.get(key) || ""}${delta || ""}`;
+    streamingTextContent.set(key, text);
+    assistantMessageText.set(card, text);
     const body = card.querySelector<HTMLElement>(".body");
-    if (body) body.textContent += delta || "";
-    scrollToBottom();
+    if (body) {
+      if (shouldCollapseMessage(text)) appendMessageCollapseToggle(card, "assistant", body);
+      streamingTextBodies.set(body, text);
+      reconcileAssistantMessageCollapse();
+      markdown.queueStreamingAssistantMarkdown(body, text, scrollToBottom);
+    }
   }
 
   function endStreamingText(content?: string, contentIndex?: number | string) {
     const key = textKey(contentIndex);
     const card = streamingTextBlocks.get(key);
-    if (card?.isConnected && typeof content === "string") {
+    const text = typeof content === "string" ? content : streamingTextContent.get(key) || "";
+    if (card?.isConnected) {
+      assistantMessageText.set(card, text);
       const body = card.querySelector<HTMLElement>(".body");
-      if (body) body.textContent = content;
+      if (body) {
+        if (shouldCollapseMessage(text)) appendMessageCollapseToggle(card, "assistant", body);
+        reconcileAssistantMessageCollapse();
+        markdown.finalizeStreamingAssistantMarkdown(body, text);
+        streamingTextBodies.delete(body);
+      }
     }
     streamingTextBlocks.delete(key);
+    streamingTextContent.delete(key);
+    scrollToBottom();
   }
 
   function thinkingKey(contentIndex?: number | string) {
@@ -1367,6 +1548,7 @@ export function createMessageList(options: {
       activity.restore();
       activityRestored = true;
       bulkRendering = false;
+      reconcileAssistantMessageCollapse();
       if (wasFollowing) scrollToBottom();
       else {
         programmaticScroll = true;
@@ -1401,6 +1583,8 @@ export function createMessageList(options: {
     invalidateRefreshes: invalidateExternalRefreshes,
     reconcileActivity: activity.schedule,
     scrollToBottom,
+    scrollToEntry,
+    copyCitation,
     startStreamingThinking,
   };
 }

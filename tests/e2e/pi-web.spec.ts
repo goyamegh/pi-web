@@ -615,7 +615,7 @@ test.describe("composer layout", () => {
     let sessionsRequestCount = 0;
 
     await page.route("**/api/sessions**", async (route) => {
-      if (route.request().method() !== "GET") {
+      if (route.request().method() !== "GET" || new URL(route.request().url()).pathname !== "/api/sessions") {
         await route.continue();
         return;
       }
@@ -1037,7 +1037,7 @@ test.describe("sessions drawer", () => {
 
   test("shows a spinner for a background running session", async ({ page }) => {
     await page.goto("/");
-    await page.locator("#prompt").fill("slow background task");
+    await page.locator("#prompt").fill("slow quiet runtime background task");
     await page.locator("#primaryButton").click();
     await page.locator("#sessionButton").click();
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
@@ -1328,7 +1328,7 @@ test.describe("attachments and prompt", () => {
     };
     await page.locator("#imageInput").setInputFiles(file);
     await expect(page.locator(".attachmentChip")).toContainText("android-picker.png");
-    await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-composer-attachments-v1"))).toContain("android-picker.png");
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-session-drafts-v1"))).toContain("android-picker.png");
 
     await page.reload();
 
@@ -1348,7 +1348,7 @@ test.describe("attachments and prompt", () => {
     await expect(report).toHaveValue(/attachment-picker-change/);
     await expect(report).toHaveValue(/attachment-upload-complete/);
     await expect(report).toHaveValue(/page-hide/);
-    await expect(report).toHaveValue(/attachment-draft-restored/);
+    await expect(report).toHaveValue(/composer-draft-restored/);
   });
 
   test("supports attachment-only prompts and attachment removal", async ({ page }) => {
@@ -1714,13 +1714,14 @@ test.describe("assistant markdown rendering", () => {
     await expect(trigger).toBeFocused();
   });
 
-  test("renders collapsed long assistant messages as markdown before and after show more", async ({ page }) => {
+  test("renders the latest long assistant message expanded and preserves manual collapse", async ({ page }) => {
     await page.goto("/");
     const longMessage = page.locator(".message.assistant.collapsible").first();
     await expect(longMessage).toBeVisible();
-    await expect(longMessage).toHaveClass(/collapsed/);
+    await expect(longMessage).not.toHaveClass(/collapsed/);
 
     const toggle = longMessage.locator(".messageToggle");
+    await expect(toggle).toHaveText("Show less");
     let toggleStyles = await toggle.evaluate((el) => getComputedStyle(el));
     expect(toggleStyles.borderTopStyle).toBe("none");
     await toggle.hover();
@@ -1733,12 +1734,13 @@ test.describe("assistant markdown rendering", () => {
     await expect(longMessage.locator(".body")).not.toContainText("**enabled**");
 
     await toggle.evaluate((el: HTMLButtonElement) => el.click());
+    await expect(longMessage).toHaveClass(/collapsed/);
+    await expect(toggle).toHaveText("Show more");
+
+    await toggle.evaluate((el: HTMLButtonElement) => el.click());
     await expect(longMessage).not.toHaveClass(/collapsed/);
     await expect(toggle).toHaveText("Show less");
     await expect(longMessage.locator(".markdownBody pre code").first()).toContainText("const enabled = true;");
-
-    await toggle.evaluate((el: HTMLButtonElement) => el.click());
-    await expect(longMessage).toHaveClass(/collapsed/);
   });
 });
 

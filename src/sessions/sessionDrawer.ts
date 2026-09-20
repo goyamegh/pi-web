@@ -836,7 +836,7 @@ export function createSessions(options: {
 
   function waitingInfoFor(sessionId: string): WaitingInfo | undefined {
     const self = cachedSessions.find((item) => item.id === sessionId);
-    return waitingInfoFrom(sessionId, spawnOrigins(), {
+    return waitingInfoFrom(sessionId, state.settlementDependencies[sessionId] || [], {
       selfRunning: isSessionRunning(sessionId, Boolean(self?.runtime?.isRunning)),
       isRunning: (childId) => {
         const runtime = runtimeForSession(childId);
@@ -847,7 +847,7 @@ export function createSessions(options: {
   }
 
   function activeWorkersFor(sessionId: string): ActiveWorker[] {
-    return activeWorkersFrom(sessionId, spawnOrigins(), {
+    return activeWorkersFrom(sessionId, state.settlementDependencies[sessionId] || [], {
       runtime: runtimeForSession,
       describe: describeWorker,
     });

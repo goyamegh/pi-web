@@ -1,7 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { renderLoginPage } from "../../server/auth/loginPage.js";
+import { readFileSync } from "node:fs";
+import { loginPageHeaders, renderLoginPage } from "../../server/auth/loginPage.js";
 
 describe("shared sign-in presentation", () => {
+  it("uses native default tokens without depending on authenticated assets", () => {
+    const html = renderLoginPage({ methods: ["password", "passkey"] });
+    const native = readFileSync(new URL("../../src/styles/base.css", import.meta.url), "utf8");
+    for (const token of ["bg", "panel", "panel-2", "border", "text", "muted", "accent", "danger"]) {
+      const value = native.match(new RegExp(`--${token}:\\s*([^;]+);`))![1];
+      expect(html).toContain(`--${token}:${value}`);
+    }
+    expect(html).toContain("color-scheme:dark");
+    expect(html).toContain("focus-visible");
+    expect(html).toContain('<link rel="stylesheet" href="/new-chat-animation.css">');
+    expect(html).not.toMatch(/<script src=/);
+    expect(html).toContain('<title>Pi Web</title>');
+    expect(html).toContain('<h1>Pi Web</h1>');
+    for (const removed of ['Private workspace', '<header', '<footer', '<h1>Sign in', 'class="logo"', 'Sign in to continue']) expect(html).not.toContain(removed);
+    const app = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+    for (const asset of ['/new-chat-loading.webm', '/new-chat-loading.mp4', '/new-chat-animation.css']) {
+      expect(app).toContain(asset);
+      expect(html).toContain(asset);
+    }
+    expect(html).toContain("motion.addEventListener('change',syncMotion)");
+    expect(html).toContain('if(motion.matches)avatar.pause()');
+    expect(html).toContain('src="/new-chat-still.png"');
+    expect(loginPageHeaders['content-security-policy']).toContain("media-src 'self'");
+    expect(loginPageHeaders['content-security-policy']).toContain("style-src 'self' 'unsafe-inline'");
+    expect(html).not.toContain('class="glow"');
+  });
   it("prioritizes direct passkey authentication and discloses enabled alternatives", () => {
     const html = renderLoginPage({ methods: ["password", "passkey", "legacy", "external"] });
     expect(html).toContain('id="go"');
