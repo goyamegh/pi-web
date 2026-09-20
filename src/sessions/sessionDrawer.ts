@@ -2356,6 +2356,11 @@ export function createSessions(options: {
         .some((value) => value.toLowerCase().includes(query));
     };
     const filterActive = Boolean(query || laneFilter !== "all" || allowedMarkerColors.size > 0 || unreadFilterActive);
+    // Transient filters (search, lane, unread) reveal their matches by forcing
+    // every folder open. The colour filter is different: it is persisted
+    // server-side as a standing view (e.g. hide finished workers), so pinning
+    // folders open for it would make the collapse chevron permanently inert.
+    const forceFoldersOpen = Boolean(query || laneFilter !== "all" || unreadFilterActive);
     renderSessionColorFilterButton();
     const laneFilters = document.createElement("div");
     laneFilters.className = "sessionLaneFilters";
@@ -2432,7 +2437,7 @@ export function createSessions(options: {
       const folderPinned = isFolderPinned(cwd);
       const folderCollapsed = state.collapsedSessionFolders.has(cwd);
       const containsCurrentWorker = currentIsWorker && branches.some((branch) => branchContainsSession(branch, state.currentSessionId));
-      const folderOpen = !folderCollapsed || filterActive || containsCurrentWorker;
+      const folderOpen = !folderCollapsed || forceFoldersOpen || containsCurrentWorker;
       const group = document.createElement("section");
       group.className = `sessionFolderGroup${folderPinned ? " pinned" : ""}`;
 
@@ -2530,7 +2535,7 @@ export function createSessions(options: {
     }
 
     if (workerView.unattachedWorkers.length > 0) {
-      const forcedOpen = filterActive || workerView.unattachedWorkers.some((branch) => branchContainsSession(branch, state.currentSessionId));
+      const forcedOpen = forceFoldersOpen || workerView.unattachedWorkers.some((branch) => branchContainsSession(branch, state.currentSessionId));
       const open = forcedOpen || state.expandedWorkerBranches.has(unattachedWorkersExpansionId);
       const group = document.createElement("section");
       group.className = "sessionFolderGroup sessionUnattachedWorkerGroup";

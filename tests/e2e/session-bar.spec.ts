@@ -894,6 +894,40 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionItem")).toContainText("Older mock session");
   });
 
+  test("folders stay collapsible under a persisted colour filter but are forced open while searching", async ({ page }) => {
+    // Regression: a server-persisted colour filter (a standing view such as
+    // "hide finished workers") used to count as an active filter and pinned
+    // every folder open, so the collapse chevron toggled localStorage but
+    // never changed the rendered drawer.
+    await seedServerSessionUiState(page, { sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }] });
+    await page.goto("/"); await page.locator("#sessionButton").click();
+    await page.locator(".sessionColorFilterButton").click();
+    await page.getByRole("menuitemcheckbox", { name: "Green" }).click();
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await (await page.request.get("/api/session-ui-state")).json()).sessionUiState.allowedMarkerColors).toEqual(["green"]);
+
+    const group = page.locator(".sessionFolderGroup").first();
+    const toggle = group.locator(".sessionFolderToggle");
+    await expect(group.locator(".sessionItem")).toHaveCount(1);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(group.locator(".sessionItem")).toHaveCount(0);
+    // The collapse survives a reload alongside the persisted colour filter (the drawer itself stays open across reloads).
+    await page.reload(); await expect(page.locator("#sessionDrawer")).toBeVisible();
+    await expect(page.locator(".sessionFolderGroup").first().locator(".sessionFolderToggle")).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator(".sessionItem")).toHaveCount(0);
+
+    // A search query is a transient filter and still reveals matches inside collapsed folders.
+    await page.locator(".sessionDrawerSearch").fill("Older mock session");
+    await expect(page.locator(".sessionFolderGroup").first().locator(".sessionFolderToggle")).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator(".sessionItem")).toContainText("Older mock session");
+    await page.locator(".sessionDrawerSearch").fill("");
+    await expect(page.locator(".sessionItem")).toHaveCount(0);
+    await page.locator(".sessionFolderGroup").first().locator(".sessionFolderToggle").click();
+    await expect(page.locator(".sessionItem")).toContainText("Older mock session");
+  });
+
   test("session drawer assigns buckets from the row menu and filters by bucket", async ({ page }) => {
     await page.goto("/"); await page.locator("#sessionButton").click();
     const older = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
