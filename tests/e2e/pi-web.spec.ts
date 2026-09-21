@@ -50,18 +50,47 @@ test.describe("composer layout", () => {
       { sessionId: "worker-run", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
     ] } });
     // An extension footer (e.g. a status line) must be present: the collision
-    // only manifests when the footer and the repo bar both occupy a row.
+    // only manifests when the footer and the repo bar both occupy a row. Inject
+    // it into the REST snapshot and into every websocket state broadcast (the
+    // mock events below trigger broadcasts that would otherwise clear it).
+    const footer = { version: 1, key: "test-footer", slot: "footer", kind: "static", view: { kind: "text", lines: ["footer status"] } };
     await page.route("**/api/state**", async (route) => {
       const response = await route.fetch();
       const state = await response.json();
-      state.webContributions = [{ version: 1, key: "test-footer", slot: "footer", kind: "static", view: { kind: "text", lines: ["footer status"] } }];
+      state.webContributions = [footer];
       await route.fulfill({ response, json: state });
+    });
+    let realtimeReady!: () => void;
+    const realtimeHello = new Promise<void>((resolve) => { realtimeReady = resolve; });
+    await page.routeWebSocket("**/ws**", (ws) => {
+      const server = ws.connectToServer();
+      ws.onMessage((message) => server.send(message));
+      server.onMessage((message) => {
+        if (typeof message === "string") {
+          try {
+            const data = JSON.parse(message);
+            // The server greets each realtime client; only then can mock events reach the page.
+            if (data?.type === "hello") realtimeReady();
+            // hello / state_changed frames carry the live contribution list and would
+            // otherwise replace the injected footer with the server's (empty) one.
+            if (Array.isArray(data?.webContributions)) {
+              ws.send(JSON.stringify({ ...data, webContributions: [footer] }));
+              return;
+            }
+          } catch { /* not JSON */ }
+        }
+        ws.send(message);
+      });
     });
     await page.route(/\/api\/sessions(?:\?.*)?$/, (route) => route.fulfill({ json: { ok: true, sessions: [
       { id: "mock-current", name: "Current parent", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: true, unread: false },
       { id: "worker-run", name: "Compile assets", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: false, unread: false },
     ] } }));
     await page.goto("/");
+    await realtimeHello;
+    // The dock is driven by declared settlement dependencies (upstream), not by
+    // spawn origins alone: declare the worker, then mark it running.
+    await page.request.post("/api/mock/event", { data: { type: "settlement_dependencies_changed", sessionId: "mock-current", childIds: ["worker-run"] } });
     await page.request.post("/api/mock/event", { data: { type: "session_runtime_changed", sessionId: "worker-run", runtime: {
       loaded: true, isRunning: true, isStreaming: true, isRetrying: false, isCompacting: false, pendingMessageCount: 0,
     } } });
