@@ -6,6 +6,7 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import { panelOverlayModeQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
+import { createSessionDrawerHoverPeek } from "./sessionDrawerHoverPeek.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, readActiveSessionIdFromUrl, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
@@ -2946,6 +2947,16 @@ export function createSessions(options: {
       focusOnClose: elements.sessionButton,
     });
     if (!sessionPanelHandle) elements.sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
+    // Fork: resting the mouse on the hamburger peeks the drawer (Chrome-style);
+    // clicking or working inside it makes the open stick.
+    if (sessionPanelHandle) {
+      const handle = sessionPanelHandle;
+      createSessionDrawerHoverPeek({
+        trigger: elements.sessionButton,
+        panel: elements.sessionDrawer,
+        target: { isOpen: () => handle.isOpen(), peek: () => handle.peek(), close: () => handle.close(false) },
+      });
+    }
     elements.currentSessionBucketButton.addEventListener("click", () => {
       if (state.currentSessionId) openSessionTabMenu(state.currentSessionId, elements.currentSessionBucketButton);
     });

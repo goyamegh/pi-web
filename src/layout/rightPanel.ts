@@ -32,6 +32,8 @@ export type AppPanelHandle = {
   toggle: () => void;
   setOpen: (open: boolean) => void;
   isOpen: () => boolean;
+  /** Fork: open without pushing a history entry (transient hover peeks). */
+  peek: () => void;
 };
 
 export type AppPanelManager = {
@@ -362,6 +364,11 @@ export function createAppPanelManager(): AppPanelManager {
       },
       setOpen: (open) => open ? openRegistrationFromUi(registered) : closeRegistrationFromUi(registered),
       isOpen: () => !registered.panel.hidden,
+      peek: () => {
+        if (!registered.panel.hidden) return;
+        openRegistration(registered);
+        replacePanelHistoryState();
+      },
     };
 
     registered.trigger?.addEventListener("click", handle.toggle);
