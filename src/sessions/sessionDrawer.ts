@@ -563,7 +563,14 @@ export function createSessions(options: {
       const res = await fetchSessionList(url, api.headers());
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
+      // Fork: the list spans every known cwd, so the same id can arrive twice
+      // (e.g. a lister that ignores its cwd argument). The worker-forest builder
+      // rejects duplicate ids and would blank the whole drawer, so keep the
+      // first (most recently modified) row per id.
+      const seenIds = new Set<string>();
+      cachedSessions = ((data.sessions || []) as SessionInfo[])
+        .filter((item) => !seenIds.has(item.id) && Boolean(seenIds.add(item.id)))
+        .map((item) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
       for (const session of cachedSessions) sessionState.mergeSessionInfo(session);
       let laneCwdsChanged = false;
       state.lanes = state.lanes.map((entry) => {

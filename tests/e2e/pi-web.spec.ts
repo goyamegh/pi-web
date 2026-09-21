@@ -1134,6 +1134,22 @@ test.describe("sessions drawer", () => {
     expect(uiState.sessionUiState.pinnedFolders).toEqual([pinnedCwd, projectCwd]);
   });
 
+  test("renders the drawer even when the session index repeats an id across cwd listings", async ({ page }) => {
+    // Regression: the fork lists sessions across every known cwd, so a repeated
+    // id used to reach the worker-forest builder, which throws on duplicates and
+    // left the drawer half-rendered with no rows at all.
+    await page.route((url) => url.pathname === "/api/sessions", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json() as { sessions: unknown[] };
+      await route.fulfill({ response, json: { ...body, sessions: [...body.sessions, ...body.sessions] } });
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#sessionDrawer").getByText("Current mock session")).toBeVisible();
+    await expect(page.locator('.sessionItem[data-session-id="mock-current"]')).toHaveCount(1);
+    await expect(page.locator('.sessionItem[data-session-id="mock-older"]')).toHaveCount(1);
+  });
+
   test("opens, lists sessions, resumes an older session, and creates new session", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();

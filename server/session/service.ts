@@ -412,6 +412,11 @@ export class LocalSessionService implements SessionService {
     return info.cwd || this.deps.globalCwd();
   }
   knownCwds() { return new Set([resolve(this.deps.globalCwd()), ...this.knownSessionCwds]); }
+  /** Fork: forget cwds learned from sessions (test isolation after a mock reset). */
+  forgetKnownCwds() {
+    this.knownSessionCwds.clear();
+    this.knownSessionCwds.add(resolve(this.deps.globalCwd()));
+  }
   webUiEntries(value: PiWebSession) { return this.webUiBridge.entries(value); }
   settingsSchemas() { return this.webUiBridge.settingsSchemas(); }
   settingsSchemaEntry(id: string) { return this.webUiBridge.settingsSchemaEntry(id); }

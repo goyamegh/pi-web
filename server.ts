@@ -64,6 +64,8 @@ await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
 if (setupLink) console.log(`First-install setup (single use, expires in 10 minutes): ${setupLink}`);
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
+// Fork: the boot cwd, so the mock reset can undo folder switches made by tests.
+const bootCwd = piCwd;
 const knownCwds = new Set<string>([piCwd]);
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
@@ -739,6 +741,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         setRecommendedAddonsExtensionEnabled(body.recommendedAddonsExtension === true);
         resetMockSessions();
         settlementTracker.reset();
+        // Fork: folder switches (setPiCwd) are server-global; without restoring
+        // the boot cwd here, one spec that changes folders leaks into every
+        // later spec on the same mock server (their drawers list no sessions).
+        piCwd = bootCwd;
+        knownCwds.clear();
+        knownCwds.add(bootCwd);
+        sessionService.forgetKnownCwds();
         await sessionUiStateStore.write(defaultSessionUiState);
         session = await sessionService.initialize();
         broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });

@@ -91,3 +91,23 @@ test("new-session button on a drawer folder starts a session in that folder", as
 
   await expect(page.locator("#statusPath")).toHaveText(target);
 });
+
+test("a mock reset forgets folder switches so later specs see the boot cwd and a unique session index", async ({ page }) => {
+  // Regression: switching folders taught the server extra cwds; after
+  // /api/mock/reset the mock lister still ran once per remembered cwd and
+  // returned every session twice, blanking the drawer for every later spec.
+  const bootCwd = (await (await page.request.get("/api/state")).json()).cwd as string;
+  const target = mkdtempSync(join(tmpdir(), "pi-web-folder-select-"));
+  await page.request.patch("/api/session-ui-state", { data: { pinnedFolders: [target] } });
+  const created = await (await page.request.post("/api/sessions/new", { data: { cwd: target } })).json();
+  expect(created.ok).toBe(true);
+  expect(created.cwd).toBe(target);
+
+  await page.request.post("/api/mock/reset");
+  const state = await (await page.request.get("/api/state")).json();
+  expect(state.cwd).toBe(bootCwd);
+  const { sessions } = await (await page.request.get("/api/sessions")).json();
+  const ids = sessions.map((item: { id: string }) => item.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(ids).toEqual(expect.arrayContaining(["mock-current", "mock-older"]));
+});
