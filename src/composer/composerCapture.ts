@@ -332,6 +332,16 @@ export function createComposerCapture(options: {
       descriptors = next;
       render();
     },
+    /** Fork: keyboard entry point — start the first capture, or stop the active recording. */
+    canToggle: () => descriptors.length > 0 && (!operation || operation.phase === "recording"),
+    toggle() {
+      if (operation) {
+        if (operation.phase === "recording") stopRecording(operation);
+        return;
+      }
+      const descriptor = descriptors[0];
+      if (descriptor) void start(descriptor);
+    },
     cancel,
   };
 }

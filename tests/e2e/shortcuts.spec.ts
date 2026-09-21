@@ -52,7 +52,8 @@ test.describe("keyboard shortcuts", () => {
     const dialog = page.locator(".shortcutHelp");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("heading")).toHaveText("Keyboard shortcuts");
-    await expect(dialog.locator(".shortcutHelpRow")).toHaveCount(11);
+    await expect(dialog.locator(".shortcutHelpRow")).toHaveCount(12);
+    await expect(dialog.locator(".shortcutHelpRow").filter({ hasText: "Start or stop dictation" }).locator("kbd").last()).toHaveText("D");
     await expect(dialog).toContainText("Pin or unpin current session");
     await expect(dialog).toContainText("Park current session");
     await expect(dialog).toContainText("Bookmark current session");

@@ -924,6 +924,18 @@ const keyboardShortcuts: Shortcut[] = [
     run: () => elements.promptEl.focus(),
   },
   {
+    id: "composer.toggleDictation",
+    key: "d",
+    description: "Start or stop dictation",
+    scope: "global",
+    mod: true,
+    allowInEditable: true,
+    // Only claim ⌘D while a dictation contribution can act on it; otherwise the
+    // browser keeps its default (bookmark) behaviour.
+    when: () => elements.tokenOverlay.hidden && composer.canToggleCapture(),
+    run: () => composer.toggleCapture(),
+  },
+  {
     id: "composer.submit",
     key: "Enter",
     description: "Send prompt",

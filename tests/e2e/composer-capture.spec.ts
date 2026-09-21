@@ -397,6 +397,65 @@ test("records with MediaRecorder and inserts the transcript into the captured se
   expect(promptRequests).toBe(0);
 });
 
+test("⌘D starts and stops dictation from the keyboard and is listed in the shortcut help", async ({ page }) => {
+  // Fork: one shortcut toggles the mic — start while idle, stop while recording —
+  // so dictation never needs the pointer. The prompt keeps focus throughout.
+  await page.route("**/api/web-captures?**", fulfillUpload);
+  await page.route("**/api/web-contributions/invoke", (route) => route.fulfill({ json: {
+    ok: true,
+    effects: [{ type: "insert-composer-text", text: "dictated", placement: "selection" }],
+  } }));
+  const prompt = page.locator("#prompt");
+  const button = page.locator(".composerCaptureButton");
+  await prompt.fill("say: ");
+  await prompt.press("End");
+  await prompt.press("Control+d");
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  await expect(button).toHaveAccessibleName("Stop Dictation");
+  await expect(prompt).toBeFocused();
+
+  await page.waitForTimeout(1_100);
+  await expect.poll(() => page.evaluate(() => (window as any).__captureHarness.dataEvents)).toBeGreaterThan(0);
+  await prompt.press("Control+d");
+  await expect(prompt).toHaveValue("say: dictated");
+  await expect(button).toHaveAttribute("aria-pressed", "false");
+
+  // Pressing it while a transcription is still in flight must not restart the mic.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/web-contributions/invoke", async (route) => {
+    await gate;
+    try { await route.fulfill({ json: { ok: true, effects: [] } }); } catch { /* cancelled */ }
+  });
+  await prompt.press("Control+d");
+  await page.waitForTimeout(1_100);
+  await prompt.press("Control+d");
+  await expect(page.locator(".composerCaptureStatus")).toHaveText("Transcribing…");
+  await prompt.press("Control+d");
+  await expect(page.locator(".composerCaptureStatus")).toHaveText("Transcribing…");
+  await expect(button).toBeDisabled();
+  release();
+  await expect(page.locator(".composerCaptureStatus")).toHaveCount(0);
+
+  await page.keyboard.press("Control+/");
+  const row = page.locator(".shortcutHelpRow").filter({ hasText: "Start or stop dictation" });
+  await expect(row).toBeVisible();
+  await expect(row.locator("kbd").last()).toHaveText("D");
+});
+
+test("⌘D is left to the browser when no dictation contribution is registered", async ({ page }) => {
+  await page.unroute("**/api/state**");
+  await page.goto("/");
+  await page.locator("#prompt").focus();
+  const claimed = await page.evaluate(() => {
+    const event = new KeyboardEvent("keydown", { key: "d", metaKey: true, bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(claimed).toBe(false);
+  await expect(page.locator(".composerCaptureButton")).toHaveCount(0);
+});
+
 test("recovers a transcript without overwriting a draft edited during recording", async ({ page }) => {
   await page.route("**/api/web-captures?**", fulfillUpload);
   await page.route("**/api/web-contributions/invoke", (route) => route.fulfill({ json: {

@@ -28,6 +28,9 @@ export type ComposerController = {
   switchSession: (sessionId: string) => void;
   setPromptText: (text: string) => void;
   setCaptureContributions: (contributions: ComposerCaptureDescriptor[]) => void;
+  /** Fork: ⌘D / Ctrl+D — start the first capture contribution or stop an active recording. */
+  canToggleCapture: () => boolean;
+  toggleCapture: () => void;
   syncCompactState: () => void;
   stopStreaming: () => Promise<void>;
   updatePrimaryAction: () => void;
@@ -1011,6 +1014,8 @@ export function createComposer(options: {
     init,
     addContextAttachment,
     setCaptureContributions: (contributions) => composerCapture.setContributions(contributions, ownedSessionId),
+    canToggleCapture: () => composerCapture.canToggle(),
+    toggleCapture: () => composerCapture.toggle(),
     syncCompactState: updateCompactInactive,
     renderAttachments,
     switchSession,
