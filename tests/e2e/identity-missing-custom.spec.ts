@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { isolatedAuthEnv } from "../auth-isolation.js";
 
 test("restored custom selection without an upload renders fallback artwork", async ({ browser }, info) => {
-  test.skip(info.project.name !== "desktop", "Isolated server/browser regression");
+  test.skip(info.project.name !== "desktop" && info.project.name !== "isolated", "Isolated server/browser regression");
   const socket = createServer();
   await new Promise<void>(resolve => socket.listen(0, "127.0.0.1", resolve));
   const port = (socket.address() as { port: number }).port;
@@ -33,9 +33,10 @@ test("restored custom selection without an upload renders fallback artwork", asy
     await expect(still).toHaveAttribute("src", "/identity/avatar.png?v=3");
     await expect.poll(() => still.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     const fab = page.locator(".actionLauncherToggle img");
-    await expect(fab).toHaveAttribute("src", "/identity/avatar.png?v=3");
+    await expect(fab).toHaveAttribute("src", "/identity/fab.png?v=3");
     await expect.poll(() => fab.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     expect((await context.request.get("/identity/avatar.png")).ok()).toBe(true);
+    expect((await context.request.get("/identity/fab.png")).ok()).toBe(true);
     const login = await page.goto("/api/auth/login");
     expect(login?.status()).toBe(200);
     await expect(page).toHaveTitle("Backup Brand");
