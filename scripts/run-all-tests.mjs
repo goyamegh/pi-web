@@ -66,9 +66,13 @@ const results = [];
 // Tests may be launched from a running instance. Do not pass its persistent
 // home or per-file overrides to child test processes; individual server fixtures
 // allocate their own temporary home (see tests/auth-isolation.ts).
+// Never let a test child inherit the live tunnel config either: `npm test` run
+// from a pi-web session carries PI_WEB_TUNNEL_NAME, and a test-spawned
+// supervisor would register a tunnel under the live name and kick it offline.
 const testEnv = { ...process.env, PI_WEB_HOME: "" };
 for (const key of Object.keys(testEnv)) {
   if (key.startsWith("PI_WEB_") && key.endsWith("_FILE")) testEnv[key] = "";
+  if (key.startsWith("PI_WEB_TUNNEL_")) delete testEnv[key];
 }
 
 function prefixLines(stream, taskName, color) {
