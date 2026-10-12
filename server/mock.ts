@@ -132,6 +132,7 @@ export function createMockHarness(options: MockSessionOptions) {
     mockGeneration += 1;
     mockSessions.splice(0, mockSessions.length, ...initialMockSessions());
     mockLifecycle.clear();
+    forkedMockSessions.clear();
   }
 
   function getMockLifecycle() {
@@ -160,7 +161,13 @@ export function createMockHarness(options: MockSessionOptions) {
     }).filter(Boolean).join("\n");
   }
 
+  /** Session files written by the mock createBranchedSession(), keyed by path. */
+  const forkedMockSessions = new Map<string, { entries: any[]; leafId: string }>();
+  let forkSequence = 0;
+
   function createInitialEntries(path: string) {
+    const forked = forkedMockSessions.get(path);
+    if (forked) return forked.entries.map((entry) => ({ ...entry }));
     const deepTreeDepth = Number(process.env.PI_WEB_MOCK_DEEP_TREE_DEPTH || 0);
     if (deepTreeDepth > 0 && path === mockSessions[0].path) {
       return Array.from({ length: deepTreeDepth }, (_, index): any => ({
@@ -190,8 +197,8 @@ export function createMockHarness(options: MockSessionOptions) {
     // tests can exercise the real folder-selection flow; default to piCwd.
     const sessionHomeCwd = cwd || piCwd;
     let mockEntries = createInitialEntries(path);
-    let mockLeafId: string | null = "mock-a1";
-    let entrySequence = 2;
+    let mockLeafId: string | null = forkedMockSessions.get(path)?.leafId ?? "mock-a1";
+    let entrySequence = Math.max(2, ...mockEntries.map((entry) => Number(/^mock-e(\d+)$/.exec(String(entry.id))?.[1] || 0)));
     const labelsById = new Map<string, string>();
     const mockMessages: unknown[] = [];
 
@@ -386,6 +393,20 @@ export function createMockHarness(options: MockSessionOptions) {
         if (label) labelsById.set(targetId, label);
         else labelsById.delete(targetId);
         return `mock-label-${Date.now()}`;
+      },
+      createBranchedSession(leafId: string) {
+        const branch = getBranch(leafId);
+        if (!branch.length) throw new Error(`Entry ${leafId} not found`);
+        const id = `mock-fork-${++forkSequence}`;
+        const path = join(piCwd, `.mock-sessions/${id}.jsonl`);
+        forkedMockSessions.set(path, { entries: branch.map((entry) => ({ ...entry })), leafId });
+        const text = branch.filter((entry) => entry.type === "message").map((entry) => textFromMockContent(entry.message?.content)).filter(Boolean);
+        mockSessions.unshift({
+          id, path, name: "", cwd: sessionHomeCwd,
+          created: new Date(), modified: new Date(), messageCount: text.length,
+          firstMessage: text[0] || "", allMessagesText: text.join("\n"),
+        });
+        return path;
       },
     };
 

@@ -1100,6 +1100,18 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 202, { ok: true, ...await sessionService.abortBranchSummary(resolveSessionId(body.sessionId)) });
       }
 
+      if (method === "POST" && url.pathname === "/api/session/tree/fork") {
+        const body = await readBody(req) as { sessionId?: unknown; targetId?: unknown };
+        const { state: baseState, ...result } = await sessionService.fork(
+          resolveSessionId(body.sessionId),
+          typeof body.targetId === "string" && body.targetId.trim() ? body.targetId.trim() : undefined,
+        );
+        extensionHttp.recordCreatedSession(req, baseState.sessionId);
+        const state = await decorateServiceState(baseState);
+        noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
+        return sendJson(res, 200, { ok: true, ...result, state });
+      }
+
       if (method === "GET" && url.pathname === "/api/messages") {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
         const target = await sessionService.require(requestedSessionId);

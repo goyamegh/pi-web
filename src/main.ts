@@ -780,6 +780,7 @@ conversationTree = createConversationTree({
   sessionState,
   refreshMessages,
   addMessage: messages.addMessage,
+  openSession: (sessionId) => sessions.openSessionById(sessionId),
 });
 
 realtime = createRealtime({

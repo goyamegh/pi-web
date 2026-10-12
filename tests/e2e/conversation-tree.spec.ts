@@ -69,6 +69,56 @@ test.describe("conversation tree UI", () => {
     await expect(page.locator(".message.system", { hasText: "Loaded an earlier prompt" })).toBeVisible();
   });
 
+  test("forks the selected point into a new session and leaves the original untouched", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".message.assistant").first()).toBeVisible();
+    const panel = await openConversationTree(page);
+
+    await panel.getByRole("treeitem", { name: /Actually, make the attachment picker mobile-first/i }).click();
+    const fork = panel.getByRole("button", { name: "Fork to new session" });
+    await expect(fork).toBeEnabled();
+    await fork.click();
+
+    // We are now in a brand-new session holding only root→target.
+    await expect(page).toHaveURL(/sessionId=mock-fork-\d+/);
+    await expect(page.locator(".message.system", { hasText: "Forked into a new session" })).toBeVisible();
+    await expect(page.locator(".message.user", { hasText: "Can you add image attachments?" })).toBeVisible();
+    await expect(page.locator(".message.user", { hasText: "mobile-first" })).toBeVisible();
+    await expect(page.locator(".message.assistant", { hasText: "bottom sheet" })).toHaveCount(0);
+    await expect(panel.locator(".conversationTreeNode")).toHaveCount(2);
+    await expect(panel.locator(".conversationTreeBadge.branch")).toHaveCount(0);
+    await expect(panel.locator(".conversationTreeNode.currentLeaf")).toContainText("mobile-first");
+
+    // The original session still has its full tree.
+    const original = await page.request.get("/api/session/tree?sessionId=mock-current");
+    expect((await original.json()).entryCount).toBeGreaterThanOrEqual(4);
+  });
+
+  test("keeps forking available while the agent is streaming even though jumping is blocked", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("quiet runtime");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator("#stopButton")).toBeVisible();
+
+    const panel = await openConversationTree(page);
+    await panel.getByRole("treeitem", { name: /Can you add image attachments/i }).click();
+    const jump = panel.getByRole("button", { name: "Edit from here" });
+    await expect(jump).toBeDisabled();
+    await expect(jump).toHaveAttribute("title", /Fork to new session/);
+    const fork = panel.getByRole("button", { name: "Fork to new session" });
+    await expect(fork).toBeEnabled();
+
+    await fork.click();
+    await expect(page).toHaveURL(/sessionId=mock-fork-\d+/);
+    await expect(page.locator(".message.system", { hasText: "Forked into a new session" })).toBeVisible();
+    // The fork is idle and ready for a new prompt while the original is still running.
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await page.locator("#prompt").fill("second question");
+    await expect(page.locator("#primaryButton")).toBeEnabled();
+    const original = await page.request.get("/api/sessions/mock-current/status");
+    expect((await original.json()).state).toBe("running");
+  });
+
   test("renders assistant provider errors as compact expandable error cards in chat", async ({ page }) => {
     await page.request.patch("/api/settings", { data: { appearance: { density: "compact" } } });
     await page.goto("/");

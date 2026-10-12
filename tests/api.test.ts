@@ -221,6 +221,48 @@ describe("pi-web mock API", () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
   });
 
+  it("forks the tree up to a target into a new session and leaves the source alone", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const before = await (await fetch(`${baseUrl}/api/session/tree?sessionId=mock-current`)).json();
+
+    const forkRes = await fetch(`${baseUrl}/api/session/tree/fork`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", targetId: "mock-u-alt" }),
+    });
+    expect(forkRes.status).toBe(200);
+    const fork = await forkRes.json();
+    expect(fork).toMatchObject({ ok: true, sourceSessionId: "mock-current", leafId: "mock-u-alt" });
+    const forkedId: string = fork.state.sessionId;
+    expect(forkedId).toMatch(/^mock-fork-/);
+    expect(forkedId).not.toBe("mock-current");
+
+    // The fork holds exactly root→target and nothing from the abandoned branch.
+    const forkedTree = await (await fetch(`${baseUrl}/api/session/tree?sessionId=${forkedId}`)).json();
+    expect(forkedTree.sessionId).toBe(forkedId);
+    expect(forkedTree.leafId).toBe("mock-u-alt");
+    expect(forkedTree.entryCount).toBe(2);
+    expect(forkedTree.branchPointCount).toBe(0);
+    const forkedMessages = await (await fetch(`${baseUrl}/api/messages?sessionId=${forkedId}`)).json();
+    expect(forkedMessages.messages.map((message: any) => message.role)).toEqual(["user", "user"]);
+    expect(forkedMessages.messages.at(-1).text).toContain("mobile-first");
+
+    // The source session is untouched: same leaf, same entry count, and it is listed next to the fork.
+    const after = await (await fetch(`${baseUrl}/api/session/tree?sessionId=mock-current`)).json();
+    expect(after).toEqual(before);
+    const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
+    expect(sessions.sessions.map((item: any) => item.id)).toEqual(expect.arrayContaining(["mock-current", forkedId]));
+
+    const missing = await fetch(`${baseUrl}/api/session/tree/fork`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", targetId: "does-not-exist" }),
+    });
+    expect(missing.status).toBe(400);
+    expect((await missing.json()).error).toContain("does-not-exist");
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+  });
+
   it("routes mock agent events through contract shapes and event-before-runtime order", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);

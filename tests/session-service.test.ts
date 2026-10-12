@@ -210,6 +210,44 @@ describe("LocalSessionService contract", () => {
     await expect(service.tree(initial.sessionId)).rejects.toMatchObject({ status: 400 });
   });
 
+  it("forks root→target into a new live session while the source keeps streaming", async () => {
+    const finalized: string[] = [];
+    const { service, initial, creates, cwd } = await fixtureService({ finalizeCreatedSession: async (id) => { finalized.push(id); } });
+    const forkedPath = join(cwd, "forked-1.jsonl");
+    const createBranchedSession = vi.fn(() => forkedPath);
+    initial.sessionManager.createBranchedSession = createBranchedSession;
+    initial.isStreaming = true;
+
+    const result = await service.fork(initial.sessionId, "call");
+    expect(createBranchedSession).toHaveBeenCalledWith("call");
+    expect(result.sourceSessionId).toBe("current");
+    expect(result.leafId).toBe("call");
+    expect(result.state.sessionId).toBe("forked-1");
+    expect(result.state.sessionId).not.toBe(initial.sessionId);
+    expect(creates.at(-1)).toMatchObject({ path: forkedPath });
+    expect(finalized).toEqual(["forked-1"]);
+    expect(jsonRoundTrip(result)).toStrictEqual(result);
+    // The source is untouched and still addressable; the fork is a separate runtime.
+    expect((await service.state(initial.sessionId)).sessionId).toBe("current");
+    expect((await service.state("forked-1")).sessionFile).toBe(forkedPath);
+    expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false);
+  });
+
+  it("defaults the fork point to the current leaf and rejects sessions that cannot fork", async () => {
+    const { service, initial, cwd } = await fixtureService();
+    const createBranchedSession = vi.fn(() => join(cwd, "forked-leaf.jsonl"));
+    initial.sessionManager.createBranchedSession = createBranchedSession;
+    await service.fork(initial.sessionId);
+    expect(createBranchedSession).toHaveBeenCalledWith("result");
+
+    initial.sessionManager.createBranchedSession = () => undefined;
+    await expect(service.fork(initial.sessionId)).rejects.toMatchObject({ status: 400, message: /in-memory/ });
+    initial.sessionManager.createBranchedSession = () => { throw new Error("Entry nope not found"); };
+    await expect(service.fork(initial.sessionId, "nope")).rejects.toMatchObject({ status: 400, message: /nope/ });
+    initial.sessionManager.createBranchedSession = undefined;
+    await expect(service.fork(initial.sessionId)).rejects.toMatchObject({ status: 400, message: /not available/ });
+  });
+
   it("preserves message args and empty thinking-level behavior", async () => {
     const { service, initial } = await fixtureService();
     const messages = await service.messages(initial.sessionId);

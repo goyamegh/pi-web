@@ -35,6 +35,8 @@ export interface PiWebSession {
     branch?(entryId: string): void;
     resetLeaf?(): void;
     appendLabelChange?(targetId: string, label: string | undefined): string;
+    /** Write a new session file holding only root→leaf; returns its path (undefined when not persisting). */
+    createBranchedSession?(leafId: string): string | undefined;
   };
   modelRuntime: {
     getAvailableSnapshot(): readonly PiWebModel[];

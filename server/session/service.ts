@@ -25,6 +25,7 @@ import { createSettingsStore } from "../settings.js";
 import type {
   BaseSessionStateDto,
   DeleteSessionResultDto,
+  ForkResult,
   JsonValue,
   InteractionRequestDto,
   InteractionResponseDto,
@@ -688,6 +689,30 @@ export class LocalSessionService implements SessionService {
       this.emit({ type: "state", state, includeThinkingLevels: true });
       return { ...jsonSafe(result as Record<string, JsonValue>), leafId: value.sessionManager.getLeafId?.() || null, state };
     });
+  }
+
+  /**
+   * Copy root→target into a new session file and open it as its own live
+   * session. The source is never mutated, so forking is allowed while it is
+   * still streaming — that is the whole point: pursue a second question in
+   * parallel without waiting for (or disturbing) the first.
+   */
+  async fork(sessionId: string, targetId?: string): Promise<ForkResult> {
+    const value = await this.require(sessionId);
+    const manager = value.sessionManager;
+    if (typeof manager.createBranchedSession !== "function") throw new SessionServiceError("Forking is not available for this session", 400);
+    const leafId = (targetId || manager.getLeafId?.() || "").trim();
+    if (!leafId) throw new SessionServiceError("This session has nothing to fork yet", 400);
+    let path: string | undefined;
+    try { path = manager.createBranchedSession(leafId); }
+    catch (error) { throw new SessionServiceError(errorMessage(error), 400); }
+    if (!path) throw new SessionServiceError("Forking is not available for in-memory sessions", 400);
+    const forked = await this.getOrCreateLiveSession(path);
+    // The copied entries carry the history but not the live runtime knobs.
+    if (value.model && forked.model?.id !== value.model.id) await forked.setModel(value.model);
+    if (value.thinkingLevel && forked.getAvailableThinkingLevels().includes(value.thinkingLevel)) forked.setThinkingLevel(value.thinkingLevel);
+    await this.deps.sessionConfig.finalizeCreatedSession(forked.sessionId);
+    return { state: this.projectState(forked), sourceSessionId: value.sessionId, leafId };
   }
 
   async storeCapture(sessionId: string | undefined, key: unknown, registrationId: unknown, input: { mimeType: string; durationMs: number; bytes: Uint8Array }) {

@@ -240,6 +240,13 @@ export type NavigationResult = {
   [key: string]: unknown;
 };
 
+/** A fork copies root→target into a brand-new session and leaves the source untouched. */
+export type ForkResult = {
+  state: BaseSessionStateDto;
+  sourceSessionId: string;
+  leafId: string;
+};
+
 export interface SessionService {
   state(sessionId: string): Promise<BaseSessionStateDto>;
   context(sessionId: string): Promise<SessionContextDto>;
@@ -260,6 +267,7 @@ export interface SessionService {
   abortBranchSummary(sessionId: string): Promise<{ sessionId: string }>;
   rename(sessionId: string, name: string): Promise<BaseSessionStateDto>;
   navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
+  fork(sessionId: string, targetId?: string): Promise<ForkResult>;
   respondInteraction(response: InteractionResponseDto): boolean;
   cancelInteractions(): void;
   invokeContribution(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;

@@ -337,8 +337,10 @@ export function createConversationTree(options: {
   sessionState: SessionStateController;
   refreshMessages: () => Promise<void>;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
+  /** Switch the UI to another session (used after forking into a new one). */
+  openSession?: (sessionId: string) => Promise<void> | void;
 }): ConversationTreeController {
-  const { state, elements, api, rightPanels, composer, sessionState, refreshMessages, addMessage } = options;
+  const { state, elements, api, rightPanels, composer, sessionState, refreshMessages, addMessage, openSession } = options;
 
   let treeData: ConversationTreeResponse | null = null;
   let selectedId = "";
@@ -426,7 +428,12 @@ export function createConversationTree(options: {
   customButton.type = "button";
   customButton.className = "conversationTreeCustomButton";
   customButton.textContent = "Custom focus…";
-  selectionActions.append(jumpButton, summaryButton, customButton);
+  const forkButton = document.createElement("button");
+  forkButton.type = "button";
+  forkButton.className = "conversationTreeForkButton";
+  forkButton.textContent = "Fork to new session";
+  forkButton.title = "Copy the conversation up to this point into a new session and open it — the current session keeps running untouched.";
+  selectionActions.append(jumpButton, summaryButton, customButton, forkButton);
 
   const customForm = document.createElement("div");
   customForm.className = "conversationTreeCustomForm";
@@ -500,8 +507,17 @@ export function createConversationTree(options: {
     jumpButton.disabled = loading || streaming || node.isCurrentLeaf;
     summaryButton.disabled = loading || streaming || node.isCurrentLeaf;
     customButton.disabled = loading || streaming || node.isCurrentLeaf;
+    // Forking never touches the source session, so it stays available while
+    // the agent is still streaming — that is how you ask a second question in
+    // parallel without waiting for the first.
+    forkButton.disabled = loading;
+    forkButton.hidden = !openSession;
     summaryButton.hidden = node.isCurrentLeaf;
     customButton.hidden = node.isCurrentLeaf;
+    const blockedHint = streaming && !node.isCurrentLeaf ? "The agent is still responding — wait for it to finish, or use “Fork to new session” to continue from here in parallel." : "";
+    jumpButton.title = blockedHint;
+    summaryButton.title = blockedHint;
+    customButton.title = blockedHint;
   }
 
   function createRow(graphRow: ConversationGraphRow, graphWidth: number) {
@@ -767,6 +783,33 @@ export function createConversationTree(options: {
     }
   }
 
+  async function forkSelected() {
+    const node = selectedNode();
+    if (!node || loading || !openSession) return;
+    setLoading(true);
+    setStatus("Forking into a new session…");
+    try {
+      const res = await fetch("/api/session/tree/fork", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ sessionId: state.currentSessionId, targetId: node.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+      const forkedId = typeof data.state?.sessionId === "string" ? data.state.sessionId : "";
+      if (!forkedId) throw new Error("Fork did not return a session id");
+      selectedId = "";
+      await openSession(forkedId);
+      addMessage("system", "Forked into a new session — the original keeps running on its own.");
+      await refreshTree();
+      if (isMobileViewport()) setOpen(false);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function handleOpen() {
     document.body.classList.toggle("conversationTreeOpen", true);
     refreshTree().catch((error) => setStatus(error instanceof Error ? error.message : String(error), true));
@@ -814,6 +857,7 @@ export function createConversationTree(options: {
     filter.addEventListener("change", renderTree);
     jumpButton.addEventListener("click", () => navigateSelected().catch((error) => setStatus(error instanceof Error ? error.message : String(error), true)));
     summaryButton.addEventListener("click", () => navigateSelected({ summarize: true }).catch((error) => setStatus(error instanceof Error ? error.message : String(error), true)));
+    forkButton.addEventListener("click", () => forkSelected().catch((error) => setStatus(error instanceof Error ? error.message : String(error), true)));
     customButton.addEventListener("click", () => {
       customForm.hidden = false;
       customInstructions.focus();
