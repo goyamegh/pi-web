@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 // Regression coverage for folder selection (goyamegh fork):
 // sessionCwd() on the server resolves a session's folder via
@@ -14,6 +15,18 @@ import { join } from "node:path";
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
 });
+
+/** Drive the responsive folder picker (quick view → browse → path edit → Use). */
+async function pickFolder(page: import("@playwright/test").Page, target: string) {
+  await expect(page.getByRole("dialog", { name: "Folder" })).toBeVisible();
+  await page.getByRole("button", { name: "Browse folders" }).click();
+  await page.getByRole("button", { name: "Edit folder path" }).click();
+  const input = page.getByRole("textbox", { name: "Folder path" });
+  await expect(input).toBeVisible();
+  await input.fill(target);
+  await input.press("Enter");
+  await page.getByRole("button", { name: `Use ${target}` }).click();
+}
 
 test("selecting a folder from the picker switches the working directory", async ({ page }) => {
   const target = mkdtempSync(join(tmpdir(), "pi-web-folder-select-"));
@@ -28,14 +41,7 @@ test("selecting a folder from the picker switches the working directory", async 
   await expect(emptyState).toBeVisible();
   await emptyState.getByRole("button", { name: "Change working directory" }).click();
 
-  const input = page.locator(".folderPickerInput");
-  await expect(input).toBeVisible();
-  // Wait for the picker's initial directory load, which rewrites input.value.
-  await expect(page.locator(".folderPickerRow").first()).toBeVisible();
-  await input.fill(target);
-  await input.press("Enter");
-  await expect(input).toHaveValue(target);
-  await page.getByRole("button", { name: "Select folder" }).click();
+  await pickFolder(page, target);
 
   // The picker should close and the status bar should show the new cwd.
   await expect(page.locator(".folderPicker")).toHaveCount(0);
@@ -64,11 +70,7 @@ test("repo info bar follows the session folder after a switch", async ({ page })
   const emptyState = page.locator("#emptyCwdChooser");
   await expect(emptyState).toBeVisible();
   await emptyState.getByRole("button", { name: "Change working directory" }).click();
-  const input = page.locator(".folderPickerInput");
-  await expect(page.locator(".folderPickerRow").first()).toBeVisible();
-  await input.fill(target);
-  await input.press("Enter");
-  await page.getByRole("button", { name: "Select folder" }).click();
+  await pickFolder(page, target);
   await expect(page.locator("#statusPath")).toHaveText(target);
 
   // The bar must query and reflect the session's new folder — a temp dir
@@ -81,7 +83,7 @@ test("repo info bar follows the session folder after a switch", async ({ page })
 
 test("new-session button on a drawer folder starts a session in that folder", async ({ page }) => {
   const target = mkdtempSync(join(tmpdir(), "pi-web-folder-select-"));
-  await page.request.patch("/api/session-ui-state", { data: { pinnedFolders: [target] } });
+  await seedSessionUiState(page, { pinnedFolders: [target] });
   await page.goto("/");
 
   await page.locator("#sessionButton").click();
@@ -98,7 +100,7 @@ test("a mock reset forgets folder switches so later specs see the boot cwd and a
   // returned every session twice, blanking the drawer for every later spec.
   const bootCwd = (await (await page.request.get("/api/state")).json()).cwd as string;
   const target = mkdtempSync(join(tmpdir(), "pi-web-folder-select-"));
-  await page.request.patch("/api/session-ui-state", { data: { pinnedFolders: [target] } });
+  await seedSessionUiState(page, { pinnedFolders: [target] });
   const created = await (await page.request.post("/api/sessions/new", { data: { cwd: target } })).json();
   expect(created.ok).toBe(true);
   expect(created.cwd).toBe(target);

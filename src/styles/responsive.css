@@ -129,10 +129,6 @@
     width: min(420px, calc(100vw - 32px));
   }
 
-  .modelSettingsCurrent {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .composerFooter .iconButton {
     width: 40px;
     min-width: 40px;
@@ -150,7 +146,7 @@
     max-width: clamp(104px, 34vw, 170px);
   }
 
-  .message { max-width: 96%; }
+  .message { max-width: 96%; --message-action-space: 0px; }
   .messageActions { display: none; }
 
   .sessionDrawer {

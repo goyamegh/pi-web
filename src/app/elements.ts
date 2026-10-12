@@ -80,6 +80,7 @@ export type AppElements = {
   settingRunNotificationsTestButton: HTMLButtonElement;
   settingDefaultBucketColorSelect: HTMLSelectElement;
   settingNavPinnedCheckbox: HTMLInputElement;
+  settingPinNewSessionsCheckbox: HTMLInputElement;
   settingModelDefaultsValue: HTMLSpanElement;
   settingSaveModelDefaultsButton: HTMLButtonElement;
   settingClearModelDefaultsButton: HTMLButtonElement;
@@ -186,6 +187,7 @@ export function getAppElements(): AppElements {
     settingRunNotificationsTestButton: requiredElement<HTMLButtonElement>("#settingRunNotificationsTestButton"),
     settingDefaultBucketColorSelect: requiredElement<HTMLSelectElement>("#settingDefaultBucketColorSelect"),
     settingNavPinnedCheckbox: requiredElement<HTMLInputElement>("#settingNavPinnedCheckbox"),
+    settingPinNewSessionsCheckbox: requiredElement<HTMLInputElement>("#settingPinNewSessionsCheckbox"),
     settingModelDefaultsValue: requiredElement<HTMLSpanElement>("#settingModelDefaultsValue"),
     settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),
     settingClearModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingClearModelDefaultsButton"),

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
-import { ensurePreviewArtifact } from "./helpers/artifacts.js";
-import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
+import { ensureMarkdownPreviewArtifact, ensurePreviewArtifact } from "./helpers/artifacts.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
+import { openSessionDrawerFooterAction, shouldCloseSessionDrawerAfterSwitch } from "./helpers/sessionDrawer.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -776,7 +777,7 @@ test.describe("composer layout", () => {
       if (!await page.locator("#settingsPanel").isVisible()) {
         await page.locator("#prompt").blur();
         if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
-        await openSessionDrawerFooterAction(page, "Settings");
+        await openSessionDrawerFooterAction(page, "Preferences");
         await expect(page.locator("#settingsPanel")).toBeVisible();
       }
       if (!await page.locator("#settingAccentMenuButton").isVisible()) await page.locator("#settingsNavAppearance").click();
@@ -842,7 +843,7 @@ test.describe("composer layout", () => {
       if (!await page.locator("#settingsPanel").isVisible()) {
         await page.locator("#prompt").blur();
         if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
-        await openSessionDrawerFooterAction(page, "Settings");
+        await openSessionDrawerFooterAction(page, "Preferences");
         await expect(page.locator("#settingsPanel")).toBeVisible();
       }
       if (!await page.locator("#settingLoadingAnimationSelect").isVisible()) await page.locator("#settingsNavAppearance").click();
@@ -945,7 +946,22 @@ test.describe("composer layout", () => {
     expect(state.thinkingLevel).toBe("off");
   });
 
-  test("model settings popover stays open after mobile model selection", async ({ page }) => {
+  test("touchscreen taps toggle the picker once and do not swallow keyboard activation", async ({ page, context }) => {
+    test.skip(!context.browser() || !page.viewportSize(), "Requires browser context");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/");
+    const button = page.locator("#modelSettingsButton");
+    await button.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+    // Pointer-enabled browsers must not handle a compatibility touchstart twice.
+    await button.dispatchEvent("touchstart", { bubbles: true });
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+  });
+
+  test("model selection closes the picker without activating the mobile search field", async ({ page }) => {
     const models = [
       { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 },
       { provider: "mock", id: "other", name: "Other Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 },
@@ -972,21 +988,202 @@ test.describe("composer layout", () => {
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();
     await expect(page.locator("#modelSelect")).toHaveValue("mock/model");
 
-    await page.locator("#modelSelect").selectOption("mock/other");
-    await expect(page.locator("#modelSettingsButton")).toBeEnabled();
-
-    await page.evaluate(() => {
-      document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
-    });
-
-    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
-    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("aria-expanded", "true");
+    const search = page.getByRole("searchbox", { name: "Search models or providers" });
+    await search.fill("mock other");
+    await expect(page.locator(".modelPickerChoice")).toHaveCount(1);
+    await page.getByRole("button", { name: "Favorite mock/other", exact: true }).click();
+    await expect(page.locator(".modelPickerHeading").first()).toHaveText("★ Favorites");
+    await page.locator(".modelPickerChoice").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+    expect(await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).not.toBe("Search models or providers");
     await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
     await expect(page.locator("#modelSettingsButton")).toContainText("Other Mock Model");
     await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/other/);
+    await expect(page.locator("#modelSettingsButton")).toBeEnabled();
 
-    await page.mouse.click(5, 5);
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await search.fill("mock other");
+    await page.locator(".modelPickerChoice").click();
     await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+    expect(await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).not.toBe("Search models or providers");
+    await page.reload();
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator(".modelPickerChoice").first()).toContainText("mock/other");
+    await expect(page.getByRole("button", { name: "Unfavorite mock/other", exact: true })).toBeVisible();
+  });
+
+  test("model picker refreshes its catalog on open and keeps search and filters", async ({ page }) => {
+    const oldModel = { provider: "openai-codex", id: "gpt-6-sol", name: "Sol 6" };
+    const newModel = { provider: "openai-codex", id: "gpt-6.1-sol", name: "Sol 6.1" };
+    let refreshes = 0;
+    await page.route("**/api/models**", route => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("refresh") === "1") refreshes++;
+      return route.fulfill({ json: {
+        current: oldModel, models: url.searchParams.get("refresh") === "1" ? [oldModel, newModel] : [oldModel],
+        thinkingLevel: "off", thinkingLevels: ["off"],
+      } });
+    });
+    await page.goto("/");
+    await page.locator("#modelSettingsButton").click();
+    const search = page.getByRole("searchbox", { name: "Search models or providers" });
+    await search.fill("6.1");
+    await expect(page.locator(".modelPickerChoice")).toHaveCount(1);
+    await expect(page.locator(".modelPickerChoice")).toContainText("gpt-6.1-sol");
+    await expect(search).toHaveValue("6.1");
+    expect(refreshes).toBeGreaterThan(0);
+    await page.getByRole("button", { name: "Refresh models" }).click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(search).toHaveValue("6.1");
+  });
+
+  test("model picker handles a 500-model catalog with bounded pages and full-catalog search", async ({ page }) => {
+    const models = Array.from({ length: 500 }, (_, i) => ({
+      provider: `provider-${Math.floor(i / 50)}`,
+      id: `model-${String(i).padStart(3, "0")}`,
+      name: `Model ${String(i).padStart(3, "0")}`,
+    }));
+    await page.route("**/api/models**", route => route.fulfill({
+      json: { current: models[0], models, thinkingLevel: "off", thinkingLevels: ["off"] },
+    }));
+    await page.goto("/");
+    await page.locator("#modelSettingsButton").click();
+    const choices = page.locator(".modelPickerChoice");
+    const search = page.getByRole("searchbox", { name: "Search models or providers" });
+    const providers = page.getByRole("combobox", { name: "Filter by provider" });
+    await expect(choices).toHaveCount(40);
+    await expect(page.locator(".modelPickerPagination")).toContainText("1–40 of 500");
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(page.locator(".modelPickerPagination")).toContainText("41–80 of 500");
+    await expect(choices.first()).toBeFocused();
+    await providers.selectOption("provider-9");
+    await expect(page.locator(".modelPickerPagination")).toContainText("1–40 of 50");
+    await expect(choices.first()).toContainText("provider-9");
+    await providers.selectOption("");
+    await search.fill("model-499");
+    await expect(choices).toHaveCount(1);
+    await expect(choices).toContainText("provider-9/model-499");
+    await expect(page.locator(".modelPickerPagination")).toBeHidden();
+    await page.getByRole("button", { name: "Favorite provider-9/model-499", exact: true }).click();
+    await search.fill("");
+    await page.getByRole("button", { name: "★ Favorites only", exact: true }).click();
+    await expect(choices).toHaveCount(1);
+    await expect(choices).toContainText("model-499");
+    await page.getByRole("button", { name: "Unfavorite provider-9/model-499", exact: true }).click();
+    await expect(choices).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "★ Favorites only", exact: true })).toBeFocused();
+    await expect(page.locator(".modelPicker [role=status]")).toContainText("No favorites yet");
+  });
+
+  test("desktop model picker uses a readable list without overlapping the right panel", async ({ page }) => {
+    const models = ["one", "two", "three"].map(id => ({ provider: "mock", id, name: `Model ${id}` }));
+    await page.route("**/api/models**", route => route.fulfill({
+      json: { current: models[0], models, thinkingLevel: "off", thinkingLevels: ["off"] },
+    }));
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto("/");
+    await page.locator("#modelSettingsButton").click();
+    const popup = page.locator("#modelSettingsPopover");
+    await expect(popup).toBeVisible();
+    expect((await popup.boundingBox())!.width).toBeGreaterThan(800);
+    const choices = page.locator(".modelPickerChoice");
+    await expect(choices).toHaveCount(3);
+    const first = (await choices.nth(0).boundingBox())!;
+    const second = (await choices.nth(1).boundingBox())!;
+    expect(second.y).toBeGreaterThanOrEqual(first.y + first.height);
+    const name = (await choices.first().locator("strong").boundingBox())!;
+    const detail = (await choices.first().locator("small").boundingBox())!;
+    expect(detail.x).toBeGreaterThan(name.x + name.width);
+    await page.keyboard.press("Escape");
+    await page.locator(".actionLauncherToggle").click();
+    await page.getByRole("menuitem", { name: "Session details" }).click();
+    const panel = page.locator("#sessionInfoPanel");
+    await expect(panel).toBeVisible();
+    await page.locator("#modelSettingsButton").click();
+    await expect(popup).toBeVisible();
+    const bounds = (await popup.boundingBox())!;
+    const panelBounds = (await panel.boundingBox())!;
+    expect(bounds.x).toBeGreaterThanOrEqual(16);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(panelBounds.x - 15);
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+  });
+
+  test("model picker connects to its trigger with a view transition in both composer layouts", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    for (const draft of ["", "An active composer draft"]) {
+      await page.goto("/");
+      await expect(page.locator("#modelSettingsLabel")).not.toBeEmpty();
+      if (draft) {
+        await page.locator("#prompt").fill(draft);
+        await expect(page.locator("#primaryButton")).toBeEnabled();
+        await page.locator("#prompt").blur();
+      }
+      const button = page.locator("#modelSettingsButton");
+      const origin = (await button.boundingBox())!;
+      await button.evaluate(element => (element as HTMLButtonElement).click());
+      await expect(page.locator("html")).toHaveAttribute("data-model-transition", "true");
+      await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+      await expect(page.locator("html")).not.toHaveAttribute("data-model-transition");
+      await page.keyboard.press("Escape");
+      await expect(page.locator("html")).toHaveAttribute("data-model-transition", "true");
+      await expect(page.locator("html")).not.toHaveAttribute("data-model-transition");
+      await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+      await expect(button).toBeFocused();
+      if (!draft) {
+        await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+        const returned = (await button.boundingBox())!;
+        expect(Math.abs(returned.x - origin.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(returned.width - origin.width)).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  test("opening the model picker preserves the composer footer widths", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/");
+    await expect(page.locator("#modelSettingsLabel")).not.toBeEmpty();
+    await page.locator("#prompt").fill("Draft to keep the composer active");
+    await expect(page.locator("#primaryButton")).toBeEnabled();
+    await page.locator("#prompt").blur();
+    const controls = page.locator(".modelControl");
+    const footer = page.locator(".composerFooter");
+    const before = (await controls.boundingBox())!;
+    const footerBefore = (await footer.boundingBox())!;
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    const after = (await controls.boundingBox())!;
+    const footerAfter = (await footer.boundingBox())!;
+    expect(Math.abs(after.width - before.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(footerAfter.width - footerBefore.width)).toBeLessThanOrEqual(1);
+  });
+
+  test("model picker keeps static details above reachable controls and wraps long names", async ({ page }) => {
+    const current = {
+      provider: "a-very-long-provider-name-for-an-enterprise-model-deployment",
+      id: "a-very-long-model-id-with-region-and-version-information",
+      name: "A descriptive model name that should remain readable without clipping",
+    };
+    await page.route("**/api/models**", route => route.fulfill({
+      json: { current, models: [current], thinkingLevel: "off", thinkingLevels: ["off"] },
+    }));
+    await page.goto("/");
+    await page.locator("#modelSettingsButton").click();
+    const summary = page.locator(".modelSettingsCurrent");
+    const picker = page.locator(".modelPicker");
+    await expect(picker).toBeVisible();
+    const summaryBox = (await summary.boundingBox())!;
+    const pickerBox = (await picker.boundingBox())!;
+    const reasoningBox = (await page.locator("#thinkingSelect").boundingBox())!;
+    expect(summaryBox.y + summaryBox.height).toBeLessThanOrEqual(reasoningBox.y);
+    expect(reasoningBox.y + reasoningBox.height).toBeLessThanOrEqual(pickerBox.y);
+    for (const selector of [".modelSettingsCurrentValue", ".modelPickerChoice strong", ".modelPickerChoice small"]) {
+      const readable = await page.locator(selector).evaluateAll(elements => elements.every(element => {
+        const style = getComputedStyle(element);
+        return style.whiteSpace === "normal" && element.scrollWidth <= element.clientWidth + 1;
+      }));
+      expect(readable).toBe(true);
+    }
   });
 
   test("model settings popover is not clipped on mobile", async ({ page }) => {
@@ -1072,8 +1269,8 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
 
     await page.getByText("Older mock session").click();
-    const isMobile = (page.viewportSize()?.width || 0) <= 700;
-    if (isMobile) {
+    const closesAfterSwitch = await shouldCloseSessionDrawerAfterSwitch(page);
+    if (closesAfterSwitch) {
       await expect(page.locator("#sessionDrawer")).toBeHidden();
       await page.locator("#sessionButton").click();
     } else {
@@ -1128,7 +1325,7 @@ test.describe("sessions drawer", () => {
     const pinnedCwd = "/Users/ashwin/projects/pi";
     const projectCwd = "/Users/ashwin/projects/pi-web";
     const archiveCwd = "/Users/ashwin/archive/pi-web";
-    await page.request.patch("/api/session-ui-state", { data: { pinnedFolders: [pinnedCwd] } });
+    await seedSessionUiState(page, { pinnedFolders: [pinnedCwd] });
 
     await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
       await route.fulfill({
@@ -1189,21 +1386,20 @@ test.describe("sessions drawer", () => {
     await expect(drawer.getByText("Older mock session")).toBeVisible();
 
     await drawer.getByText("Older mock session").click();
-    const isOverlayMode = (page.viewportSize()?.width || 0) <= 1024;
-    if (isOverlayMode) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    const closesAfterSwitch = await shouldCloseSessionDrawerAfterSwitch(page);
+    if (closesAfterSwitch) await expect(page.locator("#sessionDrawer")).toBeHidden();
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.getByText("Resumed older session.")).toBeVisible();
 
-    if (isOverlayMode) await page.locator("#sessionButton").click();
+    if (closesAfterSwitch) await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
-    if (isOverlayMode) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    if (closesAfterSwitch) await expect(page.locator("#sessionDrawer")).toBeHidden();
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
     const emptyState = page.locator(".emptyCwdChooser", { hasText: "Working directory" });
     await expect(emptyState).toBeVisible();
-    const animation = emptyState.locator(".newChatLoadingAnimation");
+    const animation = emptyState.locator("#identityNewSessionAnimation");
     await expect(animation).toBeVisible();
-    await expect(animation).not.toHaveClass(/resetting/);
-    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+    await expect.poll(() => animation.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     const cwdButton = emptyState.getByRole("button", { name: "Change working directory" });
     await expect(cwdButton).toContainText(/pi-web/);
     const trailingSpace = await cwdButton.evaluate((button) => {
@@ -1313,10 +1509,19 @@ test.describe("attachments and prompt", () => {
     expect(pillBox.x + pillBox.width).toBeLessThanOrEqual(fabBox.x);
     await expect(page.locator(".removeAttachment")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
 
-    await chip.locator("img").click();
-    await expect(page.locator(".imageOverlay img")).toBeVisible();
-    await page.locator(".imageOverlay").click();
+    const composerImage = chip.locator("img");
+    await composerImage.click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await expect(page.locator("#artifactBrowserPreviewOpen")).toHaveAttribute("href", /^blob:/);
+    await page.locator("#artifactBrowserPreviewBack").click();
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    await expect(composerImage).toBeFocused();
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await page.goBack();
+    await expect(page.locator("#filesPanel")).toBeHidden();
 
+    await page.locator("#prompt").focus();
     await page.locator("#prompt").blur();
     await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
     await expect(page.locator(".attachmentChip")).toBeVisible();
@@ -1385,7 +1590,7 @@ test.describe("attachments and prompt", () => {
     await page.locator("#imageInput").setInputFiles({ name: "debug.png", mimeType: "image/png", buffer: VALID_PNG });
     await expect(page.locator(".attachmentChip")).toContainText("debug.png");
     await page.reload();
-    await page.locator("#settingsButton").evaluate((button: HTMLButtonElement) => button.click());
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavDiagnostics").click();
     await page.locator("#openDebugDiagnosticsButton").click();
 
@@ -1418,8 +1623,8 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator(".message.user .messageAttachmentImage")).toBeVisible();
     await expect(page.locator(".message.user .messageAttachmentCount")).toHaveText("1 attached");
     await page.locator(".message.user .messageAttachmentImage").click();
-    await expect(page.locator(".imageOverlay img")).toBeVisible();
-    await page.locator(".imageOverlay").click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await page.locator("#artifactBrowserPreviewBack").click();
     await expect(page.getByText("Mock response.").first()).toBeVisible();
   });
 });
@@ -1521,8 +1726,10 @@ test.describe("tool cards", () => {
   });
 
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
+    const settingsLoaded = page.waitForResponse((response) => response.url().includes("/api/settings") && response.ok());
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await settingsLoaded;
     await page.evaluate(() => { document.documentElement.dataset.density = "compact"; });
     await page.locator("#prompt").fill("use tool");
     await page.locator("#primaryButton").click();
@@ -1695,6 +1902,19 @@ test.describe("assistant markdown rendering", () => {
     });
     expect(await labelColor("Default dark node")).toBe("rgb(242, 242, 242)");
     expect(await labelColor("Pastel node")).toBe("rgb(17, 24, 39)");
+  });
+
+  test("shows Mermaid rendering errors alongside the source", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return invalid mermaid");
+    await page.locator("#primaryButton").click();
+
+    const latestAssistant = page.locator(".message.assistant", { hasText: "Here is an invalid Mermaid diagram" }).last();
+    const diagram = latestAssistant.locator(".mermaidDiagram--error");
+    await expect(diagram).toBeVisible({ timeout: 10_000 });
+    await expect(diagram.getByRole("alert")).toContainText("Diagram couldn't be rendered:");
+    await expect(diagram.locator("pre > code.language-mermaid")).toContainText("A -->");
+    await expect(diagram.locator(":scope > svg")).toHaveCount(0);
   });
 
   test("opens and operates the full-screen Mermaid viewer", async ({ page }) => {
@@ -1918,12 +2138,13 @@ test.describe("image rendering", () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
-    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n```ts\nconst preview = true;\n```\n");
+    await ensureMarkdownPreviewArtifact();
     await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
     await ensurePreviewArtifact();
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
     await writeFile(join(artifactDir, "e2e-audio-artifact.mp3"), Buffer.from("MP3"));
     await writeFile(join(artifactDir, "e2e-toolpath.gcode"), "G1 X0 Y0\nG1 X10 Y10 E1\n");
+    await writeFile(join(artifactDir, "preview-brief.pdf"), "%PDF-1.1\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n");
   });
 
   test.beforeEach(async ({ page }) => {
@@ -1943,6 +2164,19 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewContent pre code")).toContainText("const preview = true;");
     await expect(page.locator(".artifactPreview--markdown")).toHaveCount(1);
     await expect(preview.locator('.artifactPreviewContent a[href="/api/artifacts/report.md"]')).toHaveText("Self reference");
+  });
+
+  test("renders html-preview fences inside inline markdown artifact cards", async ({ page }) => {
+    await page.route("**/api/artifacts/report.md", (route) => route.fulfill({
+      contentType: "text/markdown",
+      body: '# Preview reproduction\n\n```html-preview\n<div id="repro">Interactive artifact</div>\n```\n',
+    }));
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const content = page.locator(".artifactPreview--markdown").last().locator(".artifactPreviewContent");
+    await expect(content.locator("h1")).toHaveText("Preview reproduction");
+    await expect(content.locator("iframe.htmlPreviewFrame")).toHaveCount(1);
+    await expect(content.frameLocator("iframe.htmlPreviewFrame").locator("#repro")).toHaveText("Interactive artifact");
   });
 
   test("expands long artifacts in the chat flow without trapping the wheel", async ({ page }) => {
@@ -2056,10 +2290,11 @@ test.describe("image rendering", () => {
     await page.locator("#prompt").fill("show markdown artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
+    const panel = page.locator("#filesPanel");
     const open = page.locator(".artifactPreview--markdown").last().getByRole("button", { name: "Open in Artifacts panel" });
+    await expect(panel).toBeHidden();
     await open.click();
 
-    const panel = page.locator("#filesPanel");
     await expect(panel).toBeVisible();
     await expect(panel).toHaveAttribute("data-files-scope", "artifacts");
     await expect(panel).toHaveAttribute("data-artifact-view", "preview");
@@ -2069,6 +2304,34 @@ test.describe("image rendering", () => {
     const viewportWidth = page.viewportSize()?.width || 0;
     if (viewportWidth <= 1024) expect(Math.abs(width - viewportWidth)).toBeLessThanOrEqual(1);
     else expect(width).toBeLessThan(viewportWidth);
+
+    // A second open is a distinct preview navigation: Back returns to the
+    // previous preview before returning to the originally closed drawer.
+    await open.evaluate((button: HTMLButtonElement) => button.click());
+    await page.goBack();
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveAttribute("data-artifact-view", "preview");
+    await page.goBack();
+    await expect(panel).toBeHidden();
+
+    await page.goForward();
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveAttribute("data-artifact-view", "preview");
+    await page.locator("#artifactBrowserPreviewBack").click();
+    await expect(panel).toBeHidden();
+
+    // If the panel was already open elsewhere, the preview owns only one new
+    // entry and Back restores that prior panel location instead of closing it.
+    await page.locator("#filesButton").evaluate((button: HTMLButtonElement) => button.click());
+    await expect(panel).toBeVisible();
+    await page.locator("#artifactBrowserPreviewBack").click();
+    await page.locator("#filesWorkspaceScope").evaluate((button: HTMLButtonElement) => button.click());
+    await expect(panel).toHaveAttribute("data-files-scope", "workspace");
+    await open.evaluate((button: HTMLButtonElement) => button.click());
+    await expect(panel).toHaveAttribute("data-artifact-view", "preview");
+    await page.goBack();
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveAttribute("data-files-scope", "workspace");
   });
 
   test("renders html artifact links in a sandboxed iframe", async ({ page }) => {
@@ -2162,7 +2425,7 @@ test.describe("image rendering", () => {
     expect((await downloadStarted).suggestedFilename()).toBe("e2e-audio-artifact.mp3");
   });
 
-  test("image actions appear on hover with fullscreen, download and open buttons", async ({ page }) => {
+  test("image actions appear on hover with preview, download and open buttons", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
@@ -2177,38 +2440,291 @@ test.describe("image rendering", () => {
     await frame.hover();
     await expect(actions).toBeVisible();
 
-    await expect(frame.locator('[title="Fullscreen"]')).toBeVisible();
+    await expect(frame.locator('[title="Preview"]')).toBeVisible();
     await expect(frame.locator('[title="Download"]')).toBeVisible();
     await expect(frame.locator('[title="Open in new tab"]')).toBeVisible();
   });
 
-  test("fullscreen button opens overlay with image", async ({ page }) => {
+  test("preview button opens shared preview with image", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
     const frame = page.locator(".message.assistant .imageFrame").last();
     await expect(frame).toBeVisible();
     await frame.hover();
-    await frame.locator('[title="Fullscreen"]').click();
+    await frame.locator('[title="Preview"]').click();
 
-    const overlay = page.locator(".imageOverlay");
-    await expect(overlay).toBeVisible();
-    await expect(overlay.locator("img")).toBeVisible();
+    const preview = page.locator("#artifactBrowserPreview");
+    await expect(preview).toBeVisible();
+    await expect(preview.locator(".artifactBrowserPreviewBody--image img")).toBeVisible();
   });
 
-  test("overlay closes when clicked", async ({ page }) => {
+  test("shared image preview closes with its back control", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
     const frame = page.locator(".message.assistant .imageFrame").last();
     await expect(frame).toBeVisible();
     await frame.hover();
-    await frame.locator('[title="Fullscreen"]').click();
+    await frame.locator('[title="Preview"]').click();
 
-    const overlay = page.locator(".imageOverlay");
-    await expect(overlay).toBeVisible();
-    await overlay.click();
-    await expect(overlay).toHaveCount(0);
+    const preview = page.locator("#artifactBrowserPreview");
+    await expect(preview).toBeVisible();
+    await page.locator("#artifactBrowserPreviewBack").click();
+    await expect(preview).toBeHidden();
+  });
+
+  test("closing the image viewer restores focus to its opener", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#primaryButton").click();
+
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.hover();
+    const button = frame.locator("[title='Preview']");
+    await button.click();
+    await expect(page.locator("#artifactBrowserPreviewBack")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#artifactBrowserPreview")).toBeHidden();
+    await expect(button).toBeFocused();
+  });
+
+  test("navigates session images, Markdown, HTML, video, PDF and extension previews in the same panel", async ({ page }) => {
+    await page.route("**/api/web-contributions/invoke", (route) => route.fulfill({ json: { ok: true, html: "<!doctype html><p id='toolpath'>Toolpath ready</p>" } }));
+    await page.request.post("/api/mock/state", { data: {
+      webContributions: [{ version: 1, key: "gcode-preview", slot: "artifact-preview", kind: "rendered", title: "G-code preview", match: { kinds: ["file"], extensions: [".gcode"] } }],
+    } });
+    await page.reload();
+    for (const [prompt, selector] of [
+      ["show artifact", ".message.assistant .imageFrame"],
+      ["show markdown artifact", ".artifactPreview--markdown"],
+      ["show html artifact", ".artifactPreview--html"],
+      ["show video artifact", ".artifactPreview--video"],
+      ["show gcode artifact", ".artifactPreview--file"],
+    ] as const) {
+      await page.locator("#prompt").fill(prompt);
+      await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+      await expect(page.locator(selector).last()).toBeVisible();
+    }
+    // A PDF is still an ordinary file link, not a virtual artifact object.
+    await page.locator("#messages").evaluate((messages) => {
+      const link = document.createElement("a");
+      link.href = "/api/artifacts/preview-brief.pdf";
+      link.textContent = "Preview PDF";
+      messages.append(link);
+    });
+    await page.locator(".message.assistant .imageFrame").first().hover();
+    await page.locator(".message.assistant .imageFrame [title='Preview']").first().click();
+    const panel = page.locator("#filesPanel");
+    await expect(panel).toBeVisible();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    const next = page.getByRole("button", { name: "Next preview" });
+    const previous = page.getByRole("button", { name: "Previous preview" });
+    await next.click();
+    await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
+    await page.locator("#filesCloseButton").focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("report.md"); // outside preview focus
+    expect(await page.locator("#prompt").evaluate((input) => {
+      const key = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+      input.dispatchEvent(key);
+      return key.defaultPrevented;
+    })).toBe(false); // composer retains native cursor movement, even behind a mobile pane
+    await next.focus();
+    await page.keyboard.press("ArrowRight");
+    const htmlFrame = page.locator("#artifactBrowserPreviewBody iframe");
+    await expect(htmlFrame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("preview.html");
+    await htmlFrame.contentFrame().locator("body").click({ position: { x: 5, y: 5 } });
+    await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe("IFRAME");
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("preview.html"); // iframe owns its keys
+    await next.click();
+    const video = page.locator("#artifactBrowserPreviewBody video");
+    await expect(video).toHaveAttribute("controls", "");
+    expect(await video.evaluate((element) => !element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true })))).toBe(false);
+    await next.click();
+    await expect(page.locator("#artifactBrowserPreviewBody iframe")).toHaveAttribute("srcdoc", /Toolpath ready/);
+    await next.click();
+    await expect(page.locator("#artifactBrowserPreviewBody iframe")).toHaveAttribute("src", "/api/artifacts/preview-brief.pdf");
+    await next.click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await previous.click();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("preview-brief.pdf");
+    await page.goBack();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("e2e-test.png");
+  });
+
+  test("navigates a session attachment blob and a file-backed preview without substituting its source", async ({ page }) => {
+    await page.locator("#imageInput").setInputFiles({ name: "session-photo.png", mimeType: "image/png", buffer: VALID_PNG });
+    await page.locator("#prompt").fill("photo and report");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await expect(page.locator(".message.user .messageAttachmentImage")).toBeVisible();
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await expect(page.locator(".artifactPreview--markdown")).toBeVisible();
+    await page.locator(".message.user .messageAttachmentImage").click();
+    const source = await page.locator("#artifactBrowserPreviewOpen").getAttribute("href");
+    expect(source).toMatch(/^blob:/);
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toHaveAttribute("src", source!);
+    await page.getByRole("button", { name: "Next preview" }).click();
+    await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
+    await page.goBack();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toHaveAttribute("src", source!);
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
+    await page.getByRole("button", { name: "Previous preview" }).click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toHaveAttribute("src", source!);
+  });
+
+  test("Markdown preview artifact links navigate the panel without recursive cards or hijacking other links", async ({ page }) => {
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await page.locator(".artifactPreview--markdown").getByRole("button", { name: "Open in Artifacts panel" }).click();
+    const body = page.locator("#artifactBrowserPreviewBody");
+    await expect(body.locator("h1")).toHaveText("Artifact report");
+    await expect(body.locator(".artifactPreview")).toHaveCount(0);
+    await expect(body.getByRole("link", { name: "External docs" })).toHaveAttribute("href", "https://example.com/");
+    const link = body.getByRole("link", { name: "Open HTML" });
+    await link.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("report.md");
+    await link.click();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("preview.html");
+    await expect(body.locator("iframe")).toHaveAttribute("sandbox", "allow-scripts");
+    await page.goBack();
+    await expect(body.locator("h1")).toHaveText("Artifact report");
+    await expect(body.locator(".artifactPreview")).toHaveCount(0);
+  });
+
+  test("Escape closes only the topmost layer and restores the image opener", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const opener = page.locator(".message.assistant .imageFrame [title='Preview']").last();
+    await page.locator(".message.assistant .imageFrame").last().hover();
+    await opener.click();
+    await expect(page.locator("#artifactBrowserPreviewBack")).toBeFocused();
+    await page.evaluate(() => { const dialog = document.createElement("dialog"); dialog.id = "nested-preview-dialog"; dialog.innerHTML = "<button>Close</button>"; document.body.append(dialog); dialog.showModal(); });
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#nested-preview-dialog")).not.toHaveAttribute("open", "");
+    await expect(page.locator("#filesPanel")).toBeVisible();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    await expect(opener).toBeFocused();
+  });
+
+  test("composer-only preview disables stepping even with session artifacts", async ({ page }) => {
+    await page.setViewportSize({ width: 411, height: 903 });
+    for (const prompt of ["show artifact", "show markdown artifact"]) {
+      await page.locator("#prompt").fill(prompt);
+      await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    }
+    await page.locator("#imageInput").setInputFiles({ name: "composer.png", mimeType: "image/png", buffer: VALID_PNG });
+    await page.locator("#prompt").focus();
+    await page.locator(".attachmentChip img").click();
+    await expect(page.locator("#filesPanel")).toBeVisible();
+    await expect(page.locator("button[aria-label='Previous preview']")).toBeDisabled();
+    await expect(page.locator("button[aria-label='Next preview']")).toBeDisabled();
+  });
+
+  test("reopening for a different preview never requests retained HTML", async ({ page }) => {
+    let htmlRequests = 0;
+    page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/artifacts/preview.html") htmlRequests++; });
+    for (const prompt of ["show html artifact", "show artifact"]) {
+      await page.locator("#prompt").fill(prompt);
+      await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    }
+    const html = page.locator(".artifactPreview--html").last();
+    await html.getByRole("button", { name: "Open in Artifacts panel" }).click();
+    await expect(page.locator("#artifactBrowserPreviewBody iframe")).toBeVisible();
+    await page.locator("#filesCloseButton").click();
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    const before = htmlRequests;
+    const image = page.locator(".message.assistant .imageFrame").last();
+    await image.hover(); await image.locator("[title='Preview']").click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    expect(htmlRequests).toBe(before);
+  });
+
+  test("Escape dismisses the session inspector above the preview panel first", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.hover(); await frame.locator("[title='Preview']").click();
+    await page.locator(".sessionBarTab").first().evaluate((tab) => tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await expect(page.locator(".sessionInspector")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sessionInspector")).toHaveCount(0);
+    await expect(page.locator("#filesPanel")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#filesPanel")).toBeHidden();
+  });
+
+  test("external artifact-shaped image URLs remain external", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.locator("img").evaluate((img: HTMLImageElement) => { img.src = "https://cdn.example/api/artifacts/photo.png"; });
+    await frame.hover();
+    await frame.locator("[title='Preview']").click();
+    await expect(page.locator("#artifactBrowserPreviewOpen")).toHaveAttribute("href", "https://cdn.example/api/artifacts/photo.png");
+  });
+
+  test("image history works when crypto.randomUUID is unavailable", async ({ page }) => {
+    await page.evaluate(() => Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true }));
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.locator("img").evaluate((img: HTMLImageElement, data) => { img.src = data; }, `data:image/png;base64,${VALID_PNG.toString("base64")}`);
+    await frame.hover(); await frame.locator("[title='Preview']").click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    const id = await page.evaluate(() => history.state.piWebArtifactView.id as string);
+    expect(id).toMatch(/^img-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+$/);
+    await page.goBack();
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    expect(await page.evaluate(() => history.state.piWebArtifactView.id)).toBe(id);
+  });
+
+  test("transient image history stores only an ID and survives Back without serializing pixels", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.locator("img").evaluate((img: HTMLImageElement) => {
+      img.src = `data:image/png;base64,${"A".repeat(2_100_000)}`;
+    });
+    await frame.hover();
+    await frame.locator("[title='Preview']").click();
+    expect(await page.evaluate(() => JSON.stringify(history.state).length)).toBeLessThan(2000);
+    await page.goBack();
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toBeVisible();
+  });
+
+  test("mouse panning uses cumulative motion only on images; zoom resets when navigating", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await page.locator("#prompt").fill("show video artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await page.locator(".message.assistant .imageFrame").last().hover();
+    await page.locator(".message.assistant .imageFrame [title='Preview']").last().click();
+    const image = page.locator("#artifactBrowserPreviewBody > img");
+    await image.evaluate((node) => { node.style.width = "100%"; node.style.height = "100%"; });
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    await expect(page.getByRole("button", { name: "Reset zoom" })).toHaveText("125%");
+    const box = (await image.boundingBox())!;
+    await image.evaluate((node) => { node.addEventListener("click", (event) => { (window as any).__previewDragSuppressed = event.defaultPrevented; }, { once: true }); });
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    for (let i = 1; i <= 5; i++) await page.mouse.move(box.x + box.width / 2 + i, box.y + box.height / 2);
+    await page.mouse.up();
+    await expect.poll(() => page.evaluate(() => (window as any).__previewDragSuppressed)).toBe(true);
+    await page.getByRole("button", { name: "Next preview" }).click();
+    await expect(page.locator("#artifactBrowserPreviewBody video")).toBeVisible();
+    await expect(page.locator("#artifactBrowserPreviewBody img")).toHaveCount(0);
+    await page.getByRole("button", { name: "Previous preview" }).click();
+    await expect(page.getByRole("button", { name: "Reset zoom" })).toHaveText("100%");
   });
 
   test("image is constrained and does not overflow the message", async ({ page }) => {

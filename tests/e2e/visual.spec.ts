@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { ensurePreviewArtifact } from "./helpers/artifacts.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -44,7 +45,7 @@ async function seedSessionShowcaseState(page: import("@playwright/test").Page, c
   for (const [sessionId, name] of [[currentSessionId, currentLabel], ["mock-older", "Customer evidence"], ["mock-release", "Release handoff"], ["mock-git", "Reference implementation"]] as const) {
     await page.request.post("/api/session/name", { data: { sessionId, name } });
   }
-  await page.request.patch("/api/session-ui-state", { data: {
+  await seedSessionUiState(page, {
     lanes: [
       { sessionId: currentSessionId, lane: "pinned", since: "2026-01-04T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "pinned", since: "2026-01-03T00:00:00.000Z" },
@@ -63,7 +64,7 @@ async function seedSessionShowcaseState(page: import("@playwright/test").Page, c
       { sessionId: "mock-git", color: "yellow", updatedAt: "2026-01-01T00:00:00.000Z" },
     ],
     selectedMarkerColor: "green",
-  } });
+  });
 }
 
 async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, projectName: string) {
@@ -95,7 +96,7 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
   const state = await (await page.request.get("/api/state")).json();
   const sessionId = state.sessionId as string;
   await page.request.post("/api/session/name", { data: { sessionId: "mock-older", name: "Customer evidence library" } });
-  await page.request.patch("/api/session-ui-state", { data: {
+  await seedSessionUiState(page, {
     lanes: [
       { sessionId, lane: "pinned", since: "2026-05-07T08:00:00.000Z" },
       { sessionId: "mock-older", lane: "pinned", since: "2026-05-06T08:00:00.000Z" },
@@ -109,7 +110,7 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
       { sessionId: "mock-older", color: "green", updatedAt: "2026-05-06T08:00:00.000Z" },
     ],
     selectedMarkerColor: "blue",
-  } });
+  });
   await sendPrompt(page, "Create the launch brief story from the interview and research notes.");
   await expect(page.locator(".message.assistant", { hasText: "Launch brief ready" })).toBeVisible();
   await expect(page.locator(".toolCard.toolCard--success", { hasText: "read" })).toBeVisible();
@@ -118,7 +119,7 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
   await expect(artifact).toBeVisible();
   await expect(artifact.locator("iframe").contentFrame().locator("h1")).toHaveText("Make every handoff feel effortless.");
   await page.locator("#modelSettingsButton").click();
-  await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+  await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
   await page.mouse.click(5, 5);
   await expect(page.locator("#modelSettingsPopover")).toBeHidden();
   await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
@@ -146,7 +147,7 @@ async function prepareNeutralWorkspace(page: import("@playwright/test").Page, pr
   await page.locator("#statusTitle input").fill("Launch research workspace");
   await page.locator("#statusTitle input").press("Enter");
   await page.locator("#modelSettingsButton").click();
-  await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+  await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
   await page.mouse.click(5, 5);
   await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
   await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}.messageTimestamp{visibility:hidden!important}" });
@@ -175,7 +176,7 @@ async function prepareRecommendedAddons(page: import("@playwright/test").Page, p
   expect(await renameResponse.json()).toMatchObject({ sessionId: activeSessionId, sessionTitle: "Studio launch planning" });
   await expect(page.locator("#statusTitle")).toHaveText("Studio launch planning");
   await page.locator("#modelSettingsButton").click();
-  await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+  await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
   await page.mouse.click(5, 5);
   await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
   await expect(page.locator('#headerActions .webHeaderActionButton[title="Session recap preview"]')).toBeVisible();
@@ -355,12 +356,15 @@ async function mockGitApi(page: import("@playwright/test").Page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  // Set this before navigation: CSS screenshot options do not settle the
+  // model picker's asynchronous View Transition update before later clicks.
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
     data: {
       appearance: { density: "comfortable", accentColor: "#e2b15f", loadingAnimation: "fireworks" },
       composer: { queueMode: "steer", expanded: false },
-      defaults: { model: null, thinkingLevel: null },
+      defaults: { model: null, thinkingLevel: null, pinNewSessions: false },
     },
   });
   const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
@@ -453,10 +457,12 @@ test.describe("visual regression", () => {
     await page.locator("#primaryButton").click();
     await expect(page.locator(".message.system.compaction")).toContainText("Context compacted");
     await scrollMessagesToBottom(page);
+    // The seeded model is already selected. Choosing it closes the picker;
+    // this scene intentionally captures the open settings instead.
     await page.locator("#modelSettingsButton").click();
-    await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
     await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(page.locator(".modelPickerChoice")).toContainText("anthropic/claude-sonnet-4");
     await expect(page).toHaveScreenshot(`capability-models-context-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
   });
 
@@ -492,7 +498,7 @@ test.describe("visual regression", () => {
   test("focused completion notifications", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "Preferences");
     await page.locator("#settingsNavNotifications").click();
     await expect(page.locator("#settingRunNotificationsCheckbox")).toBeVisible();
     await expect(page).toHaveScreenshot(`capability-notifications-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
@@ -507,7 +513,7 @@ test.describe("visual regression", () => {
       json: { id: "visual-grant", secret: "single-use-visual-grant", expiresAt: Date.now() + 120_000, url: "https://demo.pi-web.dev/api/auth/device?grant=single-use-visual-grant" },
     }));
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     await page.getByRole("button", { name: "＋ Connect a device", exact: true }).click();
     await page.getByRole("button", { name: "Create add-device link" }).click();
@@ -530,8 +536,8 @@ test.describe("visual regression", () => {
         await sendPrompt(page, "Summarize the launch decision.");
         await expect(page.locator("#stopButton")).toBeHidden();
         await page.locator("#modelSettingsButton").click();
-        await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4", { force: true });
-        await page.mouse.click(5, 5);
+        await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
+        await expect(page.locator("#modelSettingsPopover")).toBeHidden();
         await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
         await page.locator('#headerActions .webHeaderActionButton[title="Session recap preview"]').click();
         await expect(page.locator(".webHeaderActionPopoverBody")).toBeVisible({ timeout: 8_000 });
@@ -553,8 +559,8 @@ test.describe("visual regression", () => {
       }
       if (scene === "artifact-reference") {
         await page.locator("#modelSettingsButton").click();
-        await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4", { force: true });
-        await page.mouse.click(5, 5);
+        await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
+        await expect(page.locator("#modelSettingsPopover")).toBeHidden();
         await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
       }
       if (scene === "git-footer") await expect(page.locator('.webFooterEntry[data-footer-key="local-git-footer"]')).toContainText("dirty");
@@ -567,7 +573,7 @@ test.describe("visual regression", () => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
     await page.setViewportSize(testInfo.project.name === "desktop" ? { width: 1440, height: 1000 } : { width: 390, height: 844 });
     await page.request.post("/api/mock/reset");
-    await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }] } });
+    await seedSessionUiState(page, { sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }] });
     await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
       const response = await route.fetch();
       const body = await response.json();
@@ -703,18 +709,13 @@ test.describe("visual regression", () => {
   test("new session", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
 
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/");
     await startEmptySession(page);
     const emptyState = page.locator("#emptyCwdChooser");
-    const animation = emptyState.locator(".newChatLoadingAnimation");
     await expect(emptyState).toBeVisible();
-    await expect(animation).toBeVisible();
+    await expect(emptyState.locator("#identityNewSessionStill")).toBeVisible();
     await expect(emptyState.getByRole("button", { name: "Change working directory" })).toBeVisible();
-
-    // A PNG cannot represent motion. Wait for the one-shot animation to finish
-    // naturally, then capture its settled final frame.
-    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.ended), { timeout: 3_000 }).toBe(true);
-    await animation.evaluate((video: HTMLVideoElement) => video.pause());
 
     await expect(page).toHaveScreenshot(`new-session-${testInfo.project.name}.png`, {
       fullPage: true,
@@ -727,10 +728,10 @@ test.describe("visual regression", () => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 900 });
 
-    await page.request.patch("/api/session-ui-state", { data: {
+    await seedSessionUiState(page, {
       sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
       sessionMarkers: [{ sessionId: "mock-current", color: "yellow", updatedAt: "2026-01-01T00:00:00.000Z" }],
-    } });
+    });
     await page.goto("/");
     await page.locator("#sessionButton").click();
     const drawer = page.locator("#sessionDrawer");
@@ -775,7 +776,8 @@ test.describe("visual regression", () => {
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 1000 });
 
     await page.goto("/");
-    await openSessionDrawerFooterAction(page, "System info");
+    await openSessionDrawerFooterAction(page, "System");
+    if (!await page.locator("#systemInfoPanel").isVisible()) await page.locator("#settingsNavOverview").click();
     await expect(page.locator("#systemInfoPanel")).toBeVisible();
     await expect(page.locator("#systemInfoPanel").getByRole("heading", { name: "Host machine" })).toBeVisible();
 

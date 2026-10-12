@@ -1,3 +1,4 @@
+import { defaultAppIdentity, type AppIdentity } from "../../server/shared/appIdentity.js";
 import { parseSessionReference, sessionReferenceHref, type SessionReference } from "../../server/shared/sessionReference.js";
 
 export type AgentKind = "pi" | "claude-code" | "mock";
@@ -116,6 +117,8 @@ export type SessionStats = {
   assistantMessages?: number;
   toolResults?: number;
   totalMessages?: number;
+  /** Exact transcript-message count, excluding SDK branch metadata. */
+  conversationMessages?: number;
   tokens?: {
     input?: number;
     output?: number;
@@ -134,6 +137,7 @@ export type LoadingAnimation = "fireworks" | "glow" | "pulse";
 
 export type PiWebSettings = {
   version: 1;
+  identity: AppIdentity;
   appearance: {
     density: "comfortable" | "compact" | "minimal";
     navPinned: boolean;
@@ -149,6 +153,8 @@ export type PiWebSettings = {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
     sessionBucketColor?: SessionMarkerColorId;
+    /** Opt in to pinning sessions created after this preference is saved. */
+    pinNewSessions?: boolean;
   };
   extensions?: Record<string, StoredExtensionSettings>;
 };
@@ -221,15 +227,18 @@ export type SessionOrigin = { sessionId: string; originSessionId: string; kind: 
 export type SessionUiState = {
   version: 3;
   revision: number;
+  initialized: boolean;
   lanes: SessionLaneEntry[];
   sessionNotes: SessionNote[];
   pinnedFolders: string[];
+  favoriteFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
   bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
+  bucketOrder: SessionMarkerColorId[];
 };
 
 export const sessionMarkerColors: SessionMarkerColor[] = [
@@ -246,15 +255,18 @@ export const sessionMarkerColors: SessionMarkerColor[] = [
 export const defaultSessionUiState: SessionUiState = {
   version: 3,
   revision: 0,
+  initialized: false,
   lanes: [],
   sessionNotes: [],
   pinnedFolders: [],
+  favoriteFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
   sessionOrigins: [],
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
   bucketLabels: {},
+  bucketOrder: sessionMarkerColors.map((color) => color.id),
 };
 
 const markerColorIds = new Set<SessionMarkerColorId>(sessionMarkerColors.map((color) => color.id));
@@ -388,6 +400,18 @@ export function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
   return result;
 }
 
+/** Normalize a persisted bucket order into a complete stable-ID permutation. */
+export function normalizeBucketOrder(value: unknown): SessionMarkerColorId[] {
+  const ordered = normalizeMarkerColors(value);
+  const seen = new Set(ordered);
+  return [...ordered, ...sessionMarkerColors.map((color) => color.id).filter((color) => !seen.has(color))];
+}
+
+export function orderedSessionMarkerColors(order: unknown): SessionMarkerColor[] {
+  const byId = new Map(sessionMarkerColors.map((color) => [color.id, color]));
+  return normalizeBucketOrder(order).map((id) => byId.get(id)!);
+}
+
 export function normalizeSessionOrigins(value: unknown): SessionOrigin[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -413,16 +437,100 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   return {
     version: 3,
     revision: typeof raw.revision === "number" && Number.isSafeInteger(raw.revision) && raw.revision >= 0 ? raw.revision : 0,
+    initialized: raw.initialized === true,
     lanes: lanes.length ? lanes : legacy.map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
     sessionNotes: [...sessionNotes, ...migratedLaneNotes.filter((item) => !noteIds.has(item.sessionId))],
     pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
+    favoriteFolders: normalizePinnedFolders(raw.favoriteFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
     sessionOrigins: normalizeSessionOrigins(raw.sessionOrigins),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
     allowedMarkerColors: normalizeMarkerColors(raw.allowedMarkerColors),
     bucketLabels: normalizeBucketLabels(raw.bucketLabels),
+    bucketOrder: normalizeBucketOrder(raw.bucketOrder),
   };
+}
+
+export type SessionUiStateResponse = { ok: boolean; status?: number; sessionUiState?: unknown };
+
+/** A committed create/delete/clear can carry an optional preferences-write failure. */
+export function sessionUiMutationWarning(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const response = value as Record<string, unknown>;
+  if (response.ok !== true) return undefined;
+  const state = response.state;
+  const sessionId = state && typeof state === "object" && !Array.isArray(state)
+    ? (state as Record<string, unknown>).sessionId : undefined;
+  const committedId = response.sessionId ?? response.id ?? sessionId;
+  if (typeof committedId !== "string" || !committedId.trim()) return undefined;
+  const warning = response.sessionUiStateWarning;
+  return typeof warning === "string" && warning.trim() ? warning.trim().slice(0, 240) : undefined;
+}
+
+/** Only an explicit server availability marker is authoritative; omission alone is not first-run state. */
+export function sessionUiUnavailableWarning(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const response = value as Record<string, unknown>;
+  if (response.sessionUiStateAvailability !== "unavailable") return undefined;
+  const warning = response.sessionUiStateWarning;
+  return typeof warning === "string" && warning.trim()
+    ? warning.trim().slice(0, 240)
+    : "Session preferences are unavailable. Chat remains available; preferences are read-only until reload.";
+}
+
+/** Parse a complete authoritative v3 snapshot; local legacy normalization is intentionally separate. */
+export function parseSessionUiStateSnapshot(value: unknown): SessionUiState | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (raw.version !== 3 || !Number.isSafeInteger(raw.revision) || (raw.revision as number) < 0 || typeof raw.initialized !== "boolean") return undefined;
+  const record = (entry: unknown): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object" && !Array.isArray(entry);
+  const nonempty = (entry: unknown) => typeof entry === "string" && entry.trim().length > 0;
+  // The backend normalizes all five timestamp-bearing entry kinds before GET/SSE.
+  const timestamp = (entry: unknown) => typeof entry === "string" && Number.isFinite(Date.parse(entry));
+  const entries = (name: string, valid: (entry: Record<string, unknown>) => boolean) =>
+    Array.isArray(raw[name]) && raw[name].every((entry: unknown) => record(entry) && valid(entry))
+    && new Set(raw[name].map((entry: { sessionId: string }) => entry.sessionId)).size === raw[name].length;
+  const strings = (name: string) => Array.isArray(raw[name]) && raw[name].every(nonempty) && new Set(raw[name]).size === raw[name].length;
+  if (!entries("lanes", (entry) => nonempty(entry.sessionId) && ["pinned", "parked", "bookmarks"].includes(String(entry.lane))
+    && timestamp(entry.since)
+    && (entry.cwd === undefined || nonempty(entry.cwd)))
+    || !entries("sessionNotes", (entry) => nonempty(entry.sessionId) && nonempty(entry.note) && timestamp(entry.updatedAt))
+    || !entries("sessionMarkers", (entry) => nonempty(entry.sessionId) && Boolean(normalizeMarkerColor(entry.color)) && timestamp(entry.updatedAt))
+    || !entries("sessionUnreadStates", (entry) => nonempty(entry.sessionId) && timestamp(entry.unreadAt) && timestamp(entry.updatedAt))
+    || !entries("sessionOrigins", (entry) => nonempty(entry.sessionId) && nonempty(entry.originSessionId)
+      && entry.sessionId !== entry.originSessionId && nonempty(entry.kind) && timestamp(entry.updatedAt))
+    || !strings("pinnedFolders") || !strings("favoriteFolders") || !strings("allowedMarkerColors")
+    || !(raw.allowedMarkerColors as string[]).every((color) => normalizeMarkerColor(color))
+    || !normalizeMarkerColor(raw.selectedMarkerColor)
+    || !record(raw.bucketLabels) || !Object.entries(raw.bucketLabels).every(([color, label]) => normalizeMarkerColor(color) && typeof label === "string")
+    || !strings("bucketOrder") || (raw.bucketOrder as string[]).length !== sessionMarkerColors.length
+    || !(raw.bucketOrder as string[]).every((color) => normalizeMarkerColor(color))) return undefined;
+  return normalizeSessionUiState(raw);
+}
+
+export function sessionUiStateFromResponse(response: SessionUiStateResponse): SessionUiState | undefined {
+  if (!response.ok || response.status !== undefined && (response.status < 200 || response.status >= 300)) return undefined;
+  return parseSessionUiStateSnapshot(response.sessionUiState);
+}
+
+export function hasAnySessionUiState(value: SessionUiState) {
+  return value.lanes.length > 0
+    || value.sessionNotes.length > 0
+    || value.pinnedFolders.length > 0
+    || value.favoriteFolders.length > 0
+    || value.sessionMarkers.length > 0
+    || value.sessionUnreadStates.length > 0
+    || value.sessionOrigins.length > 0
+    || value.allowedMarkerColors.length > 0
+    || Object.keys(value.bucketLabels).length > 0
+    || value.bucketOrder.some((id, index) => id !== defaultSessionUiState.bucketOrder[index])
+    || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
+}
+
+export function shouldMigrateLocalUiState(response: SessionUiStateResponse, localState: SessionUiState) {
+  const serverState = sessionUiStateFromResponse(response);
+  return serverState?.initialized === false && serverState.revision === 0 && hasAnySessionUiState(localState);
 }
 
 export function readLegacyPinnedSessions(): PinnedSession[] {
@@ -531,6 +639,7 @@ export type AppState = {
   sessionNotes: SessionNote[];
   sessionsById: Record<string, SessionViewState>;
   pinnedFolders: string[];
+  favoriteFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
@@ -540,6 +649,7 @@ export type AppState = {
   currentAgent: AgentKind;
   currentCapabilities: AgentCapabilities;
   bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
+  bucketOrder: SessionMarkerColorId[];
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   expandedWorkerBranches: Set<string>;
@@ -572,6 +682,7 @@ export const sessionFolderPreviewLimit = 8;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
+  identity: structuredClone(defaultAppIdentity),
   appearance: { density: "comfortable", navPinned: false, navWidth: 360, accentColor: defaultAccentColor, loadingAnimation: defaultLoadingAnimation },
   composer: { queueMode: "steer", expanded: false },
   defaults: {
@@ -708,6 +819,7 @@ export function createAppState(): AppState {
     lanes: readLegacyPinnedSessions().map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
     sessionNotes: [],
     sessionsById: {},
+    favoriteFolders: [],
     sessionMarkers: readLegacySessionMarkers(),
     sessionUnreadStates: [],
     sessionOrigins: [],
@@ -716,6 +828,7 @@ export function createAppState(): AppState {
     currentAgent: "pi",
     currentCapabilities: defaultAgentCapabilities,
     bucketLabels: {},
+    bucketOrder: [...defaultSessionUiState.bucketOrder],
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
     expandedWorkerBranches: new Set(readExpandedWorkerBranches()),

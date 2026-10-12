@@ -3,15 +3,19 @@ import type { AppElements } from "../app/elements.js";
 import { iconElement, setIcon, type IconName } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
-import { panelOverlayModeQuery } from "../layout/responsive.js";
+import { sessionDrawerAutoCloseQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { createSessionDrawerHoverPeek } from "./sessionDrawerHoverPeek.js";
-import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, readActiveSessionIdFromUrl, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
+import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, sessionUiMutationWarning, sessionUiUnavailableWarning, writeActiveSessionIdToUrl } from "../app/types.js";
+import { SessionUiCoordinator, type UiIntent } from "./sessionUiSync.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
 import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
+import { emptySessionCandidates, queueNewSession, reusableEmptySession } from "./newSession.js";
+import { animateReorderLayout, edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
+import { openFolderPicker as showFolderPicker, type FolderListing } from "../files/folderPicker.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -38,10 +42,14 @@ export type SessionsController = {
   renderSessionBar: () => void;
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
+  startUiStateAfterAuth: () => Promise<boolean>;
+  markUiStateUnavailable: () => void;
+  canEditUiState: () => boolean;
+  saveBucketPreference: (patch: Pick<Partial<SessionUiState>, "bucketLabels" | "bucketOrder">, order?: UiIntent) => Promise<boolean>;
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
   activeWorkersFor: (sessionId: string) => ActiveWorker[];
-  openSessionTab: (sessionId: string, cwd: string) => Promise<void>;
+  openSessionTab: (sessionId: string, cwd: string) => Promise<"opened" | "missing" | "failed">;
   openSessionById: (sessionId: string) => Promise<void>;
 };
 
@@ -100,7 +108,7 @@ function folderDisplayNames(cwds: string[]) {
 }
 
 function shouldCloseDrawerAfterSessionSwitch() {
-  return window.matchMedia(`${panelOverlayModeQuery}, (max-height: 520px)`).matches;
+  return window.matchMedia(sessionDrawerAutoCloseQuery).matches;
 }
 
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
@@ -108,7 +116,6 @@ const sessionDrawerOpenStorageKey = "pi-web-session-drawer-open";
 const sessionLaneFocusStorageKey = "pi-web-session-lane-focus";
 // The session explicitly requested by the page URL at boot (deep link / reload).
 // Captured at module load, before the app rewrites the URL to whatever becomes active.
-const bootRequestedSessionId = typeof location === "undefined" ? "" : readActiveSessionIdFromUrl();
 const sessionLaneOrder: SessionLaneId[] = ["pinned", "parked", "bookmarks"];
 
 type PersistedLaneFocus = { lane: SessionLaneId; sessions: Partial<Record<SessionLaneId, string>> };
@@ -171,11 +178,15 @@ export function createSessions(options: {
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
   refreshSessionTitle: () => Promise<void>;
+  checkpointTranscript: () => { restore: () => void };
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
+  hasSessionDraft: (sessionId: string) => boolean;
   /** Called whenever derived per-session state (e.g. waiting-on-spawned/active workers) may have changed. */
   onDerivedSessionStateChanged?: () => void;
+  onUiStateUnavailable?: (warning: string) => void;
 }): SessionsController {
+  const initialSessionDeepLink = new URLSearchParams(window.location.search).get("sessionId")?.trim();
   const {
     state,
     elements,
@@ -193,6 +204,8 @@ export function createSessions(options: {
   const onDerivedSessionStateChanged = options.onDerivedSessionStateChanged;
 
   let cachedSessions: SessionInfo[] = [];
+  const pendingAutoPins = new Map<string, string>();
+  let uiStateInitialization: Promise<boolean> | undefined;
   const knownSessionNames = new Map<string, string>();
   let sessionRefreshPromise: Promise<void> | undefined;
   // TTL dedupe (issue #112): a message_end-driven refetch arriving within a short
@@ -213,11 +226,36 @@ export function createSessions(options: {
   let closeSessionColorFilterMenu: (() => void) | undefined;
   let closeCurrentSessionBucketMenu: (() => void) | undefined;
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
+  // Capture legacy input once, synchronously at construction. /api/state or
+  // realtime may update AppState before auth permits the preferences GET.
+  const legacyBootSeed = normalizeSessionUiState({
+    lanes: state.lanes,
+    sessionNotes: state.sessionNotes,
+    pinnedFolders: state.pinnedFolders,
+    favoriteFolders: state.favoriteFolders,
+    sessionMarkers: state.sessionMarkers,
+    sessionUnreadStates: state.sessionUnreadStates,
+    sessionOrigins: state.sessionOrigins,
+    selectedMarkerColor: state.selectedMarkerColor,
+    allowedMarkerColors: [],
+    bucketLabels: state.bucketLabels,
+    bucketOrder: state.bucketOrder,
+  });
   let quickBucketColor: SessionMarkerColorId | undefined;
   let unreadFilterActive = false;
   let transcriptLoading = true;
   let transcriptLoadGeneration = 0;
   let lastReplayedGeneration = -1;
+  // Every open is a navigation intent, including refreshes of the active tab.
+  let sessionOpenGeneration = 0;
+  // One stable rollback source per navigation transaction, never the blank
+  // optimistic transcript of an earlier pending click.
+  let pendingOpen: {
+    sessionId: string;
+    lane: SessionLaneId;
+    checkpoint: ReturnType<typeof options.checkpointTranscript>;
+    targetId: string;
+  } | undefined;
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let sessionListRenderFrame: number | undefined;
@@ -241,9 +279,10 @@ export function createSessions(options: {
   function noteForSession(sessionId: string) { return state.sessionNotes.find((entry) => entry.sessionId === sessionId)?.note; }
   function sessionsInLane(lane: SessionLaneId) { return state.lanes.filter((entry) => entry.lane === lane); }
   function syncPinnedProjection() { state.pinnedSessions = sessionsInLane("pinned").map((entry) => ({ id: entry.sessionId, ...(entry.cwd ? { cwd: entry.cwd } : {}) })); }
-  function commitLanes() { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; syncPinnedProjection(); persistSessionUiState({ lanes: state.lanes }); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
+  function commitLanes(order?: UiIntent) { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; syncPinnedProjection(); persistSessionUiState({ lanes: state.lanes }, order); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
   function commitSessionNotes() { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; persistSessionUiState({ sessionNotes: state.sessionNotes }); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
   function setSessionNote(sessionId: string, value: string) {
+    if (!uiSync.ready) return;
     const note = value.trim();
     if (note === (noteForSession(sessionId) || "")) return;
     state.sessionNotes = note
@@ -276,14 +315,21 @@ export function createSessions(options: {
   }
   function editSessionNote(sessionId: string) { openSessionNoteEditor("Session note", noteForSession(sessionId) || "", (note) => setSessionNote(sessionId, note)); }
   function moveToLane(sessionId: string, lane: SessionLaneId, opts: { cwd?: string } = {}) {
+    // A successful new chat can report a failed metadata write. Do not update
+    // local pins or focus when the authoritative preferences writer is read-only.
+    if (!uiSync.ready) return;
     const previous = laneEntry(sessionId);
     const entry: SessionLaneEntry = { sessionId, lane, ...(opts.cwd || previous?.cwd ? { cwd: opts.cwd || previous?.cwd } : {}), since: previous?.lane === lane ? previous.since : new Date().toISOString() };
     const promptForNote = lane === "parked" && previous?.lane !== "parked" && !noteForSession(sessionId);
     const isActive = sessionId === state.currentSessionId;
     if (isActive) { focusedLane = lane; focusedSessionByLane[lane] = sessionId; }
+    // The gesture appends within its destination lane. Capture that placement
+    // separately from the entry update so a CAS rebase cannot leave an existing
+    // source entry at its old global index (ahead of the destination's pins).
+    const after = sessionsInLane(lane).filter((item) => item.sessionId !== sessionId).at(-1)?.sessionId;
     state.lanes = [...state.lanes.filter((item) => item.sessionId !== sessionId), entry];
     if (previous && previous.lane !== lane && focusedSessionByLane[previous.lane] === sessionId) delete focusedSessionByLane[previous.lane];
-    saveLaneFocus(); commitLanes();
+    saveLaneFocus(); commitLanes({ kind: "order", field: "lanes", id: sessionId, ...(after ? { after } : {}) });
     if (promptForNote) requestAnimationFrame(() => promptForParkedNote(sessionId));
   }
   function promptForParkedNote(sessionId: string) {
@@ -293,12 +339,13 @@ export function createSessions(options: {
       setSessionNote(sessionId, note);
     });
   }
-  function removeFromLanes(sessionId: string) { const next = state.lanes.filter((entry) => entry.sessionId !== sessionId); if (next.length === state.lanes.length) return; const lane = laneOf(sessionId); state.lanes = next; if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane]; saveLaneFocus(); commitLanes(); }
+  function removeFromLanes(sessionId: string) { if (!uiSync.ready) return; const next = state.lanes.filter((entry) => entry.sessionId !== sessionId); if (next.length === state.lanes.length) return; const lane = laneOf(sessionId); state.lanes = next; if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane]; saveLaneFocus(); commitLanes(); }
   function isStale(entry: SessionLaneEntry) { return entry.lane === "parked" && Date.now() - new Date(entry.since).getTime() > 14 * 864e5; }
   const sessionInspector = buildSessionInspector({
     item: (sessionId) => { const live = cachedSessions.find((entry) => entry.id === sessionId); return { sessionId, name: live ? sessionTitle(live) : titleForSessionId(sessionId), lane: laneOf(sessionId), bucket: markerForSession(sessionId)?.color, note: noteForSession(sessionId), unread: Boolean(unreadStateForSession(sessionId)) }; },
     moveToLane: (sessionId, lane) => moveToLane(sessionId, lane, { cwd: cachedSessions.find((entry) => entry.id === sessionId)?.cwd || laneEntry(sessionId)?.cwd || state.currentCwd }),
     setBucket: (sessionId, color) => setSessionMarker(sessionId, color),
+    bucketColors: () => bucketColors().map((color) => ({ id: color.id, label: markerColorLabel(color.id) })),
     editNote: editSessionNote,
     removeFromLanes,
     openSession: (sessionId) => { void openSessionById(sessionId); },
@@ -316,6 +363,13 @@ export function createSessions(options: {
   };
 
   function beginTranscriptLoading() {
+    // New/clear and other external transcript navigation supersede tab opens.
+    ++sessionOpenGeneration;
+    pendingOpen = undefined;
+    markTranscriptLoading();
+  }
+
+  function markTranscriptLoading() {
     transcriptLoading = true;
     transcriptLoadGeneration += 1;
     updateEmptyCwdChooser();
@@ -343,35 +397,55 @@ export function createSessions(options: {
     updateEmptyCwdChooser();
   }
 
+  let animationBlob: Promise<Blob> | undefined;
+  let animationBlobSource: string | undefined;
+  let animationObjectUrl: string | undefined;
+  // Avatar switches (including reduced-motion changes) replace the media node.
+  // Release a replay URL as soon as its image is no longer the current media.
+  new MutationObserver(() => {
+    if (!animationObjectUrl) return;
+    const current = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+    if (current?.src === animationObjectUrl) return;
+    URL.revokeObjectURL(animationObjectUrl);
+    animationObjectUrl = undefined;
+  }).observe(elements.emptyCwdChooserEl, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
   async function restartNewChatAnimation(generation: number) {
-    const video = elements.emptyCwdChooserEl.querySelector<HTMLVideoElement>(".newChatLoadingAnimation");
-    if (!video) {
-      if (generation !== transcriptLoadGeneration) return;
-      transcriptLoading = false;
-      updateEmptyCwdChooser();
-      return;
-    }
-
-    video.classList.add("resetting");
-    video.pause();
-    video.currentTime = 0;
-    if (video.seeking) {
-      await new Promise<void>((resolve) => {
-        const timeout = window.setTimeout(resolve, 150);
-        video.addEventListener("seeked", () => {
-          window.clearTimeout(timeout);
-          resolve();
-        }, { once: true });
-      });
-    }
     if (generation !== transcriptLoadGeneration) return;
-
     transcriptLoading = false;
     updateEmptyCwdChooser();
-    // Visibility must not depend on codec support: nested source failures can
-    // leave play() pending forever in Chromium builds without H.264.
-    video.classList.remove("resetting");
-    void video.play().catch(() => undefined);
+    const animation = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+    if (!animation) return;
+    const canonicalUrl = animation.dataset.canonicalUrl || animation.src.split("?")[0];
+    if (animationBlobSource !== canonicalUrl) {
+      animationBlobSource = canonicalUrl;
+      animationBlob = undefined;
+    }
+    try {
+      if (!animationBlob) {
+        const download = fetch(canonicalUrl).then(response => {
+          if (!response.ok) throw new Error(`Avatar animation failed (${response.status})`);
+          return response.blob();
+        });
+        const pending = download.catch(error => {
+          if (animationBlob === pending) animationBlob = undefined;
+          throw error;
+        });
+        animationBlob = pending;
+      }
+      const blob = await animationBlob;
+      if (generation !== transcriptLoadGeneration || animationBlobSource !== canonicalUrl) return;
+      // Settings may replace the media node while the first download is in flight.
+      const current = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+      if (current !== animation || (current.dataset.canonicalUrl || current.src.split("?")[0]) !== canonicalUrl) return;
+      const next = URL.createObjectURL(blob);
+      const previous = animationObjectUrl;
+      animationObjectUrl = next;
+      current.dataset.canonicalUrl = canonicalUrl;
+      current.src = next;
+      if (previous) URL.revokeObjectURL(previous);
+    } catch {
+      // The original image remains visible when offline or unavailable.
+    }
   }
 
   async function selectSessionCwd(cwd: string) {
@@ -382,129 +456,118 @@ export function createSessions(options: {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    const nextState = data.state && typeof data.state === "object" ? data.state : data;
     rememberSessionCwd(cwd);
-    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
-    sessionState.applySnapshot(data, { activate: true });
-    if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
+    if (nextState.sessionId) writeActiveSessionIdToUrl(nextState.sessionId);
+    sessionState.applySnapshot(nextState, { activate: true });
+    if (nextState.thinkingLevels) updateThinkingOptions(nextState.thinkingLevels);
+    const warning = sessionUiMutationWarning(data);
+    if (warning) options.onUiStateUnavailable?.(warning);
     await refreshModels();
     await refreshMessages();
     refreshSessionTitle();
   }
 
-  async function openFolderPicker(startPath: string) {
+  function openFolderPicker(startPath: string) {
     blurActiveEditableOnMobile();
-    const backdrop = document.createElement("div");
-    backdrop.className = "folderPickerBackdrop";
-    const modal = document.createElement("div");
-    modal.className = "folderPicker";
-    const title = document.createElement("h2");
-    title.textContent = "Select working directory";
-    const input = document.createElement("input");
-    input.className = "folderPickerInput";
-    input.value = startPath;
-    const list = document.createElement("div");
-    list.className = "folderPickerList";
-    const error = document.createElement("div");
-    error.className = "folderPickerError";
-    const actions = document.createElement("div");
-    actions.className = "folderPickerActions";
-    const create = document.createElement("button");
-    create.type = "button";
-    create.textContent = "New folder";
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.textContent = "Cancel";
-    const select = document.createElement("button");
-    select.type = "button";
-    select.className = "primaryAction";
-    select.textContent = "Select folder";
-    actions.append(create, cancel, select);
-    modal.append(title, input, list, error, actions);
-    backdrop.append(modal);
-    document.body.append(backdrop);
-
-    async function load(path: string) {
-      error.textContent = "";
-      list.textContent = "Loading…";
-      const res = await fetch(`/api/fs/dirs?path=${encodeURIComponent(path)}`, { headers: api.headers() });
-      const data = await res.json();
-      if (!res.ok || data.ok === false) throw new Error(data.error || "Could not list directory");
-      input.value = data.path;
-      list.textContent = "";
-      const up = document.createElement("button");
-      up.type = "button";
-      up.className = "folderPickerRow";
-      up.textContent = "..";
-      up.addEventListener("click", () => load(data.parent).catch((e) => { error.textContent = e.message; }));
-      list.append(up);
-      for (const dir of data.dirs || []) {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "folderPickerRow";
-        row.textContent = dir.name;
-        row.addEventListener("click", () => load(dir.path).catch((e) => { error.textContent = e.message; }));
-        list.append(row);
-      }
-    }
-
-    create.addEventListener("click", async () => {
-      const name = window.prompt("New folder name");
-      if (name === null) return;
-      try {
-        create.disabled = true;
-        error.textContent = "";
-        const res = await fetch("/api/fs/dirs", {
-          method: "POST",
-          headers: api.headers(),
-          body: JSON.stringify({ parent: input.value, name }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.ok === false) throw new Error(data.error || "Could not create folder");
-        input.value = data.path;
-        await load(data.path);
-      } catch (e) {
-        error.textContent = e instanceof Error ? e.message : String(e);
-      } finally {
-        create.disabled = false;
-      }
+    showFolderPicker({
+      startPath,
+      getBookmarks: () => state.favoriteFolders,
+      setBookmarks: (favoriteFolders) => {
+        if (!uiSync.ready) return;
+        state.favoriteFolders = favoriteFolders;
+        persistSessionUiState({ favoriteFolders });
+      },
+      api: {
+        list: async (path, signal): Promise<FolderListing> => {
+          const res = await fetch(`/api/fs/dirs?path=${encodeURIComponent(path)}`, { headers: api.headers(), signal });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(data.error || "Could not list directory");
+          return { path: data.path, parent: data.parent, dirs: Array.isArray(data.dirs) ? data.dirs : [] };
+        },
+        create: async (parent, name) => {
+          const res = await fetch("/api/fs/dirs", { method: "POST", headers: api.headers(), body: JSON.stringify({ parent, name }) });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(data.error || "Could not create folder");
+          return data.path;
+        },
+        select: selectSessionCwd,
+      },
     });
-    cancel.addEventListener("click", () => backdrop.remove());
-    backdrop.addEventListener("click", (event) => { if (event.target === backdrop) backdrop.remove(); });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") load(input.value).catch((e) => { error.textContent = e.message; });
-    });
-    select.addEventListener("click", async () => {
-      try {
-        select.disabled = true;
-        await selectSessionCwd(input.value);
-        backdrop.remove();
-      } catch (e) {
-        error.textContent = e instanceof Error ? e.message : String(e);
-        select.disabled = false;
-      }
-    });
-    load(startPath).catch((e) => { error.textContent = e.message; list.textContent = ""; });
-    if (!("ontouchstart" in window) && navigator.maxTouchPoints === 0) {
-      input.focus();
-    }
   }
 
-  async function startNewSession(cwd?: string) {
+  const startNewSession = queueNewSession(
+    () => state.currentCwd,
+    (cwd) => startOrReuseSession(cwd, cwd || state.currentCwd, state.currentSessionId),
+  );
+
+  async function startOrReuseSession(cwd: string | undefined, targetCwd: string, previousSessionId: string) {
     const wasDrawerOpen = !elements.sessionDrawer.hidden;
-    const res = await fetch("/api/sessions/new", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: state.currentSessionId }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
-    rememberSessionCwd(cwd || data.cwd || state.currentCwd);
-    beginTranscriptLoading();
-    clearMessages();
-    sessionState.applySnapshot(data, { activate: true });
-    await refreshState();
-    updateEmptyCwdChooser();
+    const pinNewSessions = state.settings.defaults.pinNewSessions === true;
+    let reusable: ReturnType<typeof reusableEmptySession>;
+    if (pinNewSessions) {
+      // Validate even the active tab: a recent prompt or external edit can make
+      // its previously empty snapshot stale before realtime stats arrive.
+      await refreshSessions(true);
+      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+      if (!reusable) {
+        // Cold listings deliberately omit counts. Read candidate snapshots without
+        // moving this browser's viewer lease or opening/changing the active tab.
+        const headers = api.headers();
+        delete headers["x-pi-web-client-id"];
+        // Local slash-command output can make the active tab's optimistic
+        // projection look non-empty even though its authoritative transcript is
+        // blank. Validate it alongside ordinary empty candidates.
+        const activeCandidate = state.sessionsById[state.currentSessionId];
+        const candidates = [
+          ...(activeCandidate && activeCandidate.cwd === targetCwd && !options.hasSessionDraft(activeCandidate.id) ? [activeCandidate] : []),
+          ...emptySessionCandidates(state, targetCwd, options.hasSessionDraft),
+        ];
+        for (const candidate of Array.from(new Map(candidates.map((item) => [item.id, item])).values())) {
+          const res = await fetch(`/api/state?sessionId=${encodeURIComponent(candidate.id)}`, { headers });
+          if (res.status === 404) {
+            discardMissingSession(candidate.id);
+            continue; // A stale pin may point at a deleted session.
+          }
+          if (!res.ok) throw new Error(await res.text());
+          sessionState.applySnapshot(await res.json());
+          reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+          if (reusable) break;
+        }
+      }
+    }
+    while (reusable) {
+      // Opening is the authoritative existence check and also refreshes an
+      // already-active candidate, which removes transient local-only output.
+      // A cached pin can disappear or gain a message between discovery and open.
+      const openedId = reusable.id;
+      const result = await openSessionTab(openedId, targetCwd);
+      if (result === "failed") return; // Never create a duplicate after a network/server failure.
+      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+      if (result === "opened" && reusable?.id === openedId) break;
+    }
+    if (!reusable) {
+      const res = await fetch("/api/sessions/new", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: previousSessionId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
+      rememberSessionCwd(cwd || data.cwd || state.currentCwd);
+      beginTranscriptLoading();
+      clearMessages();
+      sessionState.applySnapshot(data, { activate: true });
+      const warning = sessionUiMutationWarning(data);
+      if (warning) options.onUiStateUnavailable?.(warning);
+      if (pinNewSessions && data.sessionId) {
+        if (uiSync.ready) moveToLane(data.sessionId, "pinned", { cwd: data.cwd || targetCwd });
+        else if (!uiSync.unavailable) pendingAutoPins.set(data.sessionId, data.cwd || targetCwd);
+      }
+      await refreshState();
+      finishTranscriptLoading();
+    }
     if (shouldCloseDrawerAfterSessionSwitch()) {
       setSessionDrawerOpen(false);
     } else if (wasDrawerOpen) {
@@ -564,6 +627,8 @@ export function createSessions(options: {
       const res = await fetchSessionList(url, api.headers());
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
+      const warning = sessionUiUnavailableWarning(data);
+      if (warning) { uiSync.markUnavailable(); options.onUiStateUnavailable?.(warning); }
       // Fork: the list spans every known cwd, so the same id can arrive twice
       // (e.g. a lister that ignores its cwd argument). The worker-forest builder
       // rejects duplicate ids and would blank the whole drawer, so keep the
@@ -584,7 +649,7 @@ export function createSessions(options: {
       });
       if (laneCwdsChanged) {
         syncPinnedProjection();
-        persistSessionUiState({ lanes: state.lanes });
+        if (uiSync.ready) persistSessionUiState({ lanes: state.lanes });
       }
       scheduleSessionListRender();
       renderSessionBar();
@@ -595,14 +660,16 @@ export function createSessions(options: {
     return sessionRefreshPromise;
   }
 
-  async function applyOpenedSession(openRes: Response) {
+  async function applyOpenedSession(openRes: Response, ownsOpen: () => boolean) {
+    if (!ownsOpen()) return false;
     const data = await openRes.json();
+    if (!ownsOpen()) return false;
     const responseSessionId = typeof data.sessionId === "string" ? data.sessionId : "";
     sessionState.applySnapshot(data, { activate: Boolean(responseSessionId && responseSessionId === state.currentSessionId) });
     if (responseSessionId && responseSessionId !== state.currentSessionId) return false;
     if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
     await Promise.all([refreshModels(), refreshMessages()]);
-    return !responseSessionId || responseSessionId === state.currentSessionId;
+    return ownsOpen() && (!responseSessionId || responseSessionId === state.currentSessionId);
   }
 
   function markCachedCurrentSession(sessionId: string, cwd: string) {
@@ -666,27 +733,23 @@ export function createSessions(options: {
 
   // ── Markers and pinning ────────────────────────────────────────────────────
 
-  let sessionUiWritePending = 0;
-  let sessionUiWriteSequence = 0;
-  let latestSessionUiRevision = 0;
-  let sessionUiStateInitialized = false;
   let restoredPersistedLaneFocus = false;
-  let sessionUiWriteQueue = Promise.resolve();
-  function applySessionUiStateValue(value: unknown) {
-    const next = normalizeSessionUiState(value);
-    if (sessionUiStateInitialized && next.revision <= latestSessionUiRevision) return;
-    sessionUiStateInitialized = true;
-    latestSessionUiRevision = next.revision;
+  function applySessionUiStateValue(next: SessionUiState) {
     state.lanes = next.lanes;
     state.sessionNotes = next.sessionNotes;
     state.pinnedSessions = next.lanes.filter((entry) => entry.lane === "pinned").map((entry) => ({ id: entry.sessionId, ...(entry.cwd ? { cwd: entry.cwd } : {}) }));
     state.pinnedFolders = next.pinnedFolders;
+    state.favoriteFolders = next.favoriteFolders;
     state.sessionMarkers = next.sessionMarkers;
     state.sessionUnreadStates = next.sessionUnreadStates;
     state.sessionOrigins = next.sessionOrigins;
     syncCachedUnreadFromState();
     state.selectedMarkerColor = next.selectedMarkerColor;
+    const bucketsChanged = JSON.stringify(state.bucketLabels) !== JSON.stringify(next.bucketLabels)
+      || JSON.stringify(state.bucketOrder) !== JSON.stringify(next.bucketOrder);
     state.bucketLabels = next.bucketLabels;
+    state.bucketOrder = next.bucketOrder;
+    if (bucketsChanged) document.dispatchEvent(new CustomEvent("pi-web-bucket-labels-changed"));
     allowedMarkerColors.clear();
     for (const color of next.allowedMarkerColors) allowedMarkerColors.add(color);
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
@@ -701,96 +764,66 @@ export function createSessions(options: {
     if ((state.pinnedSessions.length > 0 || state.pinnedFolders.length > 0 || spawnOrigins().length > 0) && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
     if (!restoredPersistedLaneFocus) {
       restoredPersistedLaneFocus = true;
-      if (bootRequestedSessionId && state.currentSessionId === bootRequestedSessionId) {
-        // An explicit ?sessionId deep link wins over persisted lane focus. Adopt
-        // the requested session as the focus instead of switching away to the
-        // remembered (or first) session of the previously focused lane.
-        const lane = laneOf(bootRequestedSessionId);
-        if (lane) { focusedLane = lane; focusedSessionByLane[lane] = bootRequestedSessionId; saveLaneFocus(); }
-        renderSessionBar();
-      } else {
+      // An explicit startup link takes priority over remembered lane focus.
+      if (!initialSessionDeepLink) {
         window.setTimeout(() => { void switchFocusedLane(focusedLane); }, 0);
+      } else {
+        const initialLane = laneOf(initialSessionDeepLink);
+        if (initialLane) {
+          focusedLane = initialLane;
+          focusedSessionByLane[initialLane] = initialSessionDeepLink;
+          saveLaneFocus();
+          renderSessionBar();
+        }
       }
     }
   }
 
-  function hasAnySessionUiState(value: SessionUiState) {
-    return value.lanes.length > 0
-      || value.sessionNotes.length > 0
-      || value.pinnedFolders.length > 0
-      || value.sessionMarkers.length > 0
-      || value.sessionUnreadStates.length > 0
-      // Lineage counts as state: without it, a server holding ONLY origins looks
-      // "empty" and a legacy-localStorage push would wipe every recorded origin.
-      || (value.sessionOrigins?.length ?? 0) > 0
-      || value.allowedMarkerColors.length > 0
-      || Object.keys(value.bucketLabels).length > 0
-      || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
-  }
 
-  function applySessionUiState(value: unknown) {
-    // Realtime snapshots emitted before our PATCH response can contain the old
-    // lane projection. Let the mutation response remain authoritative while a
-    // local write is in flight so a newly pinned tab cannot immediately revert.
-    if (sessionUiWritePending > 0) return;
-    applySessionUiStateValue(value);
-  }
+  function applySessionUiState(value: unknown) { uiSync.accept(value); }
 
-  async function patchSessionUiState(patch: Partial<SessionUiState>) {
-    const writeSequence = ++sessionUiWriteSequence;
-    sessionUiWritePending += 1;
-    const write = async () => {
-      const res = await fetch("/api/session-ui-state", {
-        method: "PATCH",
-        headers: api.headers(),
-        body: JSON.stringify(patch),
+  const uiSync = new SessionUiCoordinator({
+    async read() {
+      const res = await fetch("/api/session-ui-state", { headers: api.headers() });
+      const data = await res.json().catch(() => ({}));
+      return sessionUiStateFromResponse({ ok: res.ok && data.ok === true, status: res.status, sessionUiState: data.sessionUiState });
+    },
+    async patch(patch) {
+      const res = await fetch("/api/session-ui-state", { method: "PATCH", headers: api.headers(), body: JSON.stringify(patch) });
+      const data = await res.json().catch(() => ({}));
+      return { status: res.status, state: sessionUiStateFromResponse({ ok: res.ok && data.ok === true, sessionUiState: data.sessionUiState }), error: data.error as string | undefined };
+    },
+    async postUnread(sessionId, unread) {
+      const res = await fetch(`/api/session-ui-state/${unread ? "unread" : "read"}`, {
+        method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-      // Keep newer optimistic mutations rendered until their queued write is
-      // confirmed; intermediate full-state responses would otherwise revert UI.
-      if (writeSequence === sessionUiWriteSequence) applySessionUiStateValue(data.sessionUiState);
-    };
-    const result = sessionUiWriteQueue.then(write, write);
-    sessionUiWriteQueue = result.then(() => undefined, () => undefined);
-    try {
-      await result;
-    } finally {
-      sessionUiWritePending -= 1;
-    }
-  }
+      return { status: res.status, state: sessionUiStateFromResponse({ ok: res.ok && data.ok === true, sessionUiState: data.sessionUiState }), error: data.error as string | undefined };
+    },
+  }, applySessionUiStateValue, (message) => {
+    if (uiSync.unavailable) options.onUiStateUnavailable?.(message);
+    else addMessage("system", message, "error");
+  });
 
-  function persistSessionUiState(patch: Partial<SessionUiState>) {
-    patchSessionUiState(patch).catch((error) => {
-      addMessage("system", error instanceof Error ? error.message : String(error), "error");
-    });
-  }
+  function persistSessionUiState(patch: Partial<SessionUiState>, order?: UiIntent) { return uiSync.mutate(patch, order); }
 
   function persistAllowedMarkerColors() {
     persistSessionUiState({ allowedMarkerColors: Array.from(allowedMarkerColors) });
   }
 
-  async function refreshSessionUiState() {
-    const res = await fetch("/api/session-ui-state", { headers: api.headers() });
-    if (res.status === 401) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    const serverState = normalizeSessionUiState(data.sessionUiState);
-    const localState = normalizeSessionUiState({
-      lanes: state.lanes,
-      sessionNotes: state.sessionNotes,
-      pinnedFolders: state.pinnedFolders,
-      sessionMarkers: state.sessionMarkers,
-      sessionUnreadStates: state.sessionUnreadStates,
-      selectedMarkerColor: state.selectedMarkerColor,
-      allowedMarkerColors: Array.from(allowedMarkerColors),
-      bucketLabels: state.bucketLabels,
+  function startUiStateAfterAuth(): Promise<boolean> {
+    // The authorized /api/state path alone starts the existing coordinator.
+    // A new chat may finish while its first GET is pending: drain only after
+    // that same initialization settles, without holding up chat setup.
+    uiStateInitialization ??= uiSync.start(legacyBootSeed).then(() => {
+      const ready = uiSync.ready;
+      for (const [sessionId, cwd] of pendingAutoPins) {
+        pendingAutoPins.delete(sessionId);
+        if (ready && uiSync.ready && state.sessionsById[sessionId] && !laneEntry(sessionId)) moveToLane(sessionId, "pinned", { cwd });
+      }
+      return uiSync.ready;
     });
-    if (!hasAnySessionUiState(serverState) && hasAnySessionUiState(localState)) {
-      await patchSessionUiState(localState);
-      return;
-    }
-    applySessionUiState(serverState);
+    return uiStateInitialization.then(() => uiSync.ready);
   }
 
   function unreadStateForSession(sessionId: string) {
@@ -908,49 +941,14 @@ export function createSessions(options: {
     renderSessionColorFilterButton();
   }
 
-  function clearLocalUnread(sessionId: string) {
-    const next = state.sessionUnreadStates.filter((item) => item.sessionId !== sessionId);
-    if (next.length === state.sessionUnreadStates.length) return;
-    state.sessionUnreadStates = next;
-    syncCachedUnreadFromState();
-    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
-    renderSessionBar();
-    updateSessionButtonUnread();
-  }
-
   async function markSessionRead(sessionId = state.currentSessionId) {
     const id = sessionId.trim();
-    if (!id) return;
-    clearLocalUnread(id);
-    const res = await fetch("/api/session-ui-state/read", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ sessionId: id }),
-    });
-    if (res.status === 401) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    applySessionUiState(data.sessionUiState);
+    if (id) await uiSync.setUnread(id, false);
   }
 
   async function markSessionUnread(sessionId = state.currentSessionId) {
     const id = sessionId.trim();
-    if (!id) return;
-    const now = new Date().toISOString();
-    state.sessionUnreadStates = [...state.sessionUnreadStates.filter((item) => item.sessionId !== id), { sessionId: id, unreadAt: now, updatedAt: now }];
-    syncCachedUnreadFromState();
-    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
-    renderSessionBar();
-    updateSessionButtonUnread();
-    const res = await fetch("/api/session-ui-state/unread", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ sessionId: id }),
-    });
-    if (res.status === 401) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    applySessionUiState(data.sessionUiState);
+    if (id) await uiSync.setUnread(id, true);
   }
 
   function markSessionReadBestEffort(sessionId?: string) {
@@ -965,8 +963,12 @@ export function createSessions(options: {
     return sessionMarkerColors.find((color) => color.id === colorId);
   }
 
+  function bucketColors() {
+    return orderedSessionMarkerColors(state.bucketOrder);
+  }
+
   function selectedMarkerColor() {
-    return colorForMarker(state.selectedMarkerColor) || sessionMarkerColors[0];
+    return colorForMarker(state.selectedMarkerColor) || bucketColors()[0];
   }
 
   function markerColorLabel(color: SessionMarkerColorId) {
@@ -974,7 +976,7 @@ export function createSessions(options: {
   }
 
   function sortedAllowedMarkerColors() {
-    return sessionMarkerColors
+    return bucketColors()
       .map((color) => color.id)
       .filter((color) => allowedMarkerColors.has(color));
   }
@@ -1016,6 +1018,7 @@ export function createSessions(options: {
   }
 
   function setSessionMarker(sessionId: string, color: SessionMarkerColorId) {
+    if (!uiSync.ready) return;
     const next = { sessionId, color, updatedAt: new Date().toISOString() };
     state.sessionMarkers = [next, ...state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId)];
     renderSessionList(cachedSessions);
@@ -1025,6 +1028,7 @@ export function createSessions(options: {
   }
 
   function clearSessionMarker(sessionId: string) {
+    if (!uiSync.ready) return;
     const count = state.sessionMarkers.length;
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId);
     if (state.sessionMarkers.length === count) return;
@@ -1094,7 +1098,7 @@ export function createSessions(options: {
     });
     menu.append(clearButton);
 
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = marker?.color === color.id;
       const item = document.createElement("button");
       item.type = "button";
@@ -1123,7 +1127,7 @@ export function createSessions(options: {
       closeOpenCurrentSessionBucketMenu();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenCurrentSessionBucketMenu();
+      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeOpenCurrentSessionBucketMenu(); }
     };
     const onResize = () => closeOpenCurrentSessionBucketMenu();
     const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
@@ -1159,7 +1163,7 @@ export function createSessions(options: {
       closeOpenSessionActionsMenu();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenSessionActionsMenu();
+      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeOpenSessionActionsMenu(); }
     };
     const onResize = () => closeOpenSessionActionsMenu();
     const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
@@ -1275,7 +1279,7 @@ export function createSessions(options: {
       updateMenuState();
     });
 
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `sessionColorFilterMenuItem marker-${color.id}`;
@@ -1308,7 +1312,7 @@ export function createSessions(options: {
       closeOpenSessionColorFilterMenu();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenSessionColorFilterMenu();
+      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeOpenSessionColorFilterMenu(); }
     };
     const onResize = () => closeOpenSessionColorFilterMenu();
     const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
@@ -1357,13 +1361,14 @@ export function createSessions(options: {
   }
 
   function pinFolder(cwd: string) {
-    if (isFolderPinned(cwd)) return;
+    if (!uiSync.ready || isFolderPinned(cwd)) return;
     state.pinnedFolders = [...state.pinnedFolders, cwd];
     persistSessionUiState({ pinnedFolders: state.pinnedFolders });
     renderSessionList(cachedSessions);
   }
 
   function unpinFolder(cwd: string) {
+    if (!uiSync.ready) return;
     const pinnedCount = state.pinnedFolders.length;
     state.pinnedFolders = state.pinnedFolders.filter((folder) => folder !== cwd);
     if (state.pinnedFolders.length === pinnedCount) return;
@@ -1383,37 +1388,85 @@ export function createSessions(options: {
     return "Session";
   }
 
-  async function openSessionTab(sessionId: string, cwd: string) {
-    const previousSessionId = state.currentSessionId;
-    const previousFocusedLane = focusedLane;
+  function discardMissingSession(sessionId: string) {
+    cachedSessions = cachedSessions.filter((session) => session.id !== sessionId);
+    sessionState.remove(sessionId);
+    const lane = laneOf(sessionId);
+    state.lanes = state.lanes.filter((entry) => entry.sessionId !== sessionId);
+    if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane];
+    saveLaneFocus();
+    // Preserve notes, markers, and all other preferences: only the vanished
+    // session's cached projection and lane are no longer meaningful.
+    if (lane) persistSessionUiState({ lanes: state.lanes });
+    syncPinnedProjection();
+    renderSessionList(cachedSessions);
+    renderSessionBar();
+  }
+
+  async function openSessionTab(sessionId: string, cwd: string): Promise<"opened" | "missing" | "failed"> {
+    const openGeneration = ++sessionOpenGeneration;
+    if (pendingOpen && pendingOpen.targetId !== state.currentSessionId) pendingOpen = undefined;
+    const transaction = pendingOpen ?? {
+      sessionId: state.currentSessionId,
+      lane: focusedLane,
+      checkpoint: options.checkpointTranscript(),
+      targetId: sessionId,
+    };
+    pendingOpen = transaction;
+    transaction.targetId = sessionId;
     const targetLane = laneOf(sessionId);
-    const switchingSessions = state.currentSessionId !== sessionId;
+    let missing = false;
+    const ownsOpen = () => openGeneration === sessionOpenGeneration && pendingOpen === transaction && state.currentSessionId === sessionId;
     if (targetLane) focusedLane = targetLane;
-    if (switchingSessions) {
-      sessionState.activate(sessionId);
-      beginTranscriptLoading();
-      clearMessages();
-    }
+    sessionState.activate(sessionId);
+    markTranscriptLoading();
+    clearMessages();
+    renderSessionBar();
     try {
       const openRes = await fetch("/api/sessions/open", {
         method: "POST",
         headers: api.headers(),
         body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
       });
-      if (!openRes.ok) throw new Error(await openRes.text());
-      if (!await applyOpenedSession(openRes)) { focusedLane = previousFocusedLane; renderSessionBar(); return; }
+      if (!openRes.ok) {
+        missing = openRes.status === 404;
+        throw new Error(await openRes.text());
+      }
+      if (!ownsOpen()) return "failed";
+      const applied = await applyOpenedSession(openRes, ownsOpen);
+      if (openGeneration !== sessionOpenGeneration || state.currentSessionId !== sessionId) return "failed";
+      if (!applied) throw new Error("Unable to load session");
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
       if (targetLane) { focusedSessionByLane[targetLane] = sessionId; saveLaneFocus(); }
       markSessionReadBestEffort(sessionId);
+      pendingOpen = undefined; // Release retained DOM/controller state after hydration.
       options.onDerivedSessionStateChanged?.();
+      return "opened";
     } catch (error) {
-      if (state.currentSessionId === sessionId) sessionState.activate(previousSessionId);
-      focusedLane = previousFocusedLane;
+      if (!ownsOpen()) return "failed";
+      // Any earlier pending open may already have acquired the viewer lease,
+      // even when this latest request failed before acceptance. A fresh sequence
+      // restores the stable lease and fences out older requests still in flight.
+      if (transaction.sessionId) {
+        try { await fetch(`/api/state?sessionId=${encodeURIComponent(transaction.sessionId)}`, { headers: api.headers() }); } catch { /* Offline rollback still preserves local history. */ }
+        if (!ownsOpen()) return "failed";
+      }
+      sessionState.activate(transaction.sessionId);
+      focusedLane = transaction.lane;
+      transaction.checkpoint.restore();
+      pendingOpen = undefined;
+      finishTranscriptLoading();
       renderSessionBar();
+      if (missing) discardMissingSession(sessionId);
+      else addMessage("system", error instanceof Error ? error.message : String(error), "error");
       options.onDerivedSessionStateChanged?.();
-      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      return missing ? "missing" : "failed";
+    } finally {
+      // External activation can bypass beginTranscriptLoading. Do not retain
+      // its obsolete checkpoint, or release one owned by a newer tab click.
+      if (openGeneration === sessionOpenGeneration && pendingOpen === transaction && state.currentSessionId !== sessionId) pendingOpen = undefined;
     }
   }
 
@@ -1529,13 +1582,14 @@ export function createSessions(options: {
     const bar = elements.sessionBarEl;
     const holdDelayMs = 300;
     const touchMoveTolerancePx = 10;
-    const mouseLiftDistancePx = 6;
+    const liftDistancePx = 6;
     const edgeZonePx = 48;
     const maxScrollPerFrame = 14;
-    const settleDurationMs = 220;
+    const reducedMotion = prefersReducedReorderMotion();
+    const settleDurationMs = reducedMotion ? 0 : 180;
 
     tab.addEventListener("pointerdown", (downEvent) => {
-      if (sessionBarGestureInFlight || !downEvent.isPrimary) return;
+      if (!uiSync.ready || sessionBarGestureInFlight || !downEvent.isPrimary) return;
       if (downEvent.pointerType === "mouse" && downEvent.button !== 0) return;
       if ((downEvent.target as Element | null)?.closest(".sessionBarTabAction")) return;
 
@@ -1544,11 +1598,11 @@ export function createSessions(options: {
       const startY = downEvent.clientY;
       let lastClientX = startX;
       let lifted = false;
-      let scrolling = false;
       let longPressReady = false;
       let pressActive = true;
       let holdTimer: number | undefined;
       let autoScrollFrame: number | undefined;
+      let dragFrame: number | undefined;
       let tabs: HTMLElement[] = [];
       let rects: DOMRect[] = [];
       let others: Array<{ tab: HTMLElement; domIndex: number }> = [];
@@ -1562,10 +1616,12 @@ export function createSessions(options: {
       let barRect: DOMRect | undefined;
 
       sessionBarGestureInFlight = true;
+      if (downEvent.pointerType !== "mouse") tab.classList.add("touch-gesture-active");
 
       const clearListeners = () => {
         if (holdTimer !== undefined) window.clearTimeout(holdTimer);
         if (autoScrollFrame !== undefined) cancelAnimationFrame(autoScrollFrame);
+        if (dragFrame !== undefined) cancelAnimationFrame(dragFrame);
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", onPointerUp);
         window.removeEventListener("pointercancel", onPointerCancel);
@@ -1575,13 +1631,14 @@ export function createSessions(options: {
       const finishPress = (delay = 0) => {
         if (!pressActive) return;
         pressActive = false;
-        tab.classList.remove("reorder-ready");
+        tab.classList.remove("reorder-ready", "touch-gesture-active");
         clearListeners();
         if (delay > 0) window.setTimeout(() => flushQueuedSessionBarRender(), delay);
         else flushQueuedSessionBarRender();
       };
 
       const updateDrag = () => {
+        dragFrame = undefined;
         if (!lifted) return;
         const previousIndex = newIndex;
         const rawDx = (lastClientX - startX) + (bar.scrollLeft - scrollLeft0);
@@ -1589,7 +1646,12 @@ export function createSessions(options: {
         const center = rects[originalIndex].left + draggedWidth / 2 + dx;
         if (dx <= minDx + 0.5) newIndex = 0;
         else if (dx >= maxDx - 0.5) newIndex = tabs.length - 1;
-        else newIndex = others.filter((item) => rects[item.domIndex].left + rects[item.domIndex].width / 2 < center).length;
+        else {
+          // Resolve an exact center-to-center drop in the drag direction. Without
+          // the nudge, moving right stopped on the target's center while moving
+          // left reordered, making a natural tab-on-tab drop asymmetric.
+          newIndex = insertionIndex(rects, center + Math.sign(rawDx) * 0.5, "x", originalIndex);
+        }
         if (newIndex !== previousIndex) navigator.vibrate?.(5);
 
         tab.style.transform = `translateX(${dx}px) scale(1.06)`;
@@ -1602,19 +1664,18 @@ export function createSessions(options: {
         }
       };
 
+      const scheduleDragUpdate = () => {
+        if (dragFrame === undefined) dragFrame = requestAnimationFrame(updateDrag);
+      };
+
       const runAutoScroll = () => {
         if (!lifted || !barRect) return;
-        let velocity = 0;
-        if (lastClientX < barRect.left + edgeZonePx) {
-          velocity = -maxScrollPerFrame * Math.min(1, (barRect.left + edgeZonePx - lastClientX) / edgeZonePx);
-        } else if (lastClientX > barRect.right - edgeZonePx) {
-          velocity = maxScrollPerFrame * Math.min(1, (lastClientX - (barRect.right - edgeZonePx)) / edgeZonePx);
-        }
+        const velocity = edgeScrollVelocity(lastClientX, barRect.left, barRect.right, edgeZonePx, maxScrollPerFrame);
         if (velocity !== 0) {
           const nextScrollLeft = Math.min(maxScrollLeft, Math.max(0, bar.scrollLeft + velocity));
           if (nextScrollLeft !== bar.scrollLeft) {
             bar.scrollLeft = nextScrollLeft;
-            updateDrag();
+            scheduleDragUpdate();
           }
         }
         autoScrollFrame = requestAnimationFrame(runAutoScroll);
@@ -1649,17 +1710,18 @@ export function createSessions(options: {
         bar.classList.add("reordering");
         tab.classList.add("dragging");
         navigator.vibrate?.(10);
-        updateDrag();
+        scheduleDragUpdate();
         if (maxScrollLeft > 0) autoScrollFrame = requestAnimationFrame(runAutoScroll);
       };
 
       const settle = (commit: boolean) => {
         if (!pressActive) return;
+        commit = commit && uiSync.ready;
         pressActive = false;
         clearListeners();
         suppressTabClickUntil = performance.now() + 400;
         bar.classList.remove("reordering");
-        tab.classList.remove("reorder-ready", "dragging");
+        tab.classList.remove("reorder-ready", "dragging", "touch-gesture-active");
         tab.classList.add("settling");
 
         let targetOffset = 0;
@@ -1668,13 +1730,14 @@ export function createSessions(options: {
         } else if (commit && newIndex < originalIndex) {
           for (let index = newIndex; index < originalIndex; index += 1) targetOffset -= rects[index].width;
         }
+        if (commit && newIndex !== originalIndex) targetOffset = rects[newIndex].left - rects[originalIndex].left;
         tab.style.transform = `translateX(${targetOffset}px) scale(1)`;
         if (!commit) {
           for (const item of others) item.tab.style.transform = "";
         }
 
         window.setTimeout(() => {
-          if (commit && newIndex !== originalIndex) {
+          if (commit && uiSync.ready && newIndex !== originalIndex) {
             const visualIds = tabs.map((item) => item.dataset.sessionId).filter((id): id is string => Boolean(id));
             const [draggedId] = visualIds.splice(originalIndex, 1);
             if (draggedId) visualIds.splice(newIndex, 0, draggedId);
@@ -1687,8 +1750,12 @@ export function createSessions(options: {
             });
             state.lanes = [...reordered, ...entriesById.values(), ...state.lanes.filter((entry) => entry.lane !== focusedLane)];
             syncPinnedProjection();
-            persistSessionUiState({ lanes: state.lanes });
+            persistSessionUiState({ lanes: state.lanes }, draggedId ? {
+              kind: "order", field: "lanes", id: draggedId,
+              before: visualIds[newIndex + 1], after: visualIds[newIndex - 1],
+            } : undefined);
           }
+          tab.classList.remove("settling");
           flushQueuedSessionBarRender(true);
         }, settleDurationMs);
       };
@@ -1698,45 +1765,38 @@ export function createSessions(options: {
         lastClientX = event.clientX;
         const distance = Math.hypot(event.clientX - startX, event.clientY - startY);
         if (!lifted) {
-          if (downEvent.pointerType === "mouse" && distance > mouseLiftDistancePx) {
+          if (downEvent.pointerType === "mouse" && distance > liftDistancePx) {
             lift();
           } else if (downEvent.pointerType !== "mouse") {
             const dx = event.clientX - startX;
             const dy = event.clientY - startY;
-            if (longPressReady && distance > mouseLiftDistancePx) {
+            if (!longPressReady && distance >= touchMoveTolerancePx) {
+              // Movement before the hold belongs to the browser. Do not capture
+              // it: the overflowing bar must retain native horizontal panning
+              // and inertia, and this gesture must not select or reorder a tab.
+              finishPress();
+            } else if (longPressReady && distance > liftDistancePx) {
               lift();
-            } else if (scrolling) {
-              event.preventDefault();
-              bar.scrollLeft = scrollLeft0 - dx;
-            } else if (distance >= touchMoveTolerancePx) {
-              if (Math.abs(dx) > Math.abs(dy)) {
-                scrolling = true;
-                scrollLeft0 = bar.scrollLeft;
-                if (holdTimer !== undefined) window.clearTimeout(holdTimer);
-                suppressTabClickUntil = performance.now() + 400;
-                event.preventDefault();
-              } else {
-                finishPress();
-              }
             }
           }
         }
         if (lifted) {
           event.preventDefault();
-          updateDrag();
+          scheduleDragUpdate();
         }
       }
 
       function onPointerUp(event: PointerEvent) {
         if (!pressActive || event.pointerId !== pointerId) return;
-        lastClientX = event.clientX;
+        // Keep the last move coordinate. Chromium's trusted touchEnd can expose
+        // clientX=0 after its contact list becomes empty, which otherwise snaps
+        // a successfully lifted tab back to the first slot at drop time.
         if (lifted) {
           updateDrag();
           settle(true);
         } else if (longPressReady) {
           suppressTabClickUntil = performance.now() + 400;
-          finishPress();
-        } else if (scrolling) {
+          sessionInspector.openAt(tab, tab.dataset.sessionId!, "tab");
           finishPress();
         } else {
           // Keep the old tab alive until the synthetic click following pointerup.
@@ -1767,7 +1827,10 @@ export function createSessions(options: {
     });
 
     tab.addEventListener("touchmove", (event) => {
-      if (tab.classList.contains("dragging")) event.preventDefault();
+      // Once a stationary hold has armed, claim subsequent movement before the
+      // browser turns it into a native pan/pointercancel. Before that point this
+      // listener deliberately does nothing so the strip scrolls normally.
+      if (tab.classList.contains("reorder-ready") || tab.classList.contains("dragging")) event.preventDefault();
     }, { passive: false });
     tab.addEventListener("contextmenu", (event) => {
       if (sessionBarGestureInFlight || tab.classList.contains("dragging")) event.preventDefault();
@@ -1800,7 +1863,7 @@ export function createSessions(options: {
 
     const filters = document.createElement("div"); filters.className = "sessionLaneDrawerBucketFilters"; filters.setAttribute("role", "group"); filters.setAttribute("aria-label", "Filter lanes by bucket");
     const allBuckets = document.createElement("button"); allBuckets.type = "button"; allBuckets.className = `sessionLaneDrawerBucketFilterAll${laneDrawerBucketFilter ? "" : " selected"}`; allBuckets.textContent = "All"; allBuckets.setAttribute("aria-pressed", String(!laneDrawerBucketFilter)); allBuckets.addEventListener("click", () => { laneDrawerBucketFilter = undefined; openLaneDrawer(); }); filters.append(allBuckets);
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = laneDrawerBucketFilter === color.id;
       const button = document.createElement("button"); button.type = "button"; button.className = `sessionLaneDrawerBucketFilter marker-${color.id}${selected ? " selected" : ""}`;
       const label = markerColorLabel(color.id); button.title = label; button.setAttribute("aria-label", `Show ${label} bucket`); button.setAttribute("aria-pressed", String(selected));
@@ -1839,12 +1902,31 @@ export function createSessions(options: {
         copy.append(meta); open.append(copy);
         open.addEventListener("click", () => { if (performance.now() < suppressOpenUntil) return; closeLaneDrawer?.(); void openSessionTab(entry.sessionId, live?.cwd || entry.cwd || state.currentCwd); });
         card.append(open);
-        const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.disabled = Boolean(laneDrawerBucketFilter); dragHandle.title = laneDrawerBucketFilter ? "Show all buckets to reorder sessions" : "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
-        let dragPointer: number | undefined; let dragStartY = 0; let dragging = false;
+        const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.disabled = Boolean(laneDrawerBucketFilter) || !uiSync.ready; dragHandle.title = laneDrawerBucketFilter ? "Show all buckets to reorder sessions" : "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
+        let dragPointer: number | undefined; let dragStartY = 0; let dragClientY = 0; let dragScrollTop = 0; let dragging = false; let originLane: SessionLaneId = lane;
+        let dragRect: DOMRect | undefined; let destinationSlot: HTMLElement | undefined; let dragFrame: number | undefined;
+        const reducedReorderMotion = prefersReducedReorderMotion();
+        const clearDragFrame = () => { if (dragFrame !== undefined) cancelAnimationFrame(dragFrame); dragFrame = undefined; };
+        const clearFloatingStyles = () => {
+          Object.assign(card.style, { position: "", left: "", top: "", width: "", height: "", margin: "", transform: "" });
+        };
         const finishDrag = () => {
           if (dragPointer === undefined) return;
-          if (dragging) {
-            suppressOpenUntil = performance.now() + 350; card.classList.remove("dragging");
+          if (!uiSync.ready) { cancelDrag(); return; }
+          clearDragFrame();
+          if (dragging && destinationSlot) {
+            suppressOpenUntil = performance.now() + 350;
+            const painted = card.getBoundingClientRect();
+            destinationSlot.replaceWith(card); destinationSlot = undefined;
+            clearFloatingStyles();
+            if (!reducedReorderMotion) {
+              const natural = card.getBoundingClientRect();
+              card.style.transition = "none";
+              card.style.transform = `translate(${painted.left - natural.left}px, ${painted.top - natural.top}px)`;
+              requestAnimationFrame(() => { card.style.transition = ""; card.style.transform = ""; });
+            }
+            card.classList.remove("dragging"); card.classList.add("settling");
+            window.setTimeout(() => card.classList.remove("settling"), reducedReorderMotion ? 0 : 180);
             const byId = new Map(state.lanes.map((item) => [item.sessionId, item]));
             const orderedIds = (["pinned", "parked", "bookmarks"] as SessionLaneId[]).flatMap((laneId) =>
               Array.from(drawer.querySelectorAll<HTMLElement>(`.sessionLaneDrawerSection[data-lane="${laneId}"] .sessionLaneDrawerCard`)).map((node) => node.dataset.sessionId!).filter(Boolean));
@@ -1861,31 +1943,75 @@ export function createSessions(options: {
               }
               saveLaneFocus();
             }
-            state.lanes = nextLanes; commitLanes();
+            state.lanes = nextLanes;
+            const movedIndex = nextLanes.findIndex((item) => item.sessionId === entry.sessionId);
+            commitLanes(movedIndex >= 0 ? {
+              kind: "order", field: "lanes", id: entry.sessionId,
+              before: nextLanes[movedIndex + 1]?.sessionId, after: nextLanes[movedIndex - 1]?.sessionId,
+            } : undefined);
             if (moved?.lane === "parked" && entry.lane !== "parked" && !noteForSession(entry.sessionId)) requestAnimationFrame(() => promptForParkedNote(entry.sessionId));
           }
-          dragPointer = undefined; dragging = false;
+          card.classList.remove("reorder-pressed");
+          dragPointer = undefined; dragging = false; dragRect = undefined;
+        };
+        const paintDrag = () => {
+          dragFrame = undefined;
+          if (!dragging || !dragRect || !destinationSlot) return;
+          const bodyRect = body.getBoundingClientRect();
+          if (dragClientY < bodyRect.top + 48) body.scrollTop -= 18;
+          else if (dragClientY > bodyRect.bottom - 48) body.scrollTop += 18;
+          const sections = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerSection"));
+          const targetSection = sections.reduce((target, candidate) => candidate.querySelector<HTMLElement>(".sessionLaneDrawerHeading")!.getBoundingClientRect().top <= dragClientY ? candidate : target, sections[0]);
+          const siblings = Array.from(targetSection.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard"));
+          const before = siblings.find((node) => dragClientY < node.getBoundingClientRect().top + node.offsetHeight / 2);
+          if (destinationSlot.parentElement !== targetSection || destinationSlot.nextElementSibling !== (before || null)) {
+            const cards = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard"));
+            animateReorderLayout(cards, () => targetSection.insertBefore(destinationSlot!, before || null), { exclude: card, reducedMotion: reducedReorderMotion });
+          }
+          card.dataset.lane = targetSection.dataset.lane as SessionLaneId;
+          const scrollDelta = body.scrollTop - dragScrollTop;
+          let translateY = dragClientY - dragStartY + scrollDelta;
+          const scale = reducedReorderMotion ? "" : " scale(1.015)";
+          card.style.transform = `translateY(${translateY}px)${scale}`;
+          translateY += dragRect.top + dragClientY - dragStartY - card.getBoundingClientRect().top;
+          card.style.transform = `translateY(${translateY}px)${scale}`;
         };
         const moveDrag = (event: PointerEvent) => {
           if (dragPointer !== event.pointerId) return;
-          if (!dragging && Math.abs(event.clientY - dragStartY) < 8) return;
-          dragging = true; suppressOpenUntil = performance.now() + 350; card.classList.add("dragging"); event.preventDefault();
-          const bodyRect = body.getBoundingClientRect();
-          if (event.clientY < bodyRect.top + 48) body.scrollTop -= 18;
-          else if (event.clientY > bodyRect.bottom - 48) body.scrollTop += 18;
-          const sections = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerSection"));
-          const targetSection = sections.find((candidate) => { const rect = candidate.getBoundingClientRect(); return event.clientY >= rect.top && event.clientY <= rect.bottom; })
-            || sections.reduce((closest, candidate) => Math.abs(candidate.getBoundingClientRect().top - event.clientY) < Math.abs(closest.getBoundingClientRect().top - event.clientY) ? candidate : closest);
-          const targetLane = targetSection.dataset.lane as SessionLaneId; card.dataset.lane = targetLane;
-          const siblings = Array.from(targetSection.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard")).filter((node) => node !== card);
-          const before = siblings.find((node) => event.clientY < node.getBoundingClientRect().top + node.offsetHeight / 2);
-          targetSection.insertBefore(card, before || null);
+          dragClientY = event.clientY;
+          if (!dragging && Math.abs(dragClientY - dragStartY) < 8) return;
+          if (!dragging) {
+            dragRect = card.getBoundingClientRect(); dragScrollTop = body.scrollTop; originLane = card.dataset.lane as SessionLaneId || lane;
+            destinationSlot = document.createElement("div"); destinationSlot.className = "sessionLaneDrawerDropSlot"; destinationSlot.style.height = `${dragRect.height}px`;
+            dragging = true; card.after(destinationSlot); backdrop.append(card);
+            Object.assign(card.style, { position: "fixed", left: `${dragRect.left}px`, top: `${dragRect.top}px`, width: `${dragRect.width}px`, height: `${dragRect.height}px`, margin: "0" });
+            const fixedRect = card.getBoundingClientRect();
+            card.style.left = `${dragRect.left + dragRect.left - fixedRect.left}px`; card.style.top = `${dragRect.top + dragRect.top - fixedRect.top}px`;
+            suppressOpenUntil = performance.now() + 350; card.classList.add("dragging"); card.classList.remove("reorder-pressed");
+          }
+          event.preventDefault();
+          if (dragFrame === undefined) dragFrame = requestAnimationFrame(paintDrag);
         };
-        const endDrag = (event: PointerEvent) => { if (dragPointer !== event.pointerId) return; window.removeEventListener("pointermove", moveDrag); window.removeEventListener("pointerup", endDrag); window.removeEventListener("pointercancel", endDrag); finishDrag(); };
-        card.addEventListener("session-inspector-open", () => { window.removeEventListener("pointermove", moveDrag); window.removeEventListener("pointerup", endDrag); window.removeEventListener("pointercancel", endDrag); dragPointer = undefined; dragging = false; card.classList.remove("dragging"); });
+        const removeDragListeners = () => { window.removeEventListener("pointermove", moveDrag); window.removeEventListener("pointerup", endDrag); window.removeEventListener("pointercancel", cancelDrag); };
+        const endDrag = (event: PointerEvent) => { if (dragPointer !== event.pointerId) return; removeDragListeners(); paintDrag(); finishDrag(); };
+        const cancelDrag = (event?: PointerEvent) => {
+          if (event && dragPointer !== event.pointerId) return;
+          removeDragListeners(); clearDragFrame(); destinationSlot?.remove(); destinationSlot = undefined;
+          const originSection = drawer.querySelector<HTMLElement>(`.sessionLaneDrawerSection[data-lane="${originLane}"]`);
+          if (originSection) {
+            const originIds = state.lanes.filter((item) => item.lane === originLane).map((item) => item.sessionId);
+            const originIndex = originIds.indexOf(entry.sessionId);
+            const nextCard = originIds.slice(originIndex + 1).map((id) => originSection.querySelector<HTMLElement>(`.sessionLaneDrawerCard[data-session-id="${CSS.escape(id)}"]`)).find(Boolean) || null;
+            originSection.insertBefore(card, nextCard);
+          }
+          card.dataset.lane = originLane; clearFloatingStyles(); card.classList.remove("dragging", "settling", "reorder-pressed");
+          dragPointer = undefined; dragging = false; dragRect = undefined;
+        };
+        card.addEventListener("session-inspector-open", () => cancelDrag());
         dragHandle.addEventListener("pointerdown", (event) => {
-          dragPointer = event.pointerId; dragStartY = event.clientY;
-          window.addEventListener("pointermove", moveDrag, { passive: false }); window.addEventListener("pointerup", endDrag); window.addEventListener("pointercancel", endDrag);
+          if (!uiSync.ready || dragPointer !== undefined || (event.pointerType === "mouse" && event.button !== 0)) return;
+          dragPointer = event.pointerId; dragStartY = dragClientY = event.clientY; originLane = card.dataset.lane as SessionLaneId || lane; card.classList.add("reorder-pressed");
+          window.addEventListener("pointermove", moveDrag, { passive: false }); window.addEventListener("pointerup", endDrag); window.addEventListener("pointercancel", cancelDrag);
         });
         sessionInspector.attach(card, entry.sessionId, "lane");
         if (live) { const actions = document.createElement("button"); actions.type = "button"; actions.className = "sessionLaneDrawerActions"; actions.textContent = "⋯"; actions.title = "Session actions"; actions.setAttribute("aria-label", actions.title); actions.addEventListener("click", (event) => { event.stopPropagation(); sessionInspector.openAt(actions, entry.sessionId, "lane"); }); card.append(actions); }
@@ -1987,7 +2113,7 @@ export function createSessions(options: {
       tab.dataset.sessionId = sessionId;
       // Give the reorder gesture a clear head start; a stationary hold still
       // opens the Inspector, while hold-and-move reliably becomes a drag.
-      sessionInspector.attach(tab, sessionId, "tab", 650);
+      sessionInspector.attach(tab, sessionId, "tab", 650, options.laned ? "external" : "inspector");
       if (options.laned) attachLaneTabReorder(tab);
       if (isActive) activeTab = tab;
       if (options.running) {
@@ -2126,13 +2252,17 @@ export function createSessions(options: {
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
 
     cachedSessions = cachedSessions.filter((session) => session.id !== item.id);
+    pendingAutoPins.delete(item.id);
     sessionState.remove(item.id);
     state.lanes = state.lanes.filter((entry) => entry.sessionId !== item.id);
     state.sessionNotes = state.sessionNotes.filter((entry) => entry.sessionId !== item.id);
     syncPinnedProjection();
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== item.id);
+    if (data.id === item.id) uiSync.hideDeletedSession(item.id);
     renderSessionList(cachedSessions);
     renderSessionBar();
+    const warning = sessionUiMutationWarning(data);
+    if (warning) options.onUiStateUnavailable?.(warning);
     addMessage("system", data.disposition === "trashed" ? "Session moved to trash." : "Session deleted.");
   }
 
@@ -2198,7 +2328,7 @@ export function createSessions(options: {
     });
     row.append(clear);
 
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = marker?.color === color.id;
       const button = document.createElement("button");
       button.type = "button";
@@ -2375,7 +2505,7 @@ export function createSessions(options: {
     laneFilters.setAttribute("aria-label", "Filter sessions");
     if (sessionColorFilterButton) laneFilters.append(sessionColorFilterButton);
     const bucketFilters = document.createElement("span"); bucketFilters.className = "sessionBucketFilters"; bucketFilters.setAttribute("role", "group"); bucketFilters.setAttribute("aria-label", "Quick bucket selection");
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = quickBucketColor === color.id;
       const dot = document.createElement("button"); dot.type = "button"; dot.className = `sessionBucketFilter marker-${color.id}${selected ? " selected" : ""}`;
       dot.title = selected ? `Stop marking ${markerColorLabel(color.id)}` : `Mark multiple sessions ${markerColorLabel(color.id)}`;
@@ -2800,34 +2930,9 @@ export function createSessions(options: {
       navBtn.append(meta);
     }
     navBtn.addEventListener("click", async () => {
-      const previousSessionId = state.currentSessionId;
-      const nextCwd = item.cwd || cwd;
-      const switchingSessions = state.currentSessionId !== item.id;
-      if (switchingSessions) {
-        sessionState.activate(item.id);
-        beginTranscriptLoading();
-        clearMessages();
-      }
-      try {
-        const openRes = await fetch("/api/sessions/open", {
-          method: "POST",
-          headers: api.headers(),
-          body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
-        });
-        if (!openRes.ok) throw new Error(await openRes.text());
-        if (!await applyOpenedSession(openRes)) return;
-        writeActiveSessionIdToUrl(item.id);
-        rememberSessionCwd(nextCwd);
-        markCachedCurrentSession(item.id, nextCwd);
-        markSessionReadBestEffort(item.id);
-        onDerivedSessionStateChanged?.();
-        if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
-      } catch (error) {
-        if (switchingSessions && state.currentSessionId === item.id) sessionState.activate(previousSessionId);
-        onDerivedSessionStateChanged?.();
-        addMessage("system", error instanceof Error ? error.message : String(error), "error");
-        if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
-      }
+      const result = await openSessionTab(item.id, item.cwd || cwd);
+      if (result === "opened" && shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
+      else if (result === "failed" && !elements.sessionDrawer.hidden) void refreshSessions().catch(() => undefined);
     });
 
     const actionsBtn = document.createElement("button");
@@ -2880,8 +2985,8 @@ export function createSessions(options: {
     });
     new MutationObserver(updateEmptyCwdChooser).observe(elements.messagesEl, { childList: true });
     elements.emptyCwdButton.addEventListener("click", () => openFolderPicker(state.currentCwd));
-    const headerTitle = elements.sessionDrawer.querySelector(".sessionDrawerHeader h2");
-    if (headerTitle) {
+    const drawerHeader = elements.sessionDrawer.querySelector(".sessionDrawerHeader");
+    if (drawerHeader) {
       const filterWrap = document.createElement("div");
       filterWrap.className = "sessionDrawerFilters";
       sessionSearchInput = document.createElement("input");
@@ -2907,21 +3012,19 @@ export function createSessions(options: {
       sessionColorFilterButton.addEventListener("click", () => openSessionColorFilterMenu(sessionColorFilterButton!));
       renderSessionColorFilterButton();
       filterWrap.append(sessionSearchInput, sessionWorkerCollapseAllButton);
-      headerTitle.replaceWith(filterWrap);
+      drawerHeader.prepend(filterWrap);
     }
 
-    setIcon(elements.sessionDrawerSettingsButton, "settings");
-    elements.sessionDrawerSettingsButton.append(document.createTextNode("Settings"));
-    setIcon(elements.sessionDrawerInfoButton, "info");
-    elements.sessionDrawerInfoButton.append(document.createTextNode("Info"));
-    elements.sessionNewButton.textContent = "+ New session";
+    setIcon(elements.sessionNewButton, "square-pen");
+    setIcon(elements.sessionCloseButton, "x");
     elements.sessionDrawerSettingsButton.addEventListener("click", () => {
       setSessionDrawerOpen(false);
-      elements.settingsButton.click();
+      document.dispatchEvent(new CustomEvent("pi-web-open-settings", { detail: { scope: "preferences" } }));
     });
-    // The system-info panel owns this button's open handler. Closing the drawer
-    // first keeps the transition consistent on both split-pane and mobile layouts.
-    elements.sessionDrawerInfoButton.addEventListener("click", () => setSessionDrawerOpen(false));
+    elements.sessionDrawerInfoButton.addEventListener("click", () => {
+      setSessionDrawerOpen(false);
+      document.dispatchEvent(new CustomEvent("pi-web-open-settings", { detail: { scope: "system" } }));
+    });
 
     sessionPanelHandle = rightPanels?.register({
       id: "sessions",
@@ -2986,7 +3089,6 @@ export function createSessions(options: {
     // Render immediately from any legacy local pins, then replace with server state.
     renderSessionBar();
     renderCurrentSessionBucketButton();
-    refreshSessionUiState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
     // Restore the drawer state after wiring handlers and footer content.
     if (readPersistedSessionDrawerOpen()) {
       setSessionDrawerOpen(true);
@@ -3016,6 +3118,10 @@ export function createSessions(options: {
     renderSessionBar,
     renderCurrentSessionBucketButton,
     applySessionUiState,
+    startUiStateAfterAuth,
+    markUiStateUnavailable: () => uiSync.markUnavailable(),
+    canEditUiState: () => uiSync.ready,
+    saveBucketPreference: (patch, order) => persistSessionUiState(patch, order),
     markSessionRead,
     waitingInfoFor,
     activeWorkersFor,

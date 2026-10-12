@@ -22,14 +22,13 @@ test.describe("token overlay", () => {
     await expect(page).toHaveTitle('Pi Web');
     await expect(page.getByRole('heading', { name: 'Pi Web', exact: true })).toBeVisible();
     await expect(page.locator('header, footer')).toHaveCount(0);
-    const video = page.locator('video');
-    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime)).toBeGreaterThan(0);
+    const animation = page.locator('.avatarAnimation');
+    await expect(animation).toBeVisible();
+    await expect.poll(() => animation.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     expect(await page.context().cookies()).toEqual([]);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.reload();
-    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.readyState)).toBeGreaterThanOrEqual(2);
-    expect(await video.evaluate((v: HTMLVideoElement) => v.paused)).toBe(true);
-    await expect(video).toBeHidden();
+    await expect(animation).toBeHidden();
     await expect(page.locator('.avatarStill')).toBeVisible();
     expect(await page.locator('.avatarStill').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     expect((await page.request.get('/api/state')).status()).toBe(401);
@@ -42,7 +41,7 @@ test.describe("token overlay", () => {
       await route.fulfill({ json: { ...await response.json(), policy: 'open' } });
     });
     await page.locator('#sessionButton').click();
-    await openSessionDrawerFooterAction(page, 'Settings');
+    await openSessionDrawerFooterAction(page, 'System');
     await page.locator('#settingsNavAccess').click();
     await expect(page.locator('.securityBanner')).toContainText('Authentication is off');
     await expect(page.locator('.securityBanner')).toContainText('This instance allows unauthenticated access.');
@@ -51,7 +50,7 @@ test.describe("token overlay", () => {
     await page.goto(`/?token=${CORRECT_TOKEN}`);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
     await expect(page.locator("#settingsPageAccessTitle")).toBeVisible();
@@ -94,7 +93,7 @@ test.describe("token overlay", () => {
       const response = await route.fetch(); const data = await response.json();
       await route.fulfill({ json: { ...data, mode: "none", policy: "authenticated", methods: ["password"], passwordConfigured: true, passkeys: [{ id: "disabled-one", name: "Disabled key", createdAt: Date.now() }, { id: "disabled-two", name: "Disabled backup", createdAt: Date.now() }] } });
     });
-    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "Settings"); await page.locator("#settingsNavAccess").click();
+    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "System"); await page.locator("#settingsNavAccess").click();
     await expect(page.getByRole("heading", { name: "Sign-in methods", exact: true })).toBeVisible();
     await expect(page.locator(".securityBanner")).toHaveCount(0);
     await page.getByRole("button", { name: "Change", exact: true }).click();
@@ -111,7 +110,7 @@ test.describe("token overlay", () => {
       expect(route.request().postDataJSON().password).toBe(CORRECT_TOKEN);
       await route.fulfill({ json: { ok: true } });
     });
-    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "Settings"); await page.locator("#settingsNavAccess").click();
+    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "System"); await page.locator("#settingsNavAccess").click();
     await page.getByRole("button", { name: "Authentication policy & reauthentication", exact: true }).click();
     const saved = page.getByRole("button", { name: "Re-authenticate with saved token", exact: true });
     await expect(saved).toBeVisible();
@@ -129,7 +128,7 @@ test.describe("token overlay", () => {
     await page.goto(`/?token=${CORRECT_TOKEN}`);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
     await expect(page.locator("#settingsMobileTitle")).toHaveText("Security");
@@ -208,13 +207,54 @@ test.describe("token overlay", () => {
     await expect(page.locator("#messages")).toBeVisible();
   });
 
+  test("loads session preferences only after authentication and persists a pin without availability errors", async ({ page }) => {
+    const uiReads: number[] = [];
+    page.on("response", (response) => {
+      if (response.request().method() === "GET" && new URL(response.url()).pathname === "/api/session-ui-state") {
+        uiReads.push(response.status());
+      }
+    });
+    const initialState = page.waitForResponse((response) =>
+      response.request().method() === "GET" && new URL(response.url()).pathname === "/api/state" && response.status() === 401);
+    const challenge = page.waitForResponse((response) =>
+      response.request().method() === "GET" && new URL(response.url()).pathname === "/api/auth/challenge");
+    await page.goto("/");
+    await Promise.all([initialState, challenge]);
+    await expect(page.locator("#tokenOverlay")).toBeVisible();
+    expect(uiReads).toEqual([]);
+
+    const authorizedState = page.waitForResponse((response) =>
+      response.request().method() === "GET" && new URL(response.url()).pathname === "/api/state" && response.status() === 200);
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await authorizedState;
+    await expect(page.locator("#tokenOverlay")).toBeHidden();
+    await expect.poll(() => uiReads).toEqual([200]);
+
+    await page.locator(".sessionBarTab.temporary .sessionBarTabAction").click();
+    await expect(page.locator(".sessionBarTab.pinned")).toHaveCount(1);
+    await expect.poll(async () => {
+      const response = await page.request.get("/api/session-ui-state");
+      const data = await response.json();
+      return data.sessionUiState?.lanes.some((entry: { sessionId: string; lane: string }) =>
+        entry.sessionId === "mock-current" && entry.lane === "pinned");
+    }).toBe(true);
+    expect(uiReads).toEqual([200]);
+    await expect(page.locator("#messages")).not.toContainText(/Session preferences unavailable/i);
+  });
+
   test("mints a session cookie and renders a sandboxed HTML artifact through srcdoc", async ({ page }) => {
     await ensurePreviewArtifact();
     await page.goto("/");
+    const sessionResponse = page.waitForResponse((response) =>
+      response.request().method() === "GET"
+      && new URL(response.url()).pathname === "/api/state"
+      && response.status() === 200);
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
     await page.locator("#tokenForm button[type=submit]").click();
+    expect(await (await sessionResponse).headerValue("set-cookie")).toContain("pi_web_session=");
     await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
-    expect((await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
+    await expect.poll(async () => (await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
 
     await expect(page.locator("#prompt")).toBeEnabled();
     await page.waitForTimeout(500);
@@ -282,7 +322,7 @@ test.describe("token overlay", () => {
     await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
 
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
     await expect(security.locator(".securityOverview")).toBeVisible();
@@ -326,7 +366,7 @@ test.describe("token overlay", () => {
 
     await page.locator("#settingsCloseButton").click();
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     await expect(security.locator(".securitySecret code")).toHaveCount(0);
     await security.locator(".securityRow", { hasText: "API tokens" }).getByRole("button", { name: "Manage" }).click();

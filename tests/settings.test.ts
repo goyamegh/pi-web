@@ -34,6 +34,7 @@ describe("pi-web settings", () => {
       defaults: { model: { provider: "", id: "model" }, thinkingLevel: "", sessionBucketColor: "orange" },
     })).toEqual({
       version: 1,
+      identity: { name: "Pi Web", shortName: "Pi", avatar: { type: "preset", id: "current-pi" }, revision: 0 },
       appearance: { density: "comfortable", navPinned: false, navWidth: 360, accentColor: "#e2b15f", loadingAnimation: "fireworks" },
       composer: { queueMode: "steer", expanded: false },
       defaults: {
@@ -48,6 +49,26 @@ describe("pi-web settings", () => {
     expect(applySettingsPatch(normalizeSettings(undefined), { appearance: { density: "minimal" } }).appearance.density).toBe("minimal");
   });
 
+  it("accepts only boolean pin-new-sessions values", () => {
+    expect(normalizeSettings({ defaults: { pinNewSessions: "true" } }).defaults.pinNewSessions).toBeUndefined();
+    const enabled = applySettingsPatch(normalizeSettings(undefined), { defaults: { pinNewSessions: true } });
+    expect(enabled.defaults.pinNewSessions).toBe(true);
+    expect(applySettingsPatch(enabled, { defaults: { pinNewSessions: "false" } }).defaults.pinNewSessions).toBe(true);
+  });
+
+  it("persists both pin-new-sessions states and preserves them on unrelated patches", async () => {
+    const store = createSettingsStore(await tempFile());
+    await store.patch({ defaults: { pinNewSessions: true } });
+    expect((await store.read()).defaults.pinNewSessions).toBe(true);
+
+    await store.patch({ appearance: { density: "compact" } });
+    expect((await store.read()).defaults.pinNewSessions).toBe(true);
+
+    await store.patch({ defaults: { pinNewSessions: false } });
+    const reloaded = createSettingsStore(store.file);
+    expect((await reloaded.read()).defaults.pinNewSessions).toBe(false);
+  });
+
   it("applies partial patches without accepting unrelated keys", () => {
     const next = applySettingsPatch(normalizeSettings(undefined), {
       appearance: { density: "compact", accentColor: "#f0a", loadingAnimation: "pulse" },
@@ -58,6 +79,7 @@ describe("pi-web settings", () => {
 
     expect(next).toEqual({
       version: 1,
+      identity: { name: "Pi Web", shortName: "Pi", avatar: { type: "preset", id: "current-pi" }, revision: 0 },
       appearance: { density: "compact", navPinned: false, navWidth: 360, accentColor: "#ff00aa", loadingAnimation: "pulse" },
       composer: { queueMode: "followUp", expanded: true },
       defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low", sessionBucketColor: "purple" },

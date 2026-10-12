@@ -207,6 +207,13 @@ describe("tool card expand chevrons", () => {
     expect(toolCardsTs).toContain('toggle.textContent = "";');
     expect(messagesTs).toContain('toggle.textContent = "";');
   });
+
+  it("keeps error disclosure operable outside compact density", () => {
+    expect(css).toContain(".toolCard--error:not(.runtimeErrorCard) .toolCardExpandToggle");
+    expect(css).toContain("display: inline-flex;");
+    expect(toolCardsTs).toContain('!card.classList.contains("toolCard--error")');
+    expect(toolCardsTs).toContain('expandToggle.type = "button"');
+  });
 });
 
 describe("connected transcript and header styling", () => {
@@ -339,14 +346,18 @@ describe("new session empty state", () => {
   const sessionsTs = readFileSync(new URL("../src/sessions/sessionDrawer.ts", import.meta.url), "utf8");
 
   it("shows and replays the restored new-chat animation after transcript loading", () => {
-    expect(statSync(new URL("../public/new-chat-loading.mp4", import.meta.url)).size).toBeGreaterThan(0);
+    expect(statSync(new URL("../public/avatars/current-pi/new-session.apng", import.meta.url)).size).toBeGreaterThan(0);
     expect(html).toContain('class="newChatLoadingAnimation"');
-    expect(html).toContain('src="/new-chat-loading.mp4"');
-    expect(readFileSync(new URL("../public/new-chat-animation.css", import.meta.url), "utf8")).toContain(".newChatLoadingAnimation.resetting");
+    expect(html).not.toContain('src="/avatars/current-pi/new-session.apng"');
+    expect(html).toContain('id="identityNewSessionMedia"');
+    expect(readFileSync(new URL("../public/new-chat-animation.css", import.meta.url), "utf8")).not.toContain("mask-image:");
     expect(html).toContain('href="/new-chat-animation.css"');
     expect(sessionsTs).toContain("function finishTranscriptLoading()");
-    expect(sessionsTs).toContain("video.currentTime = 0;");
-    expect(sessionsTs).toContain("void video.play()");
+    expect(sessionsTs).toContain("#identityNewSessionAnimation");
+    expect(sessionsTs).toContain("URL.createObjectURL(blob)");
+    expect(sessionsTs).toContain("const download = fetch(canonicalUrl)");
+    expect(sessionsTs).toContain("current !== animation");
+    expect(sessionsTs).not.toContain("?replay=");
   });
 
   it("makes the working directory a compact accessible control", () => {
@@ -424,8 +435,8 @@ describe("compact inactive composer styling", () => {
   });
 
   it("keeps compact model settings popover within the viewport", () => {
-    expect(css).toContain(`${compactSelector} .modelSettingsPopover,\n.composer:has(.modelSettingsButton[aria-expanded="true"]) .modelSettingsPopover {\n  position: fixed;\n  left: 50%;`);
-    expect(css).toContain("width: min(560px, calc(100vw - 32px));");
+    expect(css).toContain(".composer .modelSettingsPopover {\n  position: fixed;");
+    expect(css).toContain("width: min(960px, calc(100vw - var(--app-layout-left-width, 0px) - var(--app-layout-right-width, 0px) - 32px));");
     expect(css).toContain("transform: translateX(-50%);");
   });
 

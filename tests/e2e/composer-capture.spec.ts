@@ -174,6 +174,60 @@ test("compact capture start, stop, and cancel remain genuine pointer targets", a
   releaseInvocation();
 });
 
+for (const expanded of [false, true]) {
+  test(`dictation dismisses the touch keyboard from a focused ${expanded ? "expanded" : "inline"} editor and preserves the selection`, async ({ page, hasTouch }) => {
+    let releaseInvocation!: () => void;
+    const invocationGate = new Promise<void>((resolve) => { releaseInvocation = resolve; });
+    await page.route("**/api/web-captures?**", fulfillUpload);
+    await page.route("**/api/web-contributions/invoke", async (route) => {
+      await invocationGate;
+      await route.fulfill({ json: {
+        ok: true,
+        effects: [{ type: "insert-composer-text", text: "pi", placement: "selection" }],
+      } });
+    });
+    await page.evaluate(() => (window as any).__captureHarness.setPermissionMode("pending"));
+
+    const composer = page.locator("#promptForm");
+    const prompt = page.locator("#prompt");
+    await prompt.fill("hello world");
+    if (expanded) {
+      await page.getByRole("button", { name: "Expand editor" }).click();
+      await expect(composer).toHaveClass(/expanded/);
+    }
+    await prompt.focus();
+    await prompt.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(6, 11));
+    await expect(prompt).toBeFocused();
+
+    const expectPromptFocus = async () => {
+      if (hasTouch) await expect(prompt).not.toBeFocused();
+      else await expect(prompt).toBeFocused();
+    };
+    // Do not use startRecording: it focuses the capture control first, which
+    // would mask whether a real microphone tap dismisses the touch keyboard.
+    await page.locator(".composerCaptureButton").click();
+    await expect(page.locator(".composerCaptureStatus")).toHaveText("Microphone…");
+    await expectPromptFocus();
+    await expect(prompt).toHaveJSProperty("selectionStart", 6);
+    await expect(prompt).toHaveJSProperty("selectionEnd", 11);
+    await page.evaluate(() => (window as any).__captureHarness.resolvePermission());
+    await expect(page.locator(".composerCaptureButton")).toHaveAttribute("aria-pressed", "true");
+    await expectPromptFocus();
+
+    await stopAfterRecorderData(page);
+    await expect(page.locator(".composerCaptureStatus")).toHaveText("Transcribing…");
+    await expectPromptFocus();
+    releaseInvocation();
+    await expect(prompt).toHaveValue("hello pi");
+    await expectPromptFocus();
+    if (expanded) await expect(composer).toHaveClass(/expanded/);
+
+    // Typing remains an explicit user choice after dictation.
+    await prompt.click();
+    await expect(prompt).toBeFocused();
+  });
+}
+
 test("renders recording and processing strokes with the approved warm palette", async ({ page }) => {
   let releaseInvocation!: () => void;
   const invocationGate = new Promise<void>((resolve) => { releaseInvocation = resolve; });
@@ -397,9 +451,10 @@ test("records with MediaRecorder and inserts the transcript into the captured se
   expect(promptRequests).toBe(0);
 });
 
-test("⌘D starts and stops dictation from the keyboard and is listed in the shortcut help", async ({ page }) => {
+test("⌘D starts and stops dictation from the keyboard and is listed in the shortcut help", async ({ page, hasTouch }) => {
   // Fork: one shortcut toggles the mic — start while idle, stop while recording —
-  // so dictation never needs the pointer. The prompt keeps focus throughout.
+  // so dictation never needs the pointer. The prompt keeps focus on keyboard
+  // devices; touch layouts dismiss the keyboard when dictation starts.
   await page.route("**/api/web-captures?**", fulfillUpload);
   await page.route("**/api/web-contributions/invoke", (route) => route.fulfill({ json: {
     ok: true,
@@ -412,7 +467,8 @@ test("⌘D starts and stops dictation from the keyboard and is listed in the sho
   await prompt.press("Control+d");
   await expect(button).toHaveAttribute("aria-pressed", "true");
   await expect(button).toHaveAccessibleName("Stop Dictation");
-  await expect(prompt).toBeFocused();
+  if (hasTouch) await expect(prompt).not.toBeFocused();
+  else await expect(prompt).toBeFocused();
 
   await page.waitForTimeout(1_100);
   await expect.poll(() => page.evaluate(() => (window as any).__captureHarness.dataEvents)).toBeGreaterThan(0);

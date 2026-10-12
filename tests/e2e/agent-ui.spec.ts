@@ -100,44 +100,28 @@ test.describe("agent UI", () => {
   });
 
   test("conversation tree button visibility is gated by the active agent's capability flag", async ({ page }) => {
+    // The status-bar button itself is CSS-hidden behind the action launcher, so
+    // assert the data-driven `hidden` property the runtime toggles from
+    // capabilities.tree (pi → true, Claude Code → false) rather than visibility.
     await page.goto("/");
-    // Mock harness reports pi-equivalent capabilities, so the tree button is
-    // visible by default. When we eventually surface a CC session as active,
-    // its capabilities object reports conversationTree:false and the button
-    // hides — that's the integration this asserts.
-    await expect(page.locator("#conversationTreeButton")).toBeVisible();
-
-    // Verify the gating is data-driven (capabilities flag, not e.g. a CSS
-    // override) by toggling it via the same mechanism the runtime uses.
-    await page.evaluate(() => {
-      const button = document.querySelector("#conversationTreeButton") as HTMLButtonElement | null;
-      if (button) button.hidden = true;
-    });
-    await expect(page.locator("#conversationTreeButton")).toBeHidden();
+    await expect(page.locator("#conversationTreeButton")).toHaveJSProperty("hidden", false);
+    const limited = { harness: "claude-code", queue: true, steering: false, followUp: true, thinkingLevel: true, tree: false, compaction: true, retry: true, bash: true, extensions: false, interactions: false };
+    await page.request.post("/api/mock/state", { data: { capabilities: limited } });
+    await expect(page.locator("#conversationTreeButton")).toHaveJSProperty("hidden", true);
+    await page.request.post("/api/mock/state", { data: {} });
+    await expect(page.locator("#conversationTreeButton")).toHaveJSProperty("hidden", false);
   });
 
-  test("/api/state reports agent and capabilities so the frontend can gate features", async ({ page }) => {
+  test("/api/state reports the harness and capabilities so the frontend can gate features", async ({ page }) => {
     const res = await page.request.get("/api/state");
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
-    expect(typeof body.agent).toBe("string");
-    expect(["pi", "claude-code", "mock"]).toContain(body.agent);
     expect(body.capabilities).toBeDefined();
+    expect(["pi", "claude-code", "mock"]).toContain(body.capabilities.harness);
     // The flags pi-web's frontend currently consumes; absence of any of these
     // is a wire-format regression that would silently break gating.
-    for (const key of [
-      "compaction",
-      "conversationTree",
-      "extensionDialogs",
-      "multiProviderModels",
-      "imageInput",
-      "permissionPrompts",
-      "thinkingLevels",
-      "promptTemplates",
-      "reload",
-      "branchSummaries",
-    ]) {
+    for (const key of ["queue", "steering", "followUp", "thinkingLevel", "tree", "compaction", "retry", "bash", "extensions", "interactions"]) {
       expect(body.capabilities, `capabilities.${key} missing`).toHaveProperty(key);
       expect(typeof body.capabilities[key]).toBe("boolean");
     }
@@ -162,28 +146,11 @@ test.describe("agent UI", () => {
 
 test.describe("dev-mode service worker hygiene", () => {
   /**
-   * Reproduces the original regression surface: a Service Worker registered
-   * by a previous production visit can persist across origin sessions, race
-   * fresh dev modules, and produce flickering UI. fff419f added a one-time
-   * cleanup snippet to src/main.ts; this test asserts the snippet is present
-   * (the test server runs in dev mode where import.meta.env.DEV is true).
-   *
-   * We can't easily register a *real* SW under Playwright (the SW file would
-   * have to exist server-side, and the chromium SW lifecycle in headless mode
-   * is finicky), so we assert the static contract: the cleanup code is
-   * shipped, references the correct API, and is gated on DEV.
+   * fff419f added a one-time dev-mode cleanup to src/main.ts that unregisters
+   * stale production Service Workers and reloads once (guarded by a
+   * sessionStorage flag). The e2e server runs the production bundle, so the
+   * behavioural contract we can assert here is the reload guard itself.
    */
-  test("the dev-mode cleanup runs only when import.meta.env.DEV is true", async ({ page }) => {
-    const res = await page.request.get("/src/main.ts");
-    expect(res.status()).toBe(200);
-    const source = await res.text();
-    expect(source).toContain("import.meta.env.DEV");
-    expect(source).toContain("serviceWorker.getRegistrations");
-    expect(source).toContain("registration.unregister()");
-    // The reload guard prevents reload loops on every page visit.
-    expect(source).toContain("pi-web:dev-sw-reload");
-  });
-
   test("page does not reload again once the SW cleanup flag is set", async ({ page }) => {
     // Pre-set the sessionStorage flag so the cleanup short-circuits even if
     // a real SW were somehow registered. Then load the page and assert we do

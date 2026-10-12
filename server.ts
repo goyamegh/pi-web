@@ -1,9 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync, appendFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { avatarFile, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar } from "./server/appIdentity.js";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
@@ -13,7 +14,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { HttpError } from "./server/shared/httpError.js";
-import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
+import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
@@ -236,17 +237,18 @@ function cacheControlFor(relative: string): string {
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(url.pathname);
-  const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
-  const file = resolve(staticDir, relative);
+  const reqPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const file = resolve(staticDir, reqPath);
+  const relPath = relative(staticDir, file);
 
-  if (!file.startsWith(staticDir) || !existsSync(file)) {
+  if (relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(file)) {
     sendJson(res, 404, { ok: false, error: "Not found" });
     return;
   }
 
   res.writeHead(200, {
     "content-type": contentTypes[extname(file)] || "application/octet-stream",
-    "cache-control": cacheControlFor(relative),
+    "cache-control": cacheControlFor(relPath),
   });
   pipeReadStream(res, file);
 }
@@ -356,6 +358,18 @@ function sessionCwd(targetSession: PiWebSession | any = session) {
 
 function resolveSessionId(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : session.sessionId;
+}
+
+type OptionalSessionUiState =
+  | { sessionUiState: Awaited<ReturnType<typeof sessionUiStateStore.read>>; sessionUiStateAvailability?: never; sessionUiStateWarning?: never }
+  | { sessionUiState?: never; sessionUiStateAvailability: "unavailable"; sessionUiStateWarning: string };
+
+async function readOptionalSessionUiState(): Promise<OptionalSessionUiState> {
+  try { return { sessionUiState: await sessionUiStateStore.read() }; }
+  catch (error) {
+    console.warn("Session UI state unavailable during chat read:", error);
+    return { sessionUiStateAvailability: "unavailable", sessionUiStateWarning: "Session preferences are unavailable. Chat remains available; preferences are read-only until storage is repaired." };
+  }
 }
 
 function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessionUiState: { sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string }> }) {
@@ -468,14 +482,27 @@ function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
   return cleanClientId(headerValue) || cleanClientId(fallback);
 }
 
+function parseViewerSeq(value: unknown): number | undefined {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return undefined;
+  const seq = Number(value);
+  return Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
+}
+
 function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession, fallbackClientId?: unknown) {
   const clientId = clientIdFromRequest(req, fallbackClientId);
-  if (clientId) sessionService.acquireViewer(value.sessionId, clientId);
+  if (clientId) sessionService.acquireViewer(value.sessionId, clientId, parseViewerSeq(req.headers["x-pi-web-viewer-seq"]));
 }
 
 function bindViewerSocket(clientId: string, ws: WebSocket) {
   const connection = sessionService.connectViewer(clientId);
   if (connection) ws.on("close", () => sessionService.disconnectViewer(connection));
+}
+
+const createdSessionUiWarnings = new Map<string, string>();
+function takeCreatedSessionUiWarning(sessionId: string): string | undefined {
+  const warning = createdSessionUiWarnings.get(sessionId);
+  createdSessionUiWarnings.delete(sessionId);
+  return warning;
 }
 
 const mockHarness = createMockHarness({
@@ -495,12 +522,12 @@ function additionalExtensionPaths(cwd = piCwd) {
 
 async function transferCurrentTabUiState(oldSessionId: string, newSessionId: string, _newLabel: string, cwd: string) {
   if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) return sessionUiStateStore.read();
-  const current = await sessionUiStateStore.read();
+  const next = await sessionUiStateStore.update((current) => {
   const oldLaneIndex = current.lanes.findIndex((item) => item.sessionId === oldSessionId);
   const oldNote = current.sessionNotes.find((item) => item.sessionId === oldSessionId);
   const oldMarker = current.sessionMarkers.find((item) => item.sessionId === oldSessionId);
   const hasUnreadState = current.sessionUnreadStates.some((item) => item.sessionId === oldSessionId || item.sessionId === newSessionId);
-  if (oldLaneIndex === -1 && !oldNote && !oldMarker && !hasUnreadState) return current;
+  if (oldLaneIndex === -1 && !oldNote && !oldMarker && !hasUnreadState) return undefined;
 
   const lanes = current.lanes.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
   if (oldLaneIndex !== -1) {
@@ -518,7 +545,8 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
   }
   const sessionUnreadStates = current.sessionUnreadStates.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
 
-  const next = await sessionUiStateStore.write({ ...current, lanes, sessionNotes, sessionMarkers, sessionUnreadStates });
+  return { ...current, lanes, sessionNotes, sessionMarkers, sessionUnreadStates };
+  });
   broadcast({ type: "session_ui_state_changed", sessionUiState: next });
   return next;
 }
@@ -526,12 +554,11 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
 async function applyDefaultSessionBucket(sessionId: string) {
   const color = (await settingsStore.read()).defaults.sessionBucketColor;
   if (!sessionId || !color) return undefined;
-  const current = await sessionUiStateStore.read();
-  if (current.sessionMarkers.some((marker) => marker.sessionId === sessionId)) return current;
-  const sessionUiState = await sessionUiStateStore.write({
-    ...current,
-    sessionMarkers: [{ sessionId, color, updatedAt: new Date().toISOString() }, ...current.sessionMarkers],
-  });
+  const sessionUiState = await sessionUiStateStore.update((current) =>
+    current.sessionMarkers.some((marker) => marker.sessionId === sessionId) ? undefined : {
+      ...current,
+      sessionMarkers: [{ sessionId, color, updatedAt: new Date().toISOString() }, ...current.sessionMarkers],
+    });
   broadcast({ type: "session_ui_state_changed", sessionUiState });
   return sessionUiState;
 }
@@ -558,7 +585,7 @@ const handleSessionServiceEvent = createHostSessionEventHandler({
 const mockSessionFactory = mockMode ? {
   isMock: true,
   create: async ({ path, cwd }: { path?: string; cwd: string }) => ({ session: createMockSession(path, cwd) }),
-  list: async () => mockSessions,
+  list: async (cwd: string) => mockSessions.filter((item) => resolve(item.cwd || piCwd) === resolve(cwd)),
   remove: async (id: string) => {
     const index = mockSessions.findIndex((item) => item.id === id);
     if (index >= 0) mockSessions.splice(index, 1);
@@ -591,13 +618,26 @@ sessionService = new LocalSessionService({
     },
     finalizeCreatedSession: async (sessionId: string) => {
       await harnessFactory.persistLastUsedAgent(sessionId, (id) => sessionService.sessionForId(id));
-      return applyDefaultSessionBucket(sessionId);
+      try { await applyDefaultSessionBucket(sessionId); }
+      catch (error) {
+        if (createdSessionUiWarnings.size >= 128) createdSessionUiWarnings.delete(createdSessionUiWarnings.keys().next().value!);
+        createdSessionUiWarnings.set(sessionId, error instanceof Error ? error.message : String(error));
+        console.warn(`Could not apply default session bucket for ${sessionId}:`, error);
+      }
     },
   },
   globalCwd: () => piCwd,
   clientCount: () => realtimeHub.clientCount,
 });
 const settingsStore = sessionService.settingsStore;
+// Serialize avatar uploads, settings patches, and explicit reset cleanup.
+// Otherwise an identity patch could race the revision check and unlink.
+let avatarMutation: Promise<unknown> = Promise.resolve();
+function withAvatarMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = avatarMutation.then(operation);
+  avatarMutation = result.catch(() => undefined);
+  return result;
+}
 sessionService.subscribe((event) => {
   if (event.type === "shutdown") {
     mockPromptCorrelations.delete(event.sessionKey);
@@ -673,9 +713,38 @@ function withAccessLog(
 
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 
+async function loginPresentation() {
+  const settings = await settingsStore.read();
+  const uploaded = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file) : undefined;
+  return { name: settings.identity.name, assets: publicIdentityAssets(settings, uploaded) };
+}
+
 const server = createServer(withAccessLog(async (req, res, url) => {
   const method = req.method || "GET";
   try {
+    if (method === "GET" && ["/manifest.webmanifest", "/identity/config.json", "/identity/avatar.png", "/identity/icon.png"].includes(url.pathname)) {
+      res.setHeader("cache-control", "no-store");
+      const settings = await settingsStore.read();
+      if (url.pathname === "/manifest.webmanifest") {
+        res.setHeader("content-type", "application/manifest+json");
+        res.end(JSON.stringify(identityManifest(settings))); return;
+      }
+      const png = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file) : undefined;
+      // A removed or unavailable upload must not leave the public login page
+      // with broken artwork or send the icon endpoint into a redirect loop.
+      const assets = publicIdentityAssets(settings, png);
+      if (url.pathname === "/identity/config.json") return sendJson(res, 200, { ...settings.identity, assets });
+      if (settings.identity.avatar.type === "custom" && png) {
+        res.setHeader("content-type", "image/png");
+        res.end(png); return;
+      }
+      if (url.pathname === "/identity/icon.png" || url.pathname === "/identity/avatar.png") {
+        res.statusCode = 302;
+        res.setHeader("location", url.pathname === "/identity/icon.png" ? assets.icon : assets.still);
+        res.end(); return;
+      }
+      return sendJson(res, 404, { error: "Avatar not found" });
+    }
 
     // TEMP diagnostic: log shell/SW requests so we can see whether a client
     // (e.g. an iPhone) is actually hitting the server or being served entirely
@@ -702,10 +771,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
         if (url.pathname.endsWith("challenge")) return sendJson(res, 200, !req.headers.cookie?.includes("pi_web_session=") && authKernel.methods.size === 1 && authKernel.methods.has("legacy") ? { mode: "token" } : { mode: "redirect", url: "/api/auth/login" });
-        passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined); return;
+        passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined, await loginPresentation()); return;
       }
       if (await handlePasswordLogin(req, res, url, authKernel, authStore, authOrigin)) return;
-      if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
+      if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig, loginPresentation)) return;
       if (method === "POST" && url.pathname === "/api/auth/logout") {
         if (!req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { error: "CSRF validation failed" });
         await authKernel.revokeSession(req);
@@ -748,9 +817,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         knownCwds.clear();
         knownCwds.add(bootCwd);
         sessionService.forgetKnownCwds();
-        await sessionUiStateStore.write(defaultSessionUiState);
+        const resetUiState = await sessionUiStateStore.reset();
         session = await sessionService.initialize();
-        broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
+        broadcast({ type: "session_ui_state_changed", sessionUiState: resetUiState });
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
       }
@@ -968,7 +1037,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 200, {
           ok: true,
           ...await decorateServiceState(await sessionService.state(requestedSessionId)),
-          sessionUiState: await sessionUiStateStore.read(),
+          ...await readOptionalSessionUiState(),
           tokenRequired: authKernel.methods.has("legacy") && Boolean(token),
         });
       }
@@ -1127,8 +1196,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "GET" && url.pathname === "/api/sessions") {
         const extraCwds = url.searchParams.getAll("cwd");
-        const sessionUiState = await sessionUiStateStore.read();
-        return sendJson(res, 200, { ok: true, sessions: applySessionUnreadState(decorateSessionInfos(await sessionService.list(extraCwds)), sessionUiState) });
+        const sessions = decorateSessionInfos(await sessionService.list(extraCwds));
+        const optionalUi = await readOptionalSessionUiState();
+        return sendJson(res, 200, {
+          ok: true,
+          sessions: optionalUi.sessionUiState ? applySessionUnreadState(sessions, optionalUi.sessionUiState) : sessions,
+          ...optionalUi,
+        });
       }
 
       if (method === "GET" && url.pathname === "/api/session-ui-state") {
@@ -1136,9 +1210,16 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
-        const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
-        broadcast({ type: "session_ui_state_changed", sessionUiState });
-        return sendJson(res, 200, { ok: true, sessionUiState });
+        try {
+          const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
+          broadcast({ type: "session_ui_state_changed", sessionUiState });
+          return sendJson(res, 200, { ok: true, sessionUiState });
+        } catch (error) {
+          if (error instanceof SessionUiStateConflictError) return sendJson(res, 409, { ok: false, error: error.message, revision: error.revision });
+          if (error instanceof SessionUiStatePreconditionError) return sendJson(res, error.status, { ok: false, error: error.message });
+          if (error instanceof SessionUiStateUnavailableError) return sendJson(res, 503, { ok: false, error: error.message });
+          throw error;
+        }
       }
 
       if (method === "POST" && (url.pathname === "/api/session-ui-state/read" || url.pathname === "/api/session-ui-state/unread")) {
@@ -1159,23 +1240,52 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before deleting the current session." });
         try {
           const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined) as { id: string; disposition: "trashed" | "deleted" };
-          const sessionUiState = await sessionUiStateStore.removeSession(result.id);
+          let sessionUiStateWarning: string | undefined;
+          try {
+            const sessionUiState = await sessionUiStateStore.removeSession(result.id);
+            broadcast({ type: "session_ui_state_changed", sessionUiState });
+          } catch (error) {
+            sessionUiStateWarning = error instanceof Error ? error.message : String(error);
+            console.warn(`Could not remove session UI metadata for ${result.id}:`, error);
+          }
           settlementTracker.clear(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
-          broadcast({ type: "session_ui_state_changed", sessionUiState });
-          return sendJson(res, 200, { ok: true, ...result });
+          return sendJson(res, 200, { ok: true, ...result, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
         } catch (error: any) {
           return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
 
+      if (method === "POST" && url.pathname === "/api/identity/avatar") {
+        const settings = await withAvatarMutation(async () => {
+          try { await receiveAvatar(req, settingsStore.file); }
+          catch (error) { throw new HttpError((error as Error).message, 400); }
+          return settingsStore.patch({ identity: { avatar: { type: "custom" } } });
+        });
+        broadcast({ type: "settings_updated", settings });
+        return sendJson(res, 200, { ok: true, settings });
+      }
+      if (method === "DELETE" && url.pathname === "/api/identity/avatar") {
+        const expectedRevision = Number(url.searchParams.get("revision"));
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !url.searchParams.has("revision"))
+          return sendJson(res, 400, { ok: false, error: "A saved identity revision is required" });
+        return withAvatarMutation(async () => {
+          const { identity } = await settingsStore.read();
+          if (identity.revision !== expectedRevision || identity.avatar.type !== "preset" || identity.avatar.id !== "current-pi")
+            return sendJson(res, 409, { ok: false, error: "Identity changed; uploaded avatar was not deleted" });
+          try { await unlink(avatarFile(settingsStore.file)); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+          return sendJson(res, 200, { ok: true });
+        });
+      }
       if (method === "GET" && url.pathname === "/api/settings") {
         return sendJson(res, 200, { ok: true, settings: await settingsStore.read(), webSettingsSchemas: sessionService.settingsSchemas() });
       }
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
-        const settings = await settingsStore.patch(await readBody(req));
+        const patch = await readBody(req);
+        const settings = await withAvatarMutation(() => settingsStore.patch(patch));
         broadcast({ type: "settings_updated", settings });
         return sendJson(res, 200, { ok: true, settings });
       }
@@ -1259,7 +1369,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "GET" && url.pathname === "/api/models") {
-        return sendJson(res, 200, { ok: true, ...await sessionService.models(resolveSessionId(url.searchParams.get("sessionId"))) });
+        return sendJson(res, 200, { ok: true, ...await sessionService.models(resolveSessionId(url.searchParams.get("sessionId")), {
+          refresh: url.searchParams.get("refresh") === "1",
+          force: url.searchParams.get("force") === "1",
+        }) });
       }
 
       if (method === "POST" && url.pathname === "/api/model") {
@@ -1285,11 +1398,18 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const result = await sessionService.executeCommand(target.sessionId, command);
         const created = result.state.sessionId !== target.sessionId;
         const decorated = await decorateServiceState(result.state);
-        const state = created && /^\/+clear(?:\s|$)/i.test(command)
-          ? { ...decorated, sessionUiState: await transferCurrentTabUiState(target.sessionId, decorated.sessionId, decorated.sessionTitle || "New session", decorated.cwd) }
-          : decorated;
+        let state: typeof decorated & { sessionUiState?: Awaited<ReturnType<typeof sessionUiStateStore.read>> } = decorated;
+        let sessionUiStateWarning = created ? takeCreatedSessionUiWarning(decorated.sessionId) : undefined;
+        if (created && /^\/+clear(?:\s|$)/i.test(command)) {
+          try {
+            state = { ...decorated, sessionUiState: await transferCurrentTabUiState(target.sessionId, decorated.sessionId, decorated.sessionTitle || "New session", decorated.cwd) };
+          } catch (error) {
+            sessionUiStateWarning = error instanceof Error ? error.message : String(error);
+            console.warn(`Could not transfer session UI metadata for ${decorated.sessionId}:`, error);
+          }
+        }
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
-        return sendJson(res, 200, { ok: true, message: result.message, state });
+        return sendJson(res, 200, { ok: true, message: result.message, state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
       }
 
       if (method === "POST" && url.pathname === "/api/shell") {
@@ -1413,7 +1533,8 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           }
         }
         broadcast({ type: "state_changed", ...state });
-        return sendJson(res, 200, { ok: true, ...state, ...(originWarning ? { originWarning } : {}) });
+        const sessionUiStateWarning = takeCreatedSessionUiWarning(state.sessionId);
+        return sendJson(res, 200, { ok: true, ...state, ...(originWarning ? { originWarning } : {}), ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
       }
 
       if (method === "POST" && url.pathname === "/api/session/cwd") {
@@ -1421,11 +1542,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const cwd = String(body.cwd || "").trim();
         if (!cwd) return sendJson(res, 400, { ok: false, error: "cwd is required" });
         try {
-          const baseState = await sessionService.switchCwd(resolveSessionId(body.sessionId), cwd);
+          const previousSessionId = resolveSessionId(body.sessionId);
+          const baseState = await sessionService.switchCwd(previousSessionId, cwd);
           const state = await decorateServiceState(baseState);
           noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
           broadcast({ type: "state_changed", ...state });
-          return sendJson(res, 200, { ok: true, ...state });
+          const sessionUiStateWarning = state.sessionId !== previousSessionId ? takeCreatedSessionUiWarning(state.sessionId) : undefined;
+          return sendJson(res, 200, { ok: true, ...state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
         } catch (error) {
           const status = error instanceof SessionServiceError ? error.status : 400;
           return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -1489,7 +1612,7 @@ self.addEventListener('activate', (event) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
+    const status = error instanceof SessionUiStateUnavailableError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));
@@ -1543,7 +1666,7 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   }
   const clientId = cleanClientId(url.searchParams.get("clientId") || "");
   if (clientId) {
-    sessionService.acquireViewer((targetSession || session).sessionId, clientId);
+    sessionService.acquireViewer((targetSession || session).sessionId, clientId, parseViewerSeq(url.searchParams.get("viewerSeq")));
     bindViewerSocket(clientId, realtimeWs);
   }
   const helloState = targetSession ? currentState(targetSession) : currentState();

@@ -22,6 +22,7 @@ import {
   readActiveSessionIdFromUrl,
   readSessionCitationFromUrl,
   sessionCitationHref,
+  sessionUiUnavailableWarning,
   syncActiveSessionIdHistoryState,
   writeSessionCitationToUrl,
   type SessionCitation,
@@ -55,6 +56,7 @@ import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/art
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPanelOpener, configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
+import { configureImagePreviewOpener } from "./components/imageActions.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createSessionDraftStore } from "./drafts/sessionDraftStore.js";
@@ -64,8 +66,8 @@ import { createSessions, type SessionsController } from "./sessions/sessionDrawe
 import { initSessionDrawerResize } from "./sessions/sessionDrawerResize.js";
 import { createSettlementDependencyStore } from "./sessions/settlementDependencies.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
-import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSystemInfo, type SystemInfoController } from "./systemInfo/systemInfo.js";
+import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSessionInfo, type SessionInfoController } from "./sessionInfo/sessionInfo.js";
 import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
@@ -111,6 +113,19 @@ if (import.meta.env.DEV && "serviceWorker" in navigator) {
 
 const elements = getAppElements();
 const state = createAppState();
+let preferencesWarningShown = false;
+function showPreferencesWarning(warning: string) {
+  if (preferencesWarningShown) return;
+  preferencesWarningShown = true;
+  const notice = document.createElement("div");
+  notice.id = "sessionPreferencesWarning";
+  notice.setAttribute("role", "status");
+  notice.className = "sessionPreferencesWarning";
+  notice.textContent = `Session preferences are read-only. Chat remains available. ${warning} Reload to retry.`;
+  // Inside the existing composer grid row, not a new implicit .app row that
+  // can fall outside its fixed-height viewport.
+  elements.formEl.prepend(notice);
+}
 const settlementDependencies = createSettlementDependencyStore(state.settlementDependencies);
 const sessionDrafts = createSessionDraftStore();
 initDebugDiagnostics(state);
@@ -126,6 +141,10 @@ let repoInfoBar: RepoInfoBarController;
 let activeWorkerDock: ActiveWorkerDockController;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
+function handleSessionUiStateWarning(warning: string) {
+  sessions.markUiStateUnavailable();
+  showPreferencesWarning(warning);
+}
 let settings: SettingsController;
 let systemInfo: SystemInfoController;
 let sessionInfo: SessionInfoController;
@@ -460,8 +479,8 @@ function renderActiveSessionMetadata() {
   setArtifactPreviews(inSlot("artifact-preview"));
   gitPanel?.setExtensionTabs(inSlot("git-tab"));
   webPanels?.setPanels(inSlot("panel"), state.currentSessionId);
-  systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
   actionLauncher?.setExtensionActions(inSlot("fab"));
+  systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
   const captureContributions = inSlot("composer-input").filter((entry): entry is ComposerCaptureDescriptor =>
     entry.kind === "capture" && entry.capture?.media === "audio" && typeof entry.capture.registrationId === "string" && typeof entry.key === "string",
   );
@@ -484,8 +503,27 @@ function renderActiveSession(
   renderActiveSessionRuntime(activity, previous);
 }
 
+function restoreComposerSession(sessionId: string) {
+  if (!composer) return;
+  if (sessionId === state.currentSessionId) {
+    composer.switchSession(sessionId);
+    return;
+  }
+  // Restoring another session's draft is not an interactive expand/collapse.
+  // Commit its geometry without animating the surrounding transcript for 480ms.
+  elements.formEl.classList.add("restoringSessionDraft");
+  try {
+    composer.switchSession(sessionId);
+  } finally {
+    // Resolve the restored layout while transitions are disabled, before lifting
+    // the override. Normal focus/input changes keep their existing animation.
+    void elements.formEl.offsetHeight;
+    elements.formEl.classList.remove("restoringSessionDraft");
+  }
+}
+
 function activateSession(sessionId: string) {
-  composer?.switchSession(sessionId);
+  restoreComposerSession(sessionId);
   selectSession(state, sessionId);
   renderActiveSession();
 }
@@ -511,7 +549,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
 
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
   if (activatesSession) {
-    composer?.switchSession(view.id);
+    restoreComposerSession(view.id);
     selectSession(state, view.id);
   }
   if (data && "sessionUiState" in data) sessions?.applySessionUiState(data.sessionUiState);
@@ -617,11 +655,16 @@ async function refreshState() {
   }
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
+  const preferencesWarning = sessionUiUnavailableWarning(data);
+  if (preferencesWarning) handleSessionUiStateWarning(preferencesWarning);
   if (requestedSessionId && requestedSessionId !== state.currentSessionId) {
     sessionState.applySnapshot(data);
     return;
   }
   sessionState.applySnapshot(data, { activate: true });
+  // The first authorized /api/state is the auth gate for UI-state bootstrap.
+  // Do not turn a pre-login 401 into a permanent preferences-store failure.
+  const uiStateReady = sessions.startUiStateAfterAuth();
   syncActiveSessionIdHistoryState(state.currentSessionId);
   const dependencySessionId = requestedSessionId || (typeof data.sessionId === "string" ? data.sessionId : "");
   refreshSettlementDependencies(dependencySessionId);
@@ -634,7 +677,11 @@ async function refreshState() {
     if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
   }
   state.initialSyncComplete = messagesResult.status === "fulfilled";
-  if (messagesResult.status === "fulfilled") sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  // A slow or unavailable preferences store must not delay chat setup.
+  void uiStateReady.then((ready) => {
+    if (!ready) showPreferencesWarning("Preference storage could not be loaded.");
+    else if (messagesResult.status === "fulfilled") sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  });
   composer.updatePrimaryAction();
 }
 
@@ -690,6 +737,8 @@ settings = createSettings({
   onNavWidthChange: (width) => {
     document.documentElement.style.setProperty("--session-drawer-width", `${width}px`);
   },
+  saveBucketPreference: (patch, order) => sessions.saveBucketPreference(patch, order),
+  canEditBucketPreference: () => sessions.canEditUiState(),
   onAppearanceChange: () => {
     activeWorkerDock?.refresh();
     messages.reconcileActivity();
@@ -697,14 +746,16 @@ settings = createSettings({
   },
 });
 
+const systemInfoInline = document.querySelector<HTMLElement>("#systemInfoInline");
+if (!systemInfoInline) throw new Error("Missing inline system information container");
 systemInfo = createSystemInfo({
   api,
-  rightPanels,
   trigger: elements.sessionDrawerInfoButton,
-  focusOnClose: elements.sessionButton,
+  focusOnClose: elements.sessionDrawerInfoButton,
   apiHeaders: api.headers,
   getSessionId: () => state.currentSessionId,
   onError: (message) => messages.addMessage("system", message, "error"),
+  inlineContainer: systemInfoInline,
 });
 
 contextMeter = createContextMeter({ elements });
@@ -722,6 +773,7 @@ sessions = createSessions({
   refreshMessages,
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
+  onUiStateUnavailable: handleSessionUiStateWarning,
   onDerivedSessionStateChanged: () => {
     // Rehydrate inactive pinned parents too. Realtime dependency declarations
     // are not replayed after a browser reconnect, while pinned indicators must
@@ -731,11 +783,17 @@ sessions = createSessions({
     }
     activeWorkerDock?.refresh();
   },
+  checkpointTranscript: () => {
+    const transcript = messages.checkpoint();
+    const toolState = tools.checkpoint();
+    return { restore() { transcript.restore(); toolState.restore(); } };
+  },
   clearMessages: () => {
     tools.clearActiveToolCards();
     messages.clear();
   },
   addMessage: messages.addMessage,
+  hasSessionDraft: (sessionId) => composer?.hasSessionDraft(sessionId) ?? false,
 });
 
 activeWorkerDock = createActiveWorkerDock({
@@ -764,6 +822,8 @@ composer = createComposer({
   refreshModels: () => modelSettings.refreshModels(),
   refreshMessages,
   refreshState,
+  startNewSession: () => sessions.startNewSession(),
+  onSessionUiStateWarning: handleSessionUiStateWarning,
   beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,
@@ -816,14 +876,14 @@ actionLauncher = initActionLauncher(elements, {
 statusBar.init();
 sessions.init();
 sessionInfo.init();
-systemInfo.init();
 contextMeter.init();
 composer.init();
 conversationTree.init();
 modelSettings.init();
 settings.init();
+systemInfo.init();
 const hasBlockingShortcutOverlay = () => Boolean(document.fullscreenElement
-  || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop, .imageOverlay'));
+  || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop'));
 const canCyclePinnedSessions = () => sessions.focusedLaneSessionCount() > 1
   && elements.tokenOverlay.hidden
   && !elements.formEl.classList.contains("expanded")
@@ -988,7 +1048,12 @@ filesPanel = initFilesPanel({
   getSessionId: () => state.currentSessionId,
   onError: showSystemError,
 });
-configureArtifactPanelOpener((url) => filesPanel.openArtifact(url));
+configureArtifactPanelOpener((url, opener) => filesPanel.openArtifact(url, opener));
+configureImagePreviewOpener((source, name, opener) => {
+  const pathname = new URL(source, location.href).pathname;
+  if (new URL(source, location.href).origin === location.origin && /^\/api\/(?:session-)?artifacts\//.test(pathname)) filesPanel.openArtifact(source, opener);
+  else filesPanel.openImage(source, name, opener);
+});
 gitPanel = initGitPanel({
   button: elements.gitButton,
   panel: elements.gitPanel,

@@ -1,3 +1,5 @@
+import { nextRealtimeHello } from "./helpers/realtimeReady.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 /**
@@ -113,14 +115,16 @@ test("worker dock remains clear and horizontally contained while parent runs or 
     { role: "user", text: "Show active workers." },
     prose("The worker dock is ready."),
   ] } }));
-  await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: workers.map(([sessionId]) => ({
+  await seedSessionUiState(page, { sessionOrigins: workers.map(([sessionId]) => ({
     sessionId, originSessionId: "mock-current", kind: "spawn", updatedAt: timestamp,
-  })) } });
+  })) });
   await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({ json: { ok: true, sessions: [
     { id: "mock-current", name: "Release parent", cwd: ".", created: timestamp, modified: timestamp, messageCount: 1, isCurrent: true },
     ...workers.map(([id, name]) => ({ id, name, cwd: ".", created: timestamp, modified: timestamp, messageCount: 1, isCurrent: false })),
   ] } }));
+  const hello = nextRealtimeHello(page);
   await page.goto("/");
+  await hello;
   await page.request.post("/api/mock/event", { data: {
     type: "settlement_dependencies_changed", sessionId: "mock-current", childIds: workers.map(([id]) => id),
   } });

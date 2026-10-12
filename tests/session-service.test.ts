@@ -4,11 +4,115 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonRoundTrip, type MessageDto, type SessionServiceEvent } from "../server/session/dto.js";
 import { SessionActivity } from "../server/session/activity.js";
+import { shallowSessionCwd } from "../server/session/shallowList.js";
 import { createHostSessionEventHandler, decorateHostMessages, resolveWebSocketHelloSession } from "../server/session/hostEvents.js";
 import { mapPiEvent } from "../server/session/piEventMap.js";
-import { pi084Events } from "./fixtures/pi-0.84-events.js";
-import { LocalSessionService, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
+import { parseAttachmentMarkup } from "../server/shared/attachments.js";
+import { pi087Events } from "./fixtures/pi-0.87-events.js";
+import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
+import { PiSessionHandle } from "../server/session/piHandle.js";
+
+describe("owned Pi runtime handle", () => {
+  it.each([false, true])("publishes disposal before reentrant cleanup (shutdown=%s)", async (shutdown) => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    const order: string[] = [];
+    const reentrant: Promise<void>[] = [];
+    if (shutdown) fixture.session.extensionRunner = {
+      hasHandlers: () => true,
+      emit: () => { order.push("shutdown"); const promise = handle.dispose("reset"); reentrant.push(promise); return promise; },
+    } as PiWebSession["extensionRunner"];
+    fixture.session.subscribe = () => () => { order.push("unsubscribe"); reentrant.push(handle.dispose("reset")); };
+    (fixture.session as PiWebSession & { dispose(): void }).dispose = () => { order.push("dispose"); reentrant.push(handle.dispose("reset")); };
+    handle.subscribe(() => undefined);
+    const disposal = handle.dispose("reset");
+    expect(order).toEqual(shutdown ? ["shutdown", "unsubscribe", "dispose"] : ["unsubscribe", "dispose"]);
+    await disposal;
+    expect(reentrant.every((promise) => promise === disposal)).toBe(true);
+    expect(handle.dispose("reset")).toBe(disposal);
+  });
+
+  it("releases a late subscription when synchronous notification disposes the handle", async () => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    const unsubscribe = vi.fn();
+    let disposal!: Promise<void>;
+    fixture.session.subscribe = (listener) => { listener({ type: "agent_end" }); return unsubscribe; };
+    const release = handle.subscribe(() => { disposal = handle.dispose("reset"); });
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    release();
+    await disposal;
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(fixture.disposeCalls).toBe(1);
+  });
+
+  it("rejects subscriptions during shutdown and after disposal without SDK ingress", async () => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    let finish!: () => void;
+    fixture.session.extensionRunner = { hasHandlers: () => true, emit: () => new Promise<void>((resolve) => { finish = resolve; }) } as PiWebSession["extensionRunner"];
+    const subscribe = vi.spyOn(fixture.session, "subscribe");
+    const disposal = handle.dispose("reset");
+    expect(() => handle.subscribe(() => undefined)).toThrow("closing or disposed");
+    finish();
+    await disposal;
+    expect(() => handle.subscribe(() => undefined)).toThrow("closing or disposed");
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  it("removes failed subscription records before cleanup", async () => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    fixture.session.subscribe = () => { throw new Error("subscribe failed"); };
+    expect(() => handle.subscribe(() => undefined)).toThrow("subscribe failed");
+    const unsubscribe = vi.fn();
+    fixture.session.subscribe = () => unsubscribe;
+    handle.subscribe(() => undefined);
+    await handle.dispose("reset");
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(fixture.disposeCalls).toBe(1);
+  });
+  it("preserves projection, prompt options, interruption and event ingress", async () => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    const events: unknown[] = [];
+    const release = handle.subscribe((event) => events.push(event));
+    const prompt = vi.spyOn(fixture.session, "prompt");
+    const abort = vi.spyOn(fixture.session, "abort");
+    await handle.prompt("steer", { streamingBehavior: "steer" });
+    expect(prompt).toHaveBeenCalledWith("steer", { streamingBehavior: "steer" });
+    expect(events).toHaveLength(1);
+    expect(handle.state("/workspace").sessionId).toBe("current");
+    expect(handle.messages().at(-1)?.entryId).toBe("user-2");
+    await handle.interrupt();
+    expect(abort).toHaveBeenCalledOnce();
+    release();
+    fixture.emit({ type: "agent_end" });
+    expect(events).toHaveLength(1);
+    await handle.dispose("reset");
+    expect(fixture.disposeCalls).toBe(1);
+  });
+
+  it("owns shutdown/unsubscribe/disposal ordering and disposes once on hook failure", async () => {
+    const fixture = fixtureSession("/workspace");
+    const order: string[] = [];
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fixture.session.extensionRunner = {
+      hasHandlers: () => true,
+      emit: async () => { order.push("shutdown"); throw new Error("hook failed"); },
+    } as PiWebSession["extensionRunner"];
+    fixture.session.subscribe = () => () => { order.push("unsubscribe"); throw new Error("release failed"); };
+    (fixture.session as PiWebSession & { dispose(): void }).dispose = () => { order.push("dispose"); };
+    const handle = new PiSessionHandle(fixture.session);
+    handle.subscribe(() => undefined);
+    try {
+      await Promise.all([handle.dispose("reset"), handle.dispose("reset")]);
+      expect(order).toEqual(["shutdown", "unsubscribe", "dispose"]);
+      expect(warning).toHaveBeenCalledTimes(2);
+    } finally { warning.mockRestore(); }
+  });
+});
 
 const tempDirs: string[] = [];
 let fixtureSessionSequence = 0;
@@ -78,9 +182,13 @@ function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jso
 }
 
 type FixtureServiceOptions = {
+  modelRuntime?: LocalSessionServiceDependencies["modelRuntime"];
   isMock?: boolean;
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
   list?: LocalSessionFactory["list"];
+  remove?: LocalSessionFactory["remove"];
+  defaultsFor?: LocalSessionServiceDependencies["sessionConfig"]["defaultsFor"];
+  openError?: Error;
   clientCount?: number | (() => number);
 };
 
@@ -92,20 +200,23 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
   const factory: LocalSessionFactory = {
     isMock: options.isMock,
     async create(input) {
+      if (input.path && options.openError) throw options.openError;
       creates.push({ cwd: input.cwd, path: input.path, reason: input.sessionStartEvent?.reason, previous: input.sessionStartEvent?.previousSessionFile });
       const id = input.path ? input.path.split("/").at(-1)?.replace(/\.jsonl$/, "") || "opened" : creates.length === 1 ? "current" : `factory-${creates.length}`;
       const value = fixtureSession(input.cwd, id, input.path);
+      if (options.modelRuntime) value.session.modelRuntime = options.modelRuntime;
       sessions.set(id, value);
       return { session: value.session };
     },
     list: options.list || (async () => []),
+    remove: options.remove,
   };
   const deps: LocalSessionServiceDependencies = {
-    modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
+    modelRuntime: options.modelRuntime || {} as LocalSessionServiceDependencies["modelRuntime"],
     sessionFactory: factory,
     additionalExtensionPaths: () => [],
     sessionConfig: {
-      defaultsFor: async () => ({}),
+      defaultsFor: options.defaultsFor || (async () => ({})),
       finalizeCreatedSession: options.finalizeCreatedSession || (async () => undefined),
     },
     globalCwd: () => cwd,
@@ -116,7 +227,192 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
   return { service, initial, fixture: sessions.get("current")!, creates, cwd };
 }
 
+describe("model catalog refresh", () => {
+  function runtimeFixture() {
+    let models = [{ provider: "available", id: "cached", name: "Cached", reasoning: false, contextWindow: 1000, maxTokens: 100 }];
+    const refresh = vi.fn(async (_options: { providers?: readonly string[]; force?: boolean; signal?: AbortSignal }) => ({ aborted: false, errors: new Map<string, Error>() }));
+    const runtime = {
+      getAvailableSnapshot: () => models,
+      getProviders: () => [{ id: "available" }, { id: "configured" }, { id: "unconfigured" }],
+      hasConfiguredAuth: (id: string) => id === "configured",
+      refresh,
+    } as unknown as LocalSessionServiceDependencies["modelRuntime"];
+    return { runtime, refresh, addModel: () => { models = [...models, { ...models[0], id: "discovered" }]; } };
+  }
+
+  it("keeps normal reads local and refreshes only available/configured providers on opt-in", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { runtime, refresh, addModel } = runtimeFixture();
+    const { service, initial } = await fixtureService({ modelRuntime: runtime });
+    expect((await service.models(initial.sessionId)).models.map((model) => model.id)).toEqual(["cached"]);
+    expect(refresh).not.toHaveBeenCalled();
+    refresh.mockImplementationOnce(async () => { addModel(); return { aborted: false, errors: new Map() }; });
+    expect((await service.models(initial.sessionId, { refresh: true })).models.map((model) => model.id)).toEqual(["cached", "discovered"]);
+    expect(refresh).toHaveBeenCalledWith({ providers: ["available", "configured"], allowNetwork: true, force: false, signal: expect.any(AbortSignal) });
+    await service.models(initial.sessionId, { force: true });
+    expect(refresh.mock.lastCall?.[0].force).toBe(true);
+  });
+
+  it("joins concurrent refreshes across sessions without delaying normal reads", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { runtime, refresh, addModel } = runtimeFixture();
+    let finish!: () => void;
+    refresh.mockImplementationOnce(() => new Promise((resolve) => { finish = () => { addModel(); resolve({ aborted: false, errors: new Map() }); }; }));
+    const { service, initial, cwd } = await fixtureService({ modelRuntime: runtime });
+    const second = await service.create(cwd);
+    const firstRequest = service.models(initial.sessionId, { refresh: true });
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    const secondRequest = service.models(second.sessionId, { force: true });
+    expect((await service.models(initial.sessionId)).models).toHaveLength(1);
+    finish();
+    expect((await firstRequest).models).toHaveLength(2);
+    expect((await secondRequest).models).toHaveLength(2);
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it.each(["", "1", "0"])("honors PI_OFFLINE=%j even for manual refresh", async (offline) => {
+    vi.stubEnv("PI_OFFLINE", offline);
+    const { runtime, refresh } = runtimeFixture();
+    const { service, initial } = await fixtureService({ modelRuntime: runtime });
+    expect((await service.models(initial.sessionId, { force: true })).models).toHaveLength(1);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("keeps cached models on thrown errors and exposes partial refreshes with a warning", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { runtime, refresh, addModel } = runtimeFixture();
+    const { service, initial } = await fixtureService({ modelRuntime: runtime });
+    refresh.mockRejectedValueOnce(new Error("offline"));
+    const failed = await service.models(initial.sessionId, { refresh: true });
+    expect(failed.models).toHaveLength(1);
+    expect(failed.catalogRefreshFailed).toBe(true);
+    refresh.mockImplementationOnce(async () => { addModel(); return { aborted: false, errors: new Map([["available", new Error("failed")]]) }; });
+    const partial = await service.models(initial.sessionId, { force: true });
+    expect(partial.models).toHaveLength(2);
+    expect(partial.catalogRefreshFailed).toBe(true);
+  });
+
+  it("skips catalog networking for mock session factories", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { service, initial } = await fixtureService({ isMock: true });
+    const result = await service.models(initial.sessionId, { force: true });
+    expect(result.models).toHaveLength(1);
+    expect(result.catalogRefreshFailed).toBe(false);
+  });
+
+  it("bounds refresh waits to ten seconds and keeps timed-out work deduplicated", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { runtime, refresh } = runtimeFixture();
+    const { service, initial } = await fixtureService({ modelRuntime: runtime });
+    vi.useFakeTimers();
+    refresh.mockImplementationOnce(() => new Promise(() => {}));
+    const request = service.models(initial.sessionId, { refresh: true });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect((await request).models).toHaveLength(1);
+    expect(refresh.mock.lastCall?.[0].signal?.aborted).toBe(true);
+    expect((await service.models(initial.sessionId, { force: true })).models).toHaveLength(1);
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+});
+
 describe("LocalSessionService contract", () => {
+  it("substitutes a non-mock factory for create/open/list/remove while keeping host defaults, binding and events", async () => {
+    const remove = vi.fn(async () => "trashed" as const);
+    const defaultsFor = vi.fn(async () => ({ model: { provider: "test", id: "model" }, thinkingLevel: "medium" }));
+    const finalize = vi.fn(async () => undefined);
+    let savedCwd = "";
+    const list = vi.fn(async () => [{
+      id: "saved", path: join(savedCwd, "saved.jsonl"), cwd: savedCwd,
+      name: "Saved", firstMessage: "hello", allMessagesText: "hello", messageCount: 1,
+      created: new Date("2026-01-01T00:00:00Z"), modified: new Date("2026-01-01T00:00:00Z"),
+    }]);
+    const { service, fixture, cwd, creates } = await fixtureService({
+      list, remove, defaultsFor, finalizeCreatedSession: finalize,
+    });
+    savedCwd = cwd;
+    expect(fixture.extensionOptions).toBeDefined();
+    expect(defaultsFor).not.toHaveBeenCalled(); // Opening/initializing does not apply new-session defaults.
+    expect(finalize).not.toHaveBeenCalled();
+    expect((await service.list())[0]).toMatchObject({ id: "saved", name: "Saved" });
+    const opened = await service.open("saved", cwd);
+    expect(opened.sessionId).toBe("saved");
+    expect(creates.at(-1)).toMatchObject({ path: join(cwd, "saved.jsonl"), cwd });
+    await service.open("saved", cwd);
+    expect(creates).toHaveLength(2); // A second open reuses the owned live session.
+    const events: SessionServiceEvent[] = [];
+    const unsubscribe = service.subscribe((event) => events.push(event));
+    await fixture.session.prompt("factory event");
+    expect(events.some((event) => event.type === "committed" && event.sessionId === "current")).toBe(true);
+    const created = await service.create("current", cwd);
+    expect(creates.at(-1)).toMatchObject({ reason: "new", previous: fixture.session.sessionFile, cwd });
+    expect(finalize).toHaveBeenCalledWith(created.sessionId);
+    expect(defaultsFor).toHaveBeenCalledWith(cwd);
+    const createdSession = service.sessionForPath(created.sessionFile)!;
+    expect(createdSession.setModel).toHaveBeenCalled();
+    expect(createdSession.setThinkingLevel).toHaveBeenCalledWith("medium");
+    expect(await service.delete("saved", cwd)).toEqual({ id: "saved", disposition: "trashed" });
+    expect(remove).toHaveBeenCalledWith("saved", join(cwd, "saved.jsonl"));
+    unsubscribe();
+    await service.disposeAll();
+  });
+
+  it.each([
+    "not json\n",
+    JSON.stringify({ type: "message" }),
+    JSON.stringify({ type: "session" }),
+    JSON.stringify({ type: "session", cwd: "" }),
+    JSON.stringify({ type: "session", cwd: 123 }),
+  ])("rejects invalid headers in strict lookup but keeps tolerant reads", async (contents) => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-web-header-"));
+    tempDirs.push(cwd);
+    const path = join(cwd, "broken.jsonl");
+    await writeFile(path, contents);
+    await expect(shallowSessionCwd(path)).resolves.toBeUndefined();
+    await expect(shallowSessionCwd(path, { strict: true })).rejects.toThrow("Invalid session header");
+  });
+
+  it("returns 404 only for a genuinely absent session", async () => {
+    const { service, creates } = await fixtureService();
+    await expect(service.open("missing")).rejects.toMatchObject({ status: 404 });
+    expect(creates).toHaveLength(1);
+  });
+
+  it.each([
+    new Error("SDK hydration failed"),
+    Object.assign(new Error("permission denied"), { code: "EACCES" }),
+    Object.assign(new Error("unrelated SDK file missing"), { code: "ENOENT" }),
+  ])("does not classify hydration failure %s as absence", async (openError) => {
+    const { service, cwd, creates } = await fixtureService({
+      openError,
+      list: async () => [{ id: "cold", path: "/cold.jsonl", cwd: "/", created: new Date(), modified: new Date(), messageCount: 0, firstMessage: "" }],
+    });
+    await expect(service.open("cold", cwd)).rejects.toMatchObject({ status: 500, message: openError.message });
+    expect(creates).toHaveLength(1);
+  });
+
+  it("does not retry a remembered location after a hydration failure", async () => {
+    const list = vi.fn(async () => [{ id: "cold", path: "/cold.jsonl", cwd: "/", created: new Date(), modified: new Date(), messageCount: 0, firstMessage: "" }]);
+    const { service } = await fixtureService({ list, openError: new Error("hydration failed") });
+    await expect(service.open("cold")).rejects.toMatchObject({ status: 500 });
+    await expect(service.open("cold")).rejects.toMatchObject({ status: 500 });
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an existing service error status", async () => {
+    const openError = new SessionServiceError("busy", 409);
+    const { service } = await fixtureService({
+      openError,
+      list: async () => [{ id: "cold", path: "/cold.jsonl", cwd: "/", created: new Date(), modified: new Date(), messageCount: 0, firstMessage: "" }],
+    });
+    await expect(service.open("cold")).rejects.toBe(openError);
+  });
+
+  it.each(["EACCES", "EIO"])("propagates lookup %s instead of claiming absence", async (code) => {
+    const error = Object.assign(new Error("lookup failed"), { code });
+    const { service } = await fixtureService({ list: async () => { throw error; } });
+    await expect(service.open("cold")).rejects.toMatchObject({ status: 500 });
+  });
+
   it("projects effective context and persisted tool call counts", async () => {
     const { service, initial } = await fixtureService();
     const context = await service.context(initial.sessionId);
@@ -176,6 +472,27 @@ describe("LocalSessionService contract", () => {
     await service.disposeAll("reset");
     expect(events.map((event) => event.type)).toContain("shutdown");
     for (const event of events) expect(jsonRoundTrip(event)).toStrictEqual(event);
+  });
+
+  it("uses a comments-specific fallback for comment-only prompts", async () => {
+    const { service, initial } = await fixtureService();
+    const prompt = vi.fn(async () => undefined);
+    initial.prompt = prompt;
+    const comment = {
+      type: "quote-reply" as const,
+      id: "quote-reply-1",
+      label: "Excerpt 1",
+      quote: "Use the shared attachment lifecycle.",
+      question: "Why is this important?",
+      source: { messageId: "entry-42", startOffset: 12, endOffset: 48 },
+    };
+
+    await service.prompt(initial.sessionId, { message: "", mode: "steer", attachments: [comment] });
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    expect(parseAttachmentMarkup(prompt.mock.calls[0][0])).toMatchObject({
+      text: "Please review the submitted comments.",
+      attachments: [comment],
+    });
   });
 
   it("returns JSON-round-trip-stable projection results and events", async () => {
@@ -451,7 +768,7 @@ describe("LocalSessionService contract", () => {
       webUiEntries: (value) => service.webUiEntries(value), sessionActivity: activity,
       broadcast: (value) => wire.push(value), markSessionUnreadCompleted: () => undefined,
     });
-    const mapped = pi084Events.map(mapPiEvent).filter((item) => item.kind === "event");
+    const mapped = pi087Events.map(mapPiEvent).filter((item) => item.kind === "event");
     for (const item of mapped) {
       if (item.kind === "event") handler({ type: "agent", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: item.event });
     }
@@ -641,6 +958,43 @@ describe("LocalSessionService standalone lifecycle", () => {
     await navigation;
     expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false);
     expect(events.filter((event) => event.type === "runtime" && event.action === "changed")).toHaveLength(changedAfterAbort);
+  });
+
+  it("orders viewer acquisitions per client and retains legacy acquisitions", async () => {
+    const { service, initial } = await fixtureService();
+    const second = await service.create(undefined);
+    service.acquireViewer(initial.sessionId, "client", 20);
+    const connection = service.connectViewer("client")!;
+    const snapshot = () => service.lifecycleSnapshot().liveSessions;
+    service.acquireViewer(second.sessionId, "client", 19);
+    expect(snapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 1 }),
+      expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 0 }),
+    ]));
+    service.acquireViewer(second.sessionId, "client", 21);
+    expect(snapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 0 }),
+      expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 1 }),
+    ]));
+    service.acquireViewer(initial.sessionId, "other-client", 0);
+    expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(1);
+    service.acquireViewer(initial.sessionId, "client");
+    service.acquireViewer(second.sessionId, "client", 20);
+    expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(2);
+    service.disconnectViewer(connection);
+    service.releaseViewer("other-client");
+  });
+
+  it("does not let an obsolete acquisition extend the viewer release timer", async () => {
+    vi.stubEnv("PI_WEB_VIEWER_LEASE_GRACE_MS", "100");
+    const { service, initial } = await fixtureService();
+    vi.useFakeTimers();
+    service.acquireViewer(initial.sessionId, "client", 2);
+    await vi.advanceTimersByTimeAsync(75);
+    service.acquireViewer(initial.sessionId, "client", 1);
+    await vi.advanceTimersByTimeAsync(25);
+    expect(service.lifecycleSnapshot().viewerLeases).toEqual([]);
+    await service.disposeAll("reset");
   });
 
   it("does not let a stale socket release a replacement viewer lease", async () => {

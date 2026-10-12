@@ -1,26 +1,21 @@
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
-  createAgentSession,
   formatSkillsForPrompt,
   getAgentDir,
   type AgentSessionEvent,
   type ModelRuntime,
-  SessionManager,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { serializeAttachmentMarkup } from "../shared/attachments.js";
+import { defaultPromptForAttachments, serializeAttachmentMarkup } from "../shared/attachments.js";
 import { isSessionReferenceId, type SessionReference } from "../shared/sessionReference.js";
 import { assertDirectory } from "../shared/fsList.js";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { createWebUiBridge } from "../extensions/webUi.js";
 import { EphemeralCaptureStore } from "../extensions/captureStore.js";
-import { ResilientResourceLoader } from "../extensions/resilientLoader.js";
+import type { ResilientResourceLoader } from "../extensions/resilientLoader.js";
 import { mapPiEvent } from "./piEventMap.js";
+import { PiSessionHandle } from "./piHandle.js";
 import { createSettingsStore } from "../settings.js";
 import type {
   BaseSessionStateDto,
@@ -40,8 +35,9 @@ import type {
   SessionServiceEvent,
   SlashCommandDto,
 } from "./dto.js";
-import { createShallowLister, shallowSessionCwd } from "./shallowList.js";
-import { createSessionsReadTools, sessionsReadTail, truncateSessionText, type SessionReadResult, type SessionReadText } from "./referenceTools.js";
+import { PiSessionFactory, piSessionDirectory, type LocalSessionFactory, type LocalSessionInfo } from "./piFactory.js";
+export type { LocalSessionFactory, LocalSessionFactoryInput } from "./piFactory.js";
+import { sessionsReadTail, truncateSessionText, type SessionReadResult, type SessionReadText } from "./referenceTools.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -49,14 +45,17 @@ import {
   isAssistantFailureMessage,
   isIncompleteToolResultMessage,
   projectCommittedMessage,
-  projectMessages,
-  projectSessionState,
   sessionDisplayName,
   textFromContent,
   toolCallName,
   sessionStats,
   simplifyModel,
 } from "./projection.js";
+
+function isMissingPath(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
 
 export class SessionServiceError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
@@ -65,19 +64,6 @@ export class SessionServiceError extends Error {
 export interface SessionDefaults {
   model?: { provider: string; id: string };
   thinkingLevel?: string;
-}
-
-export interface LocalSessionFactoryInput {
-  path?: string;
-  cwd: string;
-  sessionStartEvent?: SessionStartEvent;
-}
-
-export interface LocalSessionFactory {
-  create(input: LocalSessionFactoryInput): Promise<{ session: PiWebSession; modelFallbackMessage?: string }>;
-  list?(cwd: string): Promise<PiWebSessionInfo[]>;
-  remove?(id: string, path: string): Promise<"trashed" | "deleted">;
-  readonly isMock?: boolean;
 }
 
 /** Only box-external configuration is injected; lifecycle and operations live here. */
@@ -115,7 +101,7 @@ type WorkLease = {
 
 type LiveSessionEntry = {
   session: PiWebSession;
-  unsubscribe?: () => void;
+  handle: PiSessionHandle;
   viewerClientIds: Set<string>;
   workLeases: Map<symbol, WorkLease>;
   disposeTimer?: ReturnType<typeof setTimeout>;
@@ -124,6 +110,7 @@ type LiveSessionEntry = {
 
 type ViewerLease = {
   sessionKey: string;
+  lastAcceptedSeq?: number;
   sockets: Set<symbol>;
   releaseTimer?: ReturnType<typeof setTimeout>;
 };
@@ -154,8 +141,6 @@ const webSlashCommands: SlashCommandDto[] = [
   { name: "logout", description: "Clear the web UI token in this browser", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
 ];
 
-const execFileAsync = promisify(execFile);
-
 function envMs(name: string, fallback: number) {
   const raw = Number(process.env[name] || fallback);
   return Number.isFinite(raw) && raw >= 0 ? raw : fallback;
@@ -172,6 +157,10 @@ function errorMessage(error: unknown) {
 function jsonSafe<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
+
+const MODEL_REFRESH_TIMEOUT_MS = 10_000;
+// Sessions share a runtime; opening several pickers must not multiply catalog requests.
+const modelRefreshes = new WeakMap<ModelRuntime, { pending?: Promise<boolean> }>();
 
 const MAX_SESSION_READ_ENTRY_TEXT = 6_000;
 const MAX_SESSION_READ_TEXT = 12_000;
@@ -303,6 +292,7 @@ function projectPromptProvenance(prompt: string, candidates: ProvenanceCandidate
 export class LocalSessionService implements SessionService {
   private readonly listeners = new Set<(event: SessionServiceEvent) => void>();
   private readonly liveSessions = new Map<string, LiveSessionEntry>();
+  private readonly piHandles = new WeakMap<PiWebSession, PiSessionHandle>();
   private readonly liveById = new Map<string, PiWebSession>();
   /** Names learned from fully loaded sessions remain authoritative after their live session is disposed. */
   private readonly sessionNamesByPath = new Map<string, string | undefined>();
@@ -311,11 +301,7 @@ export class LocalSessionService implements SessionService {
   private readonly sessionListRequests = new Map<string, Promise<SessionInfoDto[]>>();
   private readonly viewerLeases = new Map<string, ViewerLease>();
   private readonly viewerConnections = new Map<symbol, string>();
-  // Instance-owned shallow list cache: each SessionService owns its lister so the
-  // per-cwd cache lifecycle rides along with the service (PR #43 Stage 3), and
-  // concurrent scans of different cwds never share/evict each other's maps.
-  private readonly shallowLister = createShallowLister();
-  private readonly extensionLoaders = new WeakMap<object, ResilientResourceLoader>();
+  private readonly productionFactory: PiSessionFactory;
   private readonly blockedModelIds = new Set<string>();
   private readonly pendingPromptCorrelations = new Map<string, PendingPromptCorrelation[]>();
   private readonly knownSessionCwds = new Set<string>();
@@ -331,6 +317,14 @@ export class LocalSessionService implements SessionService {
 
   constructor(private readonly deps: LocalSessionServiceDependencies) {
     this.knownSessionCwds.add(resolve(deps.globalCwd()));
+    this.productionFactory = new PiSessionFactory({
+      noSession: this.noSession,
+      modelRuntime: deps.modelRuntime,
+      additionalExtensionPaths: (cwd) => deps.additionalExtensionPaths(cwd),
+      sessionCwd: (manager) => this.sessionCwd({ sessionManager: manager }),
+      rememberCwd: (cwd) => this.knownSessionCwds.add(resolve(cwd)),
+      readSession: (reference, tail) => this.readSession(reference, tail),
+    });
     this.webUiBridge = createWebUiBridge({
       extensionHttp: deps.extensionHttp,
       captureStore: this.captureStore,
@@ -427,7 +421,20 @@ export class LocalSessionService implements SessionService {
       model?.provider && model?.id ? [`${model.provider}:${model.id}`] : [],
     ));
   }
-  projectState(value: PiWebSession): BaseSessionStateDto { return jsonSafe(projectSessionState(value, this.sessionCwd(value))); }
+  private runtimeFor(value: PiWebSession): PiSessionHandle {
+    // Binding can request state before live-session admission. Reuse that same
+    // owned handle when the host subsequently admits the session.
+    let handle = this.piHandles.get(value);
+    if (!handle) {
+      handle = new PiSessionHandle(value);
+      this.piHandles.set(value, handle);
+    }
+    return handle;
+  }
+
+  projectState(value: PiWebSession): BaseSessionStateDto {
+    return jsonSafe(this.runtimeFor(value).state(this.sessionCwd(value)));
+  }
 
   private currentSession() {
     for (const id of this.protectedSessionIds) {
@@ -557,7 +564,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async messages(sessionId: string): Promise<MessageDto[]> {
-    return jsonSafe(projectMessages(await this.require(sessionId)));
+    return jsonSafe(this.runtimeFor(await this.require(sessionId)).messages());
   }
 
   /** Read saved text only; never construct, steer, or navigate another runtime. */
@@ -609,14 +616,44 @@ export class LocalSessionService implements SessionService {
     return value.modelRuntime.getAvailableSnapshot().filter((model) => !this.blockedModelIds.has(model.id) && (!allowed || allowed.has(model.id)));
   }
 
-  async models(sessionId: string) {
+  private async refreshModels(force: boolean): Promise<boolean> {
+    if (process.env.PI_OFFLINE !== undefined || this.deps.sessionFactory?.isMock) return true;
+    const runtime = this.deps.modelRuntime;
+    let state = modelRefreshes.get(runtime);
+    if (state?.pending) return state.pending;
+    const availableProviders = new Set(runtime.getAvailableSnapshot().map((model) => model.provider));
+    const providers = runtime.getProviders()
+      .filter((provider) => availableProviders.has(provider.id) || runtime.hasConfiguredAuth(provider.id))
+      .map((provider) => provider.id);
+    if (!providers.length) return true;
+
+    state = {};
+    modelRefreshes.set(runtime, state);
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => { controller.abort(); resolve(false); }, MODEL_REFRESH_TIMEOUT_MS);
+      timer.unref();
+    });
+    const refresh = Promise.resolve().then(() => runtime.refresh({ providers, allowNetwork: true, force, signal: controller.signal }))
+      .then((result) => !result.aborted && result.errors.size === 0, () => false);
+    state.pending = Promise.race([refresh, timeout]);
+    const current = state;
+    // Keep deduplication until the SDK settles, even if a provider ignores cancellation.
+    void refresh.finally(() => { clearTimeout(timer); current.pending = undefined; });
+    return state.pending;
+  }
+
+  async models(sessionId: string, options: { refresh?: boolean; force?: boolean } = {}) {
     const value = await this.require(sessionId);
+    const refreshed = options.refresh || options.force ? await this.refreshModels(options.force === true) : true;
     return jsonSafe({
       cwd: this.sessionCwd(value),
       current: simplifyModel(value.model),
       thinkingLevel: value.thinkingLevel,
       thinkingLevels: value.getAvailableThinkingLevels(),
       models: this.availableModels(value).map(simplifyModel).filter((model) => model !== undefined),
+      catalogRefreshFailed: !refreshed,
     });
   }
 
@@ -767,7 +804,7 @@ export class LocalSessionService implements SessionService {
 
   extensionStatus(sessionId: string) {
     const value = this.openExtensionSession(sessionId);
-    const loader = this.extensionLoaders.get(value);
+    const loader = this.productionFactory.loaderFor(value);
     if (!loader) throw new SessionServiceError("Extension status is not available for this session.", 404);
     return this.extensionStatusFor(value, loader);
   }
@@ -776,7 +813,7 @@ export class LocalSessionService implements SessionService {
     const value = this.openExtensionSession(sessionId);
     if (value.isStreaming) throw new SessionServiceError("Wait for the current response to finish before retrying extensions.", 409);
     if (value.isCompacting) throw new SessionServiceError("Wait for compaction to finish before retrying extensions.", 409);
-    const loader = this.extensionLoaders.get(value);
+    const loader = this.productionFactory.loaderFor(value);
     if (!loader || typeof value.reload !== "function") throw new SessionServiceError("Extension reload is not available for this session.", 404);
     await value.reload();
     const status = this.extensionStatusFor(value, loader);
@@ -795,20 +832,12 @@ export class LocalSessionService implements SessionService {
     const request = (async () => {
       const groups = await Promise.all(orderedCwds.map(async (cwd) => {
         try {
-          if (this.deps.sessionFactory?.list) {
-            const infos = await this.deps.sessionFactory.list(cwd);
-            return infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
-          }
-          const piRows = (await this.shallowLister.list(cwd, this.defaultSessionDir(cwd))).map((info) => {
-            this.rememberSessionLocation(info, cwd);
-            return this.overlaySessionName(info);
-          });
+          const factory = this.deps.sessionFactory?.list ? this.deps.sessionFactory : this.productionFactory;
+          const infos = await factory.list!(cwd);
+          const piRows = infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
           // Fork: merge Claude Code sessions into the unified list.
-          const harnessRows = this.deps.harness
-            ? (await this.deps.harness.list(cwd)).map((info) => {
-              this.rememberSessionLocation(info, cwd);
-              return this.overlaySessionName(this.simplifySessionInfo(info, cwd));
-            })
+          const harnessRows = this.deps.harness && !this.deps.sessionFactory?.list
+            ? (await this.deps.harness.list(cwd)).map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)))
             : [];
           return [...piRows, ...harnessRows];
         } catch { return []; }
@@ -829,9 +858,12 @@ export class LocalSessionService implements SessionService {
   async open(sessionId: string, cwd?: string) {
     try {
       const value = await this.getOrCreateLiveSessionById(sessionId, cwd);
-      if (!value) throw new Error("Session not found");
+      if (!value) throw new SessionServiceError("Session not found", 404);
       return this.projectState(value);
-    } catch (error) { throw new SessionServiceError(errorMessage(error), 404); }
+    } catch (error) {
+      if (error instanceof SessionServiceError) throw error;
+      throw new SessionServiceError(errorMessage(error), 500);
+    }
   }
 
   async delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto> {
@@ -843,7 +875,7 @@ export class LocalSessionService implements SessionService {
     if (live) await this.disposeLiveSession(info.path, "delete", true);
     const disposition = this.deps.sessionFactory?.remove
       ? await this.deps.sessionFactory.remove(sessionId, info.path)
-      : await this.trashOrRemoveSessionFile(info.path);
+      : await this.productionFactory.remove(sessionId, info.path);
     this.sessionNamesByPath.delete(resolve(info.path));
     return { id: sessionId, disposition };
   }
@@ -856,13 +888,16 @@ export class LocalSessionService implements SessionService {
     return this.projectState(await this.createNewLiveSession(cwd, value.sessionFile));
   }
 
-  acquireViewer(sessionId: string, clientId: string) {
+  acquireViewer(sessionId: string, clientId: string, seq?: number) {
     const value = this.liveById.get(sessionId);
     if (!clientId || !value) return;
     const key = sessionPathKey(value);
     const entry = this.liveSessions.get(key);
     if (!entry) return;
     let lease = this.viewerLeases.get(clientId);
+    // Check before touching timers or either session's lease membership.
+    const validSeq = seq !== undefined && Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
+    if (validSeq !== undefined && lease?.lastAcceptedSeq !== undefined && validSeq < lease.lastAcceptedSeq) return;
     this.clearTimer(lease?.releaseTimer);
     if (!lease) {
       lease = { sessionKey: key, sockets: new Set() };
@@ -873,6 +908,7 @@ export class LocalSessionService implements SessionService {
       this.scheduleLiveSessionCleanup(previousKey);
       lease.sessionKey = key;
     }
+    if (validSeq !== undefined) lease.lastAcceptedSeq = validSeq;
     entry.viewerClientIds.add(clientId);
     this.cancelLiveSessionCleanup(entry);
     if (lease.sockets.size === 0) this.scheduleViewerLeaseRelease(clientId);
@@ -957,75 +993,22 @@ export class LocalSessionService implements SessionService {
     } catch { throw new SessionServiceError("Session not found", 404); }
   }
 
-  private async ensureStorage(cwd: string) {
-    const webDir = join(cwd, ".pi", "web");
-    await mkdir(webDir, { recursive: true });
-    const ignoreFile = join(webDir, ".gitignore");
-    if (!existsSync(ignoreFile)) await writeFile(ignoreFile, "*\n");
-  }
-
   private async makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent, cwd = this.deps.globalCwd()) {
     const targetCwd = await assertDirectory(cwd, this.deps.globalCwd());
-    if (this.deps.sessionFactory) {
-      const result = await this.deps.sessionFactory.create({ path, cwd: targetCwd, sessionStartEvent });
-      await this.webUiBridge.bind(result.session);
-      return result;
-    }
     // Fork: route Claude Code sessions to the harness adapter (resume when the
     // path belongs to CC; new when the request/defaults ask for CC).
     const harness = this.deps.harness;
-    if (harness && (path ? harness.ownsPath(path) : await harness.wantsNew(sessionStartEvent))) {
-      const result = await harness.create({ path, cwd: targetCwd, sessionStartEvent });
-      await this.webUiBridge.bind(result.session);
-      return result;
-    }
-
-    const manager = this.noSession
-      ? SessionManager.inMemory(targetCwd)
-      : path ? SessionManager.open(path) : SessionManager.create(targetCwd);
-    if (!path && !this.noSession && sessionStartEvent?.reason === "new") manager.newSession();
-    const resolvedCwd = this.sessionCwd({ sessionManager: manager });
-    this.knownSessionCwds.add(resolve(resolvedCwd));
-    await this.ensureStorage(resolvedCwd);
-    const contextPath = fileURLToPath(new URL("../../contexts/web-ui.md", import.meta.url));
-    const appDir = dirname(dirname(contextPath));
-    const extensionAuthoringContext = [
-      "pi-web extension documentation (read when asked to build pi-web extensions or browser UI):",
-      `- API + slots: ${join(appDir, "docs/pi-web-extensions.md")}`,
-      `- Examples: ${join(appDir, "examples/pi-web-extensions")} (notepad.ts shows the current contribute() API)`,
-    ].join("\n");
-    const webUiContext = [
-      existsSync(contextPath) ? readFileSync(contextPath, "utf8") : "",
-      extensionAuthoringContext,
-    ].filter(Boolean).join("\n\n");
-    const loader = new ResilientResourceLoader({
-      loadTimeoutMs: envMs("PI_WEB_EXTENSION_LOAD_TIMEOUT_MS", 8_000),
-      fetchTimeoutMs: envMs("PI_WEB_EXTENSION_FETCH_TIMEOUT_MS", 3_000),
-      loaderOptions: {
-        cwd: resolvedCwd,
-        agentDir: getAgentDir(),
-        additionalExtensionPaths: this.deps.additionalExtensionPaths(resolvedCwd),
-        appendSystemPromptOverride: (base) => [...base, webUiContext].filter(Boolean),
-      },
-    });
-    await loader.reload();
-    const result = await createAgentSession({
-      cwd: resolvedCwd,
-      sessionManager: manager,
-      modelRuntime: this.deps.modelRuntime,
-      resourceLoader: loader,
-      customTools: createSessionsReadTools((reference, tail) => this.readSession(reference, tail)),
-      sessionStartEvent,
-    });
-    this.extensionLoaders.set(result.session, loader);
+    const factory = this.deps.sessionFactory
+      || (harness && (path ? harness.ownsPath(path) : await harness.wantsNew(sessionStartEvent)) ? harness : this.productionFactory);
+    const result = await factory.create({ path, cwd: targetCwd, sessionStartEvent });
     await this.webUiBridge.bind(result.session);
-    return { session: result.session as unknown as PiWebSession, modelFallbackMessage: result.modelFallbackMessage };
+    return result;
   }
 
   private async createNewLiveSession(cwd?: string, previousSessionFile?: string) {
     const targetCwd = cwd ? await assertDirectory(cwd, this.deps.globalCwd()) : resolve(this.deps.globalCwd());
     this.knownSessionCwds.add(targetCwd);
-    await this.ensureStorage(targetCwd);
+    await this.productionFactory.ensureStorage(targetCwd);
     const created = await this.makeAgentSession(undefined, { type: "session_start", reason: "new", previousSessionFile }, targetCwd);
     if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
     const value = created.session;
@@ -1051,8 +1034,9 @@ export class LocalSessionService implements SessionService {
   private registerLiveSession(value: PiWebSession) {
     const key = sessionPathKey(value);
     if (!key || this.liveSessions.get(key)?.session === value) return value;
-    const unsubscribe = value.subscribe?.((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: new Map() });
+    const handle = this.runtimeFor(value);
+    handle.subscribe((event) => this.handlePiEvent(value, event));
+    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map() });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     this.rememberSessionName(value);
@@ -1235,11 +1219,6 @@ export class LocalSessionService implements SessionService {
     lease.releaseTimer = setTimeout(() => this.releaseViewer(clientId), this.viewerGraceMs);
   }
 
-  private async emitSessionShutdown(value: any) {
-    const runner = value?.extensionRunner;
-    if (runner?.hasHandlers?.("session_shutdown")) await runner.emit({ type: "session_shutdown", reason: "quit" });
-  }
-
   private async disposeLiveSession(key: string, reason: "idle" | "delete" | "reset", force = false) {
     const entry = this.liveSessions.get(key);
     if (!entry || entry.disposing || (!force && this.shouldKeepLiveSession(entry))) return;
@@ -1257,12 +1236,7 @@ export class LocalSessionService implements SessionService {
       for (const connection of lease.sockets) this.viewerConnections.delete(connection);
       lease.sockets.clear();
     }
-    try { await this.emitSessionShutdown(value); }
-    catch (error) { console.warn(`Could not emit session shutdown before ${reason}:`, error); }
-    try { entry.unsubscribe?.(); }
-    catch (error) { console.warn(`Could not unsubscribe session before ${reason}:`, error); }
-    try { (value as any).dispose?.(); }
-    catch (error) { console.warn(`Could not dispose session after ${reason}:`, error); }
+    await entry.handle.dispose(reason);
     this.webUiBridge.releaseSessionSettings(value);
     this.liveSessions.delete(key);
     this.pendingPromptCorrelations.delete(key);
@@ -1293,7 +1267,7 @@ export class LocalSessionService implements SessionService {
     return this.sessionNamesByPath.has(path) ? { ...info, name: this.sessionNamesByPath.get(path) } : info;
   }
 
-  private simplifySessionInfo(info: PiWebSessionInfo | Awaited<ReturnType<typeof SessionManager.list>>[number], cwd: string): SessionInfoDto {
+  private simplifySessionInfo(info: LocalSessionInfo, cwd: string): SessionInfoDto {
     this.rememberSessionLocation(info, cwd);
     return jsonSafe({
       id: info.id,
@@ -1321,8 +1295,7 @@ export class LocalSessionService implements SessionService {
   }
 
   private defaultSessionDir(cwd: string) {
-    const safePath = `--${resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-    return join(getAgentDir(), "sessions", safePath);
+    return piSessionDirectory(cwd);
   }
 
   private async resolveSessionLocation(id: string, cwd = this.deps.globalCwd()) {
@@ -1332,52 +1305,17 @@ export class LocalSessionService implements SessionService {
       if (info) this.rememberSessionLocation(info, info.cwd || cwd);
       return info ? this.sessionLocations.get(id) : undefined;
     }
-    const suffix = `_${id}.jsonl`;
-    const checkedDirectories = new Set<string>();
-    for (const resolvedCwd of new Set([resolve(cwd), ...this.knownCwds()])) {
-      const directory = this.defaultSessionDir(resolvedCwd);
-      checkedDirectories.add(directory);
-      let names: string[];
-      try { names = await readdir(directory); } catch { continue; }
-      const name = names.find((entry) => entry.endsWith(suffix));
-      if (!name) continue;
-      const location = { path: join(directory, name), cwd: resolvedCwd };
-      this.sessionLocations.set(id, location);
-      this.knownSessionCwds.add(resolvedCwd);
-      return location;
-    }
-
-    // Bookmarked IDs may be opened before their cwd has been visited in this process.
     // Fork: check the Claude Code store across candidate cwds first.
-    if (this.deps.harness) {
-      const hit = await this.deps.harness.locate(id, new Set([resolve(cwd), ...this.knownCwds()]));
-      if (hit) {
-        const location = { path: resolve(hit.path), cwd: resolve(hit.cwd) };
-        this.sessionLocations.set(id, location);
-        this.knownSessionCwds.add(location.cwd);
-        return location;
-      }
-    }
-    // Scan directory names and filenames only, then read the one matching header.
-    const sessionsRoot = join(getAgentDir(), "sessions");
-    let directories: string[];
-    try { directories = await readdir(sessionsRoot); } catch { return undefined; }
-    for (const directoryName of directories) {
-      const directory = join(sessionsRoot, directoryName);
-      if (checkedDirectories.has(directory)) continue;
-      let names: string[];
-      try { names = await readdir(directory); } catch { continue; }
-      const name = names.find((entry) => entry.endsWith(suffix));
-      if (!name) continue;
-      const path = join(directory, name);
-      const sessionCwd = await shallowSessionCwd(path);
-      if (!sessionCwd || this.defaultSessionDir(sessionCwd) !== directory) continue;
-      const location = { path, cwd: resolve(sessionCwd) };
+    let location = this.deps.harness
+      ? await this.deps.harness.locate(id, new Set([resolve(cwd), ...this.knownCwds()]))
+        .then((hit) => hit ? { path: resolve(hit.path), cwd: resolve(hit.cwd) } : undefined)
+      : undefined;
+    if (!location) location = await this.productionFactory.locate(id, cwd, this.knownCwds());
+    if (location) {
       this.sessionLocations.set(id, location);
       this.knownSessionCwds.add(location.cwd);
-      return location;
     }
-    return undefined;
+    return location;
   }
 
   private async openSessionAtLocation(id: string, location: { path: string; cwd: string }) {
@@ -1385,6 +1323,14 @@ export class LocalSessionService implements SessionService {
     const harnessOwned = Boolean(this.deps.harness?.ownsPath(resolvedPath));
     const validDir = harnessOwned ? resolve(this.deps.harness!.validDir(location.cwd)) : this.defaultSessionDir(location.cwd);
     if (!this.deps.sessionFactory && dirname(resolvedPath) !== validDir) throw new Error("Invalid session location");
+    // SDK failures may concern unrelated files; only absence of this file is a 404.
+    if (!this.deps.sessionFactory) {
+      try { await stat(location.path); }
+      catch (error) {
+        if (isMissingPath(error)) throw new SessionServiceError("Session not found", 404);
+        throw error;
+      }
+    }
     // Fork: CC adapters bind their transcript path off the global cwd.
     if (harnessOwned) await this.deps.harness!.beforeOpen(location);
     const value = await this.getOrCreateLiveSession(location.path);
@@ -1413,7 +1359,10 @@ export class LocalSessionService implements SessionService {
       const remembered = this.sessionLocations.get(id);
       if (remembered) {
         try { return await this.openSessionAtLocation(id, remembered); }
-        catch { this.sessionLocations.delete(id); }
+        catch (error) {
+          if (!(error instanceof SessionServiceError) || error.status !== 404) throw error;
+          this.sessionLocations.delete(id);
+        }
       }
       const location = await this.resolveSessionLocation(id, cwd);
       return location ? this.openSessionAtLocation(id, location) : undefined;
@@ -1421,15 +1370,6 @@ export class LocalSessionService implements SessionService {
     this.openingById.set(id, opening);
     try { return await opening; }
     finally { this.openingById.delete(id); }
-  }
-
-  private async trashOrRemoveSessionFile(path: string) {
-    try { await execFileAsync("trash", [path], { timeout: 15_000 }); return "trashed" as const; }
-    catch (error: any) {
-      if (error?.code !== "ENOENT") throw error;
-      await rm(path, { force: true });
-      return "deleted" as const;
-    }
   }
 
   private getSlashCommands(value: PiWebSession) { return [...webSlashCommands, ...this.harnessSlashCommands(value)]; }
@@ -1516,7 +1456,7 @@ export class LocalSessionService implements SessionService {
 
   private abortSession(value: PiWebSession) {
     const wasSdkActive = Boolean(value.isStreaming || value.isCompacting);
-    const aborting = value.abort().catch((error) => this.emitError(value, error));
+    const aborting = this.runtimeFor(value).interrupt().catch((error) => this.emitError(value, error));
     if (!wasSdkActive) this.clearWorkLeases(value, "abort while SDK idle");
     else void aborting.then(() => {
       if (!value.isStreaming && !value.isCompacting) this.clearWorkLeases(value, "active abort settled");
@@ -1525,11 +1465,11 @@ export class LocalSessionService implements SessionService {
   }
 
   private async startSessionPrompt(value: PiWebSession, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }) {
-    const promptText = serializeAttachmentMarkup(input.message || "Please review the attached file.", input.attachments);
+    const promptText = serializeAttachmentMarkup(input.message || defaultPromptForAttachments(input.attachments), input.attachments);
     if (!this.deps.sessionFactory?.isMock && input.clientMessageId && input.sourceClientId) this.rememberPromptCorrelation(sessionPathKey(value), { clientMessageId: input.clientMessageId, sourceClientId: input.sourceClientId, createdAt: Date.now() });
     if (!value.isStreaming && !value.isCompacting) this.emitRuntime(value, "ensure");
     const promptSessionFile = value.sessionFile;
-    void this.withWorkLease(value, "prompt", "general", () => value.prompt(promptText, {
+    void this.withWorkLease(value, "prompt", "general", () => this.runtimeFor(value).prompt(promptText, {
       ...(value.isStreaming ? { streamingBehavior: input.mode } : {}),
     })).catch((error) => {
       if (!this.deps.sessionFactory?.isMock && input.clientMessageId) this.forgetPromptCorrelation(sessionPathKey(value), input.clientMessageId);
@@ -1569,7 +1509,13 @@ export class LocalSessionService implements SessionService {
   }
 
   private syncAgentMessages(value: PiWebSession) {
-    if (!value.sessionManager.buildSessionContext) return false;
+    if (value.refreshContext) {
+      value.refreshContext();
+      return true;
+    }
+    // Mocks expose only the legacy agent state; production sessions must use
+    // refreshContext() so their SessionManager remains the canonical context.
+    if (!this.deps.sessionFactory?.isMock || !value.sessionManager.buildSessionContext) return false;
     value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
     return true;
   }

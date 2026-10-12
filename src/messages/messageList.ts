@@ -12,10 +12,11 @@ import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 import type { PiWebPanelEvent } from "../extensions.js";
+import type { RuntimeErrorPresentation } from "../tools/toolCards.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
-export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => HTMLDivElement;
+export type AddRuntimeErrorCard = (presentation: RuntimeErrorPresentation) => HTMLDivElement;
 export type MessageActionKind = "edit" | "rerun" | "continue";
 export type MessageActionContext = {
   action: MessageActionKind;
@@ -66,6 +67,7 @@ export type MessageList = {
   startStreamingThinking: (contentIndex?: number | string) => void;
   appendStreamingThinkingDelta: (delta: string, contentIndex?: number | string) => void;
   endStreamingThinking: (content?: string, contentIndex?: number | string) => void;
+  checkpoint: () => { restore: () => void };
   clear: () => void;
   beginStreamFollow: () => void;
   endStreamFollow: () => void;
@@ -127,7 +129,7 @@ function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, 
         });
     }
     item.append(image);
-    attachImageActions(image);
+    attachImageActions(image, "thumbnail");
   } else {
     item.textContent = name.includes(".") ? name.split(".").pop()!.slice(0, 3).toUpperCase() : "FILE";
   }
@@ -897,6 +899,7 @@ export function createMessageList(options: {
     if (role === "user") {
       const baseline = document.createElement("div");
       baseline.className = `messageAttachmentBaseline${standardAttachments.length ? "" : " messageAttachmentBaseline--timeOnly"}`;
+      if (standardAttachments.length) div.classList.add("hasAttachments");
       if (standardAttachments.length) {
         const summary = document.createElement("button");
         summary.type = "button";
@@ -934,13 +937,13 @@ export function createMessageList(options: {
         const label = document.createElement("span");
         label.className = "messageAttachmentCount";
         label.textContent = `${standardAttachments.length} attached`;
-        summary.append(previews, label);
+        summary.append(label);
         summary.addEventListener("click", (event) => {
           event.stopPropagation();
           popover.hidden = !popover.hidden;
           summary.setAttribute("aria-expanded", String(!popover.hidden));
         });
-        baseline.append(summary, popover);
+        baseline.append(previews, summary, popover);
       }
       const time = document.createElement("time");
       const timestamp = metadata.timestamp ? new Date(metadata.timestamp) : new Date();
@@ -1218,6 +1221,28 @@ export function createMessageList(options: {
     setJumpButtonVisible(false);
   }
 
+  function checkpoint() {
+    invalidatePendingRefreshes();
+    const nodes = Array.from(messagesEl.childNodes);
+    const scrollTop = messagesEl.scrollTop;
+    const scalars = { streamingAssistant, currentStreamingTextKey, currentAssistantResponseKey, currentStreamingResponseKey, currentStreamingThinkingKey, thinkingSerial, isStreaming, shouldFollowStream };
+    const saveMap = <K, V>(map: Map<K, V>) => {
+      const entries = new Map(map);
+      return () => { map.clear(); entries.forEach((value, key) => map.set(key, value)); };
+    };
+    const restoreMaps = [saveMap(streamingTextBlocks), saveMap(streamingTextContent), saveMap(streamingTextBodies), saveMap(streamingThinkingCards), saveMap(customReportExpansion)];
+    const quotes = quoteReplies?.checkpoint();
+    return { restore() {
+      clear();
+      messagesEl.replaceChildren(...nodes);
+      ({ streamingAssistant, currentStreamingTextKey, currentAssistantResponseKey, currentStreamingResponseKey, currentStreamingThinkingKey, thinkingSerial, isStreaming, shouldFollowStream } = scalars);
+      restoreMaps.forEach((restore) => restore());
+      quotes?.restore();
+      messagesEl.scrollTop = scrollTop;
+      activity.schedule();
+    } };
+  }
+
   function clear() {
     activity.reset();
     customReportExpansion.clear();
@@ -1360,7 +1385,7 @@ export function createMessageList(options: {
 
     if (message.isError) {
       const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
-      addRuntimeErrorCard("assistant error", text, distinctAssistantErrorBody(rawError, text));
+      addRuntimeErrorCard({ title: "assistant error", subtitle: text, technicalDetails: distinctAssistantErrorBody(rawError, text) });
       return;
     }
 
@@ -1531,7 +1556,7 @@ export function createMessageList(options: {
           index += retryGroup.length - 1;
           if (index === allMessages.length - 1) continue;
           const lastError = retryGroup[retryGroup.length - 1];
-          addRuntimeErrorCard("assistant error", `${lastError.text} · retried ${retryGroup.length} attempts`, retryErrorGroupBody(retryGroup));
+          addRuntimeErrorCard({ title: "assistant error", subtitle: `${lastError.text} · retried ${retryGroup.length} attempts`, technicalDetails: retryErrorGroupBody(retryGroup) });
           continue;
         }
 
@@ -1579,6 +1604,7 @@ export function createMessageList(options: {
     endStreamFollow,
     endStreamingThinking,
     refreshMessages,
+    checkpoint,
     resetStreamingAssistant,
     invalidateRefreshes: invalidateExternalRefreshes,
     reconcileActivity: activity.schedule,

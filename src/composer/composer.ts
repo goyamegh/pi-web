@@ -1,12 +1,12 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
-import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
+import { clearToken, saveToken, sessionUiMutationWarning, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
 import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
 import { recordDebugEvent } from "../app/debugDiagnostics.js";
-import { openImageOverlay } from "../components/imageActions.js";
+import { openImagePreview } from "../components/imageActions.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
 import type { QuoteRepliesController, QuoteReplySubmission } from "../quotes/quoteReplies.js";
@@ -26,6 +26,7 @@ export type ComposerController = {
   addContextAttachment: (context: ComposerContextAttachment) => void;
   renderAttachments: () => void;
   switchSession: (sessionId: string) => void;
+  hasSessionDraft: (sessionId: string) => boolean;
   setPromptText: (text: string) => void;
   setCaptureContributions: (contributions: ComposerCaptureDescriptor[]) => void;
   /** Fork: ⌘D / Ctrl+D — start the first capture contribution or stop an active recording. */
@@ -52,6 +53,8 @@ export function createComposer(options: {
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  startNewSession: () => Promise<void>;
+  onSessionUiStateWarning: (warning: string) => void;
   beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
@@ -174,7 +177,8 @@ export function createComposer(options: {
 
   function updateCompactInactive() {
     const active = document.activeElement;
-    const unfocused = !active || !elements.formEl.contains(active);
+    // Model settings are a separate interaction, not an intent to edit a draft.
+    const unfocused = !active || !elements.formEl.contains(active) || elements.modelControl.contains(active);
     applyCompactInactive(unfocused && !elements.promptEl.value.trim());
   }
 
@@ -512,11 +516,11 @@ export function createComposer(options: {
         preview.tabIndex = 0;
         preview.setAttribute("role", "button");
         preview.setAttribute("aria-label", `Preview ${image.name}`);
-        preview.addEventListener("click", () => openImageOverlay(preview));
+        preview.addEventListener("click", () => openImagePreview(preview, preview));
         preview.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            openImageOverlay(preview);
+            openImagePreview(preview, preview);
           }
         });
       }
@@ -674,6 +678,10 @@ export function createComposer(options: {
 
   async function runSlashCommand(command: string) {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
+    if (name === "new") {
+      await options.startNewSession();
+      return;
+    }
     if (name === "compact" && activeSessionState(state)?.capabilities?.compaction === false) throw new Error("Compaction is not supported by this harness.");
     if (name === "logout") {
       try {
@@ -700,13 +708,15 @@ export function createComposer(options: {
     const text = await res.text();
     const data = text ? JSON.parse(text) : {};
     if (!res.ok || data.ok === false) throw new Error(data.error || text);
-    const resetsSession = name === "new" || name === "clear";
+    const resetsSession = name === "clear";
     if (resetsSession) beginTranscriptLoading?.();
     if (data.state) {
       sessionState.applySnapshot(data.state, { activate: resetsSession });
       if (resetsSession && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
       if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
     }
+    const sessionUiStateWarning = sessionUiMutationWarning(data);
+    if (sessionUiStateWarning) options.onSessionUiStateWarning(sessionUiStateWarning);
     await refreshModels();
     if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);
     if (resetsSession) await refreshMessages();
@@ -777,7 +787,9 @@ export function createComposer(options: {
           clearDraft();
           hideSlashCommands();
           updatePrimaryAction();
-          addMessage("system", `› ${promptMessage}`);
+          // /new changes the active session synchronously. Unlike ordinary commands,
+          // its local echo would be left in an empty tab when that tab is reused.
+          if (slashCommandName(promptMessage) !== "new") addMessage("system", `› ${promptMessage}`);
           try {
             await runSlashCommand(promptMessage);
           } catch (error) {
@@ -886,7 +898,8 @@ export function createComposer(options: {
     // document.activeElement on mobile WebKit. The event itself is authoritative.
     let pageIsUnloading = false;
     window.addEventListener("beforeunload", () => { pageIsUnloading = true; });
-    elements.formEl.addEventListener("focusin", () => {
+    elements.formEl.addEventListener("focusin", (event) => {
+      if (event.target instanceof Node && elements.modelControl.contains(event.target)) return;
       applyCompactInactive(false);
       try { sessionStorage.setItem(restoreFocusStorageKey, "true"); } catch { /* ignore */ }
     });
@@ -1019,6 +1032,12 @@ export function createComposer(options: {
     syncCompactState: updateCompactInactive,
     renderAttachments,
     switchSession,
+    hasSessionDraft: (sessionId) => {
+      const draft = drafts.get(sessionId);
+      return Boolean(draft.text.trim() || draft.attachments.length || draft.quoteReplies.length
+        || sessionContextAttachments.get(sessionId)?.length
+        || (sessionId === ownedSessionId && (elements.promptEl.value.trim() || state.attachedImages.length || contextAttachments.length || quoteReplies.hasDrafts())));
+    },
     setPromptText,
     stopStreaming,
     updatePrimaryAction,
