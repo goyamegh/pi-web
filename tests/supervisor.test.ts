@@ -43,7 +43,7 @@ async function status(port: number, supervisor: ChildProcess) {
       headers: { authorization: `Bearer ${token}` },
     });
     if (!response.ok) return undefined;
-    return response.json() as Promise<{ childPid?: number; childGeneration: number }>;
+    return response.json() as Promise<{ childPid?: number; childGeneration: number; tunnel: unknown }>;
   }, supervisor);
 }
 
@@ -70,6 +70,47 @@ afterEach(async () => {
 });
 
 describe("pi-web supervisor", () => {
+  it("does not spawn a tunnel under an inherited PI_WEB_TUNNEL_NAME", async () => {
+    // Simulate `npm test` launched from inside a live pi-web session.
+    process.env.PI_WEB_TUNNEL_NAME = "live-tunnel-name";
+    process.env.PI_WEB_TUNNEL_ALLOW = "someone";
+    process.env.PI_WEB_TUNNEL_BIN = "/nonexistent/tunnel";
+    try {
+      const env = isolatedAuthEnv();
+      expect(env.PI_WEB_TUNNEL_NAME).toBe("");
+      expect(env.PI_WEB_TUNNEL_ALLOW).toBe("");
+      expect(env.PI_WEB_TUNNEL_BIN).toBe("");
+
+      const publicPort = await freePort();
+      const childPort = await freePort();
+      const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+        cwd: projectRoot,
+        env: {
+          ...env,
+          HOST: "127.0.0.1",
+          PORT: String(publicPort),
+          PI_WEB_CHILD_PORT: String(childPort),
+          PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: token,
+          PI_WEB_MOCK: "1",
+          PI_WEB_NO_SESSION: "1",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      supervisors.add(supervisor);
+      let output = "";
+      supervisor.stdout?.on("data", (chunk) => { output += String(chunk); });
+      supervisor.stderr?.on("data", (chunk) => { output += String(chunk); });
+
+      const current = await status(publicPort, supervisor);
+      expect(current.tunnel).toBeNull();
+      expect(output).not.toContain("starting tunnel");
+    } finally {
+      delete process.env.PI_WEB_TUNNEL_NAME;
+      delete process.env.PI_WEB_TUNNEL_ALLOW;
+      delete process.env.PI_WEB_TUNNEL_BIN;
+    }
+  }, 20_000);
+
   it("restarts an unexpectedly terminated child without double-spawning on intentional restart", async () => {
     const publicPort = await freePort();
     const childPort = await freePort();
@@ -91,6 +132,9 @@ describe("pi-web supervisor", () => {
 
     const initial = await status(publicPort, supervisor);
     expect(initial.childPid).toBeTypeOf("number");
+    // Regression: a test supervisor must never inherit the developer's live
+    // tunnel name, or it kicks the real tunnel offline (2026-10-12).
+    expect(initial.tunnel).toBeNull();
     process.kill(initial.childPid!, "SIGTERM");
 
     const recovered = await waitFor(async () => {

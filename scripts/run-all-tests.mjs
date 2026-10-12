@@ -13,6 +13,11 @@ const e2eShards = Math.max(1, Number(process.env.PI_WEB_E2E_SHARDS || 1));
 const e2eConcurrency = Math.max(1, Number(process.env.PI_WEB_E2E_CONCURRENCY || 4));
 // Independent worktrees can run the whole matrix without sharing server ports.
 const portOffset = Number(process.env.PI_WEB_E2E_PORT_OFFSET || 0);
+
+// Never let a test child inherit the live tunnel config. `npm test` run from a
+// pi-web session carries PI_WEB_TUNNEL_NAME; a test-spawned supervisor would
+// then register a tunnel under the live name and kick the real one offline.
+const testEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_WEB_TUNNEL_")));
 if (!Number.isInteger(portOffset) || portOffset < 0 || 10_776 + portOffset + (e2eShards - 1) * 10 > 65_535) {
   throw new Error("PI_WEB_E2E_PORT_OFFSET must keep all E2E ports between 1024 and 65535");
 }
@@ -87,7 +92,7 @@ async function runPhase(tasks, colorOffset = 0) {
     const color = colors[(index + colorOffset) % colors.length];
     const child = spawn(task.command, task.args, {
       cwd: process.cwd(),
-      env: { ...process.env, ...task.env },
+      env: { ...testEnv, ...task.env },
       stdio: ["ignore", "pipe", "pipe"],
       shell: isWin,
     });
