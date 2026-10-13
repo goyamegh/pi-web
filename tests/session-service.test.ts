@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { jsonRoundTrip, type MessageDto, type SessionServiceEvent } from "../server/session/dto.js";
 import { SessionActivity } from "../server/session/activity.js";
 import { shallowSessionCwd } from "../server/session/shallowList.js";
@@ -548,6 +549,38 @@ describe("LocalSessionService contract", () => {
     expect((await service.state(initial.sessionId)).sessionId).toBe("current");
     expect((await service.state("forked-1")).sessionFile).toBe(forkedPath);
     expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false);
+  });
+
+  it("keeps a real Pi source manager on its own file after forking (in-flight turns must not leak into the fork)", async () => {
+    const { service, initial, cwd } = await fixtureService();
+    const source = SessionManager.create(cwd, cwd);
+    const user = (text: string) => ({ role: "user", content: text, timestamp: Date.now() }) as any;
+    const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }], api: "x", provider: "x", model: "x", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() }) as any;
+    const first = source.appendMessage(user("q1"));
+    const checkpoint = source.appendMessage(assistant("a1"));
+    source.appendMessage(user("q2 (still streaming)"));
+    const sourceFile = source.getSessionFile()!;
+    const sourceId = source.getSessionId();
+    const sourceLeaf = source.getLeafId();
+    initial.sessionManager = source as any;
+    initial.isStreaming = true;
+
+    const result = await service.fork(initial.sessionId, checkpoint);
+
+    // The live source manager is untouched: same file, id and leaf.
+    expect(source.getSessionFile()).toBe(sourceFile);
+    expect(source.getSessionId()).toBe(sourceId);
+    expect(source.getLeafId()).toBe(sourceLeaf);
+    const forkFile = result.state.sessionFile!;
+    expect(forkFile).not.toBe(sourceFile);
+    // The source's in-flight reply lands in the source file, chained to its own leaf, never in the fork.
+    const reply = source.appendMessage(assistant("a2 for q2"));
+    const sourceEntries = (await readFile(sourceFile, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const forkEntries = (await readFile(forkFile, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(sourceEntries.find((entry) => entry.id === reply)).toMatchObject({ parentId: sourceLeaf });
+    expect(forkEntries.map((entry) => entry.id)).not.toContain(reply);
+    expect(forkEntries.slice(1).map((entry) => entry.id)).toEqual([first, checkpoint]);
+    expect(forkEntries[0]).toMatchObject({ type: "session", parentSession: sourceFile });
   });
 
   it("defaults the fork point to the current leaf and rejects sessions that cannot fork", async () => {

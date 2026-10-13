@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   formatSkillsForPrompt,
   getAgentDir,
+  SessionManager,
   type AgentSessionEvent,
   type ModelRuntime,
   type SessionStartEvent,
@@ -145,6 +147,21 @@ const webSlashCommands: SlashCommandDto[] = [
 function envMs(name: string, fallback: number) {
   const raw = Number(process.env[name] || fallback);
   return Number.isFinite(raw) && raw >= 0 ? raw : fallback;
+}
+
+/**
+ * Pi's SessionManager.createBranchedSession() retargets the manager it runs on
+ * (sessionId, sessionFile, leaf) at the new file — TUI /fork semantics. Calling
+ * it on a live source made that source's in-flight turn and every later prompt
+ * append into the fork's file. Branch from a throwaway copy re-opened from the
+ * source file instead, so the live source keeps writing to its own file.
+ */
+function detachedBranchSource(manager: PiWebSession["sessionManager"]): PiWebSession["sessionManager"] {
+  if (!(manager instanceof SessionManager)) return manager;
+  const file = manager.getSessionFile();
+  if (!file || !manager.isPersisted()) return manager; // in-memory: createBranchedSession() returns undefined → 400
+  if (!existsSync(file)) throw new Error("Nothing to fork until the first reply is saved");
+  return SessionManager.open(file, manager.getSessionDir(), manager.getCwd()) as unknown as PiWebSession["sessionManager"];
 }
 
 function sessionPathKey(value: Pick<PiWebSession, "sessionFile" | "sessionId">) {
@@ -742,7 +759,7 @@ export class LocalSessionService implements SessionService {
     const leafId = (targetId || manager.getLeafId?.() || "").trim();
     if (!leafId) throw new SessionServiceError("This session has nothing to fork yet", 400);
     let path: string | undefined;
-    try { path = manager.createBranchedSession(leafId); }
+    try { path = detachedBranchSource(manager).createBranchedSession!(leafId); }
     catch (error) { throw new SessionServiceError(errorMessage(error), 400); }
     if (!path) throw new SessionServiceError("Forking is not available for in-memory sessions", 400);
     const forked = await this.getOrCreateLiveSession(path);
