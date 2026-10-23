@@ -1,5 +1,5 @@
 import type { ApiHeaders } from "../app/api.js";
-import { iconElement, type IconName } from "../app/icons.js";
+import { iconElement, isIconName, type IconName } from "../app/icons.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
 
 type HeaderAction = { key?: unknown; icon?: unknown; title?: unknown; label?: unknown };
@@ -12,11 +12,6 @@ type Options = {
   /** Open an extension panel by key (header actions may return `openPanel`). */
   openPanel?: (key: string) => void;
 };
-
-const knownIcons = new Set<IconName>([
-  "bookmark", "brain", "corner-down-right", "flag", "git-branch", "git-fork", "key-round", "menu", "more-vertical",
-  "paperclip", "pin", "route", "scroll-text", "send-horizontal", "settings", "square", "square-pen", "star", "trash-2", "maximize-2", "minimize-2", "x",
-]);
 
 export function createWebHeaderActions({ container, headers, getSessionId, markdown, openPanel }: Options) {
   let activeKey: string | undefined;
@@ -91,7 +86,7 @@ export function createWebHeaderActions({ container, headers, getSessionId, markd
       if (typeof action.key !== "string" || !action.key) continue;
       const title = typeof action.title === "string" && action.title.trim() ? action.title.trim() : action.key;
       const label = typeof action.label === "string" && action.label.trim() ? action.label.trim() : title;
-      const icon = typeof action.icon === "string" && knownIcons.has(action.icon as IconName) ? action.icon as IconName : "star";
+      const icon: IconName = typeof action.icon === "string" && isIconName(action.icon) ? action.icon : "star";
       const button = document.createElement("button");
       button.type = "button";
       button.className = "iconButton statusBarButton webHeaderActionButton";

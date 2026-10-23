@@ -201,7 +201,8 @@ are explicit and may be anything that references the panel:
 
 The panel can call back into the extension with `data-web-action`, optional JSON
 in `data-web-payload`, and ordinary HTML forms. Successful form controls are sent
-as `event.fields`.
+as `event.fields`. A `data-web-action` on a `<form>` names its submit action
+only: clicking into the form's inputs or selects never invokes it.
 
 ```ts
 ctx.ui.web.setPanel("notes", {
@@ -538,15 +539,29 @@ rm ~/.pi/web/extensions/github-repo-panel.ts
 ## Example: session search over indexed history
 
 [`examples/pi-web-extensions/session-search.ts`](../examples/pi-web-extensions/session-search.ts)
-adds a **Session search** panel (header icon, FAB launcher) that queries an
-AI Search application over your indexed pi-web session history and links every
-hit back to its session. Requests are SigV4-signed on the server from a named
-profile in `~/.aws/credentials`; the browser only receives titles, projects,
-dates, session links, passage counts, and the API's token usage. `SIMPLE`
-searches render inline when they answer quickly; slower `AGENTIC` searches show
-a cancellable spinner and repaint through `ctx.ui.web.update()` when they
-finish (180 s upper bound). Expired credentials render an explicit error with
-the refresh command you configure.
+adds a **Session search** panel that queries an AI Search application over your
+indexed pi-web session history and links every hit back to its session. Its
+launcher is the top-right header icon (the `session-search` glyph — a magnifying
+glass peeking out of a chat bubble — which is also listed in the FAB menu).
+Requests are SigV4-signed on the server from a named profile in
+`~/.aws/credentials`; the browser only receives titles, projects, dates, session
+links, passage counts, the API's token usage, and — for `AGENTIC` searches with
+**Synthesize answer** on (the default) — the API's Markdown answer and its
+citations, rendered through a sanitizing Markdown subset above the numbered
+results. `SIMPLE` searches render inline when they answer quickly; slower
+`AGENTIC` searches show a cancellable spinner and repaint through
+`ctx.ui.web.update()` when they finish (180 s upper bound). While a request is
+in flight the mode and synthesis controls are locked, so changing them can
+neither start a second request nor change the one running. Expired credentials
+render an explicit error with the refresh command you configure.
+
+Finished searches (question, mode, normalized results, answer) are kept in
+`PI_WEB_SESSION_SEARCH_HISTORY_FILE` (default `PI_WEB_HOME/session-search-history.json`
+or `~/.pi/agent/session-search-history.json`, owner-only, last 50) and listed in
+a **Past searches** column; opening one restores it without an upstream call and
+**New search** clears the panel. Every search carries an API conversation id;
+ticking **Continue conversation** reuses it for the next question so the API can
+resolve references such as "that session", and the panel lists the turns.
 
 Configure it in Settings → **Session search**, or seed those values with
 `PI_WEB_SESSION_SEARCH_ENDPOINT`, `PI_WEB_SESSION_SEARCH_PROFILE`,

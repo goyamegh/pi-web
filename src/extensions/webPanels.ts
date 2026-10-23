@@ -166,6 +166,9 @@ export function createWebPanels(options: {
   body.addEventListener("click", (event) => {
     const target = actionTarget(event);
     if (!target || !body.contains(target)) return;
+    // A data-web-action on a <form> names its submit action; clicks on the
+    // form's controls (typing in an input, opening a <select>) are not actions.
+    if (target instanceof HTMLFormElement) return;
     if ((target instanceof HTMLButtonElement || target instanceof HTMLInputElement)
       && target.type === "submit" && target.form) return;
     event.preventDefault();
