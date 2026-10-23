@@ -535,6 +535,30 @@ Update by running the same `cp` or `curl` command again. Disable it by deleting 
 rm ~/.pi/web/extensions/github-repo-panel.ts
 ```
 
+## Example: session search over indexed history
+
+[`examples/pi-web-extensions/session-search.ts`](../examples/pi-web-extensions/session-search.ts)
+adds a **Session search** panel (header icon, FAB launcher) that queries an
+AI Search application over your indexed pi-web session history and links every
+hit back to its session. Requests are SigV4-signed on the server from a named
+profile in `~/.aws/credentials`; the browser only receives titles, projects,
+dates, session links, passage counts, and the API's token usage. `SIMPLE`
+searches render inline when they answer quickly; slower `AGENTIC` searches show
+a cancellable spinner and repaint through `ctx.ui.web.update()` when they
+finish (180 s upper bound). Expired credentials render an explicit error with
+the refresh command you configure.
+
+Configure it in Settings → **Session search**, or seed those values with
+`PI_WEB_SESSION_SEARCH_ENDPOINT`, `PI_WEB_SESSION_SEARCH_PROFILE`,
+`PI_WEB_SESSION_SEARCH_REGION`, `PI_WEB_SESSION_SEARCH_SERVICE`, and
+`PI_WEB_SESSION_SEARCH_REFRESH_HINT` before starting the server. Install it
+like the other examples:
+
+```sh
+mkdir -p .pi/web/extensions
+ln -s "$(pwd)/examples/pi-web-extensions/session-search.ts" .pi/web/extensions/session-search.ts
+```
+
 ## Example: live git footer
 
 The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch, live dirty/clean state, and compact tracked-upstream indicators (`↑N` ahead / `↓N` behind, or `✓` when synchronized). The upstream name and full explanation live in accessible tooltips; clean/dirty state uses a colored dot with change counts. Comparisons use the last fetched local refs only: the footer never fetches or contacts a remote. One bounded Git status command provides all the data, with a one-second per-working-directory cache and shared in-flight requests across sessions. If comparison times out, subsequent refreshes skip ahead/behind counting for 30 seconds (`⇅?`) so branch and dirty state can still update without repeatedly walking history. It refreshes periodically and around turns, bash commands, and compaction events.
