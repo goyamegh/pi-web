@@ -866,9 +866,11 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
               state.activeHistoryId = entry.id;
               state.job = { id: `history-${entry.id}`, query: entry.query, mode: entry.mode, startedAt: Date.parse(entry.at), controller: new AbortController(), state: "done", result: entry.result };
               if (entry.threadId) {
+                // The thread is restored so the user can pick it up; "Continue conversation" is only
+                // pre-ticked when the entry was already part of a multi-turn conversation.
                 const turns = (state.history ?? []).filter((turn) => turn.threadId === entry.threadId).sort((a, b) => a.at.localeCompare(b.at));
                 state.thread = { id: entry.threadId, turns };
-                state.continueThread = true;
+                state.continueThread = turns.length > 1;
               } else {
                 state.thread = undefined;
                 state.continueThread = false;
