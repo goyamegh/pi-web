@@ -80,6 +80,15 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
   await expect(panel.locator("textarea")).toHaveValue("Initial global note");
   await expect(panel.getByRole("status")).toContainText("revision 1");
 
+  // Clicking a control inside a <form data-web-action> is not an action: the form's
+  // action fires on submit only. (Regression: a click used to submit "save".)
+  const invokesBeforeClick = invocations.length;
+  await panel.locator("textarea").click();
+  await panel.locator("textarea").click();
+  await page.waitForTimeout(150);
+  expect(invocations.length).toBe(invokesBeforeClick);
+  expect(invocations.some((input) => input.event?.action === "save")).toBe(false);
+
   const invokesBeforeUpdate = invocations.length;
   await panel.locator("textarea").fill("Unsubmitted draft");
   revision = 2;

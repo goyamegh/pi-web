@@ -1,5 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SignatureV4 } from "@smithy/signature-v4";
@@ -11,14 +11,19 @@ import {
   buildSearchRequest,
   classifyUpstreamError,
   configFromEnv,
+  createHistoryStore,
   createSearchClient,
   createSessionSearchExtension,
+  historyFilePath,
   loadProfileCredentials,
   normalizeConfig,
+  normalizeHistoryEntry,
   normalizeSearchResponse,
   parseCredentialsIni,
+  renderAnswerMarkdown,
   renderPanel,
   signRequest,
+  type HistoryEntry,
   type SearchConfig,
 } from "../examples/pi-web-extensions/session-search";
 
@@ -96,7 +101,7 @@ describe("SigV4 request signing", () => {
   });
 
   it("omits the session token header for long-lived keys and keeps the body shape the API expects", () => {
-    const request = buildSearchRequest(config.endpoint, "q", "AGENTIC", 5);
+    const request = buildSearchRequest(config.endpoint, "q", "AGENTIC", { maxResults: 5 });
     expect(JSON.parse(request.body)).toEqual({ query: { intent: "q" }, retrieval: "AGENTIC", maxResults: 5 });
     const headers = signRequest({ ...request, service: "aisearch", region: "us-east-1", credentials: { accessKeyId: "A", secretAccessKey: "B" } });
     expect(headers["x-amz-security-token"]).toBeUndefined();
@@ -125,12 +130,43 @@ describe("response normalization", () => {
   });
 
   it("tolerates garbage payloads", () => {
-    expect(normalizeSearchResponse(null)).toEqual({ retrievalMode: "SIMPLE", documents: [], usage: { planningTokens: 0, synthesisTokens: 0, totalTokens: 0 }, elapsedMs: 0 });
+    expect(normalizeSearchResponse(null)).toEqual({ retrievalMode: "SIMPLE", documents: [], answer: "", citations: [], usage: { planningTokens: 0, synthesisTokens: 0, totalTokens: 0 }, elapsedMs: 0 });
     expect(normalizeSearchResponse({ documents: [1, "x", null], retrievalMode: "AGENTIC", usage: "nope" }).retrievalMode).toBe("AGENTIC");
     expect(normalizeSearchResponse({ documents: [{ source: "not json" }, { source: { title: "No ids at all" } }] }).documents).toEqual([
       { id: "doc-0", title: "Untitled session", project: "", startedAt: "", sessionId: "", sessionUrl: "", passageCount: 0 },
       { id: "doc-1", title: "No ids at all", project: "", startedAt: "", sessionId: "", sessionUrl: "", passageCount: 0 },
     ]);
+  });
+
+  it("keeps the synthesized answer and in-range citations exactly as the API returned them (observed shape)", () => {
+    // Shape observed on a real synthesize=true response: `answer` is Markdown with `[n]` markers,
+    // `citations` is `[{ documentIndex }]`, and both keys are absent when nothing was retrieved.
+    const synthesized = normalizeSearchResponse({
+      ...upstreamFixture,
+      retrievalMode: "AGENTIC",
+      answer: "  The session `01a13ce5` created the domain [1]. A worker monitored it [2]. <script>alert(1)</script>  ",
+      citations: [{ documentIndex: 0 }, { documentIndex: 1 }, { documentIndex: 0 }, { documentIndex: 7 }, { documentIndex: -1 }, { documentIndex: "0" }, null, "junk"],
+    }, 1000);
+    expect(synthesized.answer).toBe("The session `01a13ce5` created the domain [1]. A worker monitored it [2]. <script>alert(1)</script>");
+    expect(synthesized.citations).toEqual([0, 1]);
+    expect(synthesized.answer.length).toBeLessThanOrEqual(8_000);
+
+    const empty = normalizeSearchResponse({ citations: [], documents: [], retrievalMode: "AGENTIC", usage: { planningTokens: 21464, synthesisTokens: 0, totalTokens: 21464 } });
+    expect(empty).toMatchObject({ answer: "", citations: [], documents: [] });
+    expect(normalizeSearchResponse({ ...upstreamFixture, answer: 42, citations: "x" })).toMatchObject({ answer: "", citations: [] });
+    expect(normalizeSearchResponse({ ...upstreamFixture, answer: "a".repeat(9_000) }).answer).toHaveLength(8_000);
+  });
+
+  it("asks for synthesis and conversation continuity with the exact body the API documents", () => {
+    const synth = buildSearchRequest(config.endpoint, "q", "AGENTIC", { synthesize: true });
+    expect(JSON.parse(synth.body)).toEqual({
+      query: { intent: "q" }, retrieval: "AGENTIC", synthesize: true,
+      synthesisOptions: { maxTokens: 600, temperature: 0, responseFormat: "MARKDOWN" }, maxResults: 5,
+    });
+    const threaded = buildSearchRequest(config.endpoint, "and then?", "AGENTIC", { synthesize: true, threadId: "thread-1" });
+    expect(JSON.parse(threaded.body)).toMatchObject({ sessionId: "thread-1", synthesize: true });
+    // synthesize:false and no thread leave the body untouched (SIMPLE never asks for synthesis).
+    expect(JSON.parse(buildSearchRequest(config.endpoint, "q", "SIMPLE", { synthesize: false }).body)).toEqual({ query: { intent: "q" }, retrieval: "SIMPLE", maxResults: 5 });
   });
 
   it("classifies expired credentials separately from other upstream failures", () => {
@@ -208,6 +244,91 @@ describe("search client", () => {
   });
 });
 
+describe("answer markdown", () => {
+  const hits = normalizeSearchResponse(upstreamFixture).documents;
+
+  it("renders a safe subset and escapes everything else", () => {
+    const html = renderAnswerMarkdown("## Finding\n\nThe **domain** was created in `pi-web-origin` [1], see [docs](https://evil.example/x) <img src=x onerror=alert(1)>.\n\n- first [2]\n- second [9]\n\n1. one\n2. two\n\n```\n<b>raw</b>\n```", hits);
+    expect(html).toContain("<p><strong>Finding</strong></p>");
+    expect(html).toContain("<strong>domain</strong>");
+    expect(html).toContain("<code>pi-web-origin</code>");
+    expect(html).toContain('<sup class="ssxCite" title="Create the pi sessions domain">[1]</sup>');
+    expect(html).toContain("<ul><li>first <sup");
+    expect(html).toContain("<li>second [9]</li>");
+    expect(html).toContain("<ol><li>one</li><li>two</li></ol>");
+    expect(html).toContain("<pre><code>&lt;b&gt;raw&lt;/b&gt;</code></pre>");
+    expect(html).toContain("see docs &lt;img src=x onerror=alert(1)&gt;.");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("href=");
+    expect(html).not.toContain("evil.example");
+  });
+
+  it("returns nothing for an empty answer and plain paragraphs otherwise", () => {
+    expect(renderAnswerMarkdown("", hits)).toBe("");
+    expect(renderAnswerMarkdown("Plain\r\nwrapped line.\n\nSecond.")).toBe("<p>Plain wrapped line.</p><p>Second.</p>");
+  });
+});
+
+describe("history store", () => {
+  const result = normalizeSearchResponse({ ...upstreamFixture, answer: "The answer [1].", citations: [{ documentIndex: 0 }] }, 900);
+  const entry = (id: string, at: string, extra: Partial<HistoryEntry> = {}): HistoryEntry => ({ id, at, query: `question ${id}`, mode: "AGENTIC", synthesize: true, threadId: "11111111-2222-4333-8444-555555555555", result, ...extra });
+
+  async function tempStore(limit?: number) {
+    const dir = await mkdtemp(join(tmpdir(), "pi-web-session-search-history-"));
+    tempDirs.push(dir);
+    return { dir, store: createHistoryStore(join(dir, "nested", "history.json"), limit) };
+  }
+
+  it("persists normalized results newest first, bounded, with owner-only permissions and no upstream payload", async () => {
+    const { store } = await tempStore(3);
+    expect(await store.load()).toEqual([]);
+    await store.add(entry("a", "2026-10-23T01:00:00.000Z"));
+    await store.add(entry("b", "2026-10-23T02:00:00.000Z"));
+    await store.add(entry("c", "2026-10-23T03:00:00.000Z"));
+    const entries = await store.add(entry("d", "2026-10-23T04:00:00.000Z"));
+    expect(entries.map((item) => item.id)).toEqual(["d", "c", "b"]);
+    expect(await store.load()).toEqual(entries);
+    const raw = await readFile(store.path, "utf8");
+    expect(raw).not.toContain("secret passage");
+    expect(raw).not.toContain("vector");
+    expect(JSON.parse(raw)).toMatchObject({ version: 1 });
+    if (process.platform !== "win32") expect((await stat(store.path)).mode & 0o777).toBe(0o600);
+    expect((await store.remove("c")).map((item) => item.id)).toEqual(["d", "b"]);
+  });
+
+  it("re-validates stored entries so a tampered file cannot inject markup or links", async () => {
+    const { store } = await tempStore();
+    await mkdir(join(store.path, ".."), { recursive: true });
+    await writeFile(store.path, JSON.stringify({ version: 1, entries: [
+      { ...entry("ok", "2026-10-23T01:00:00.000Z"), extra: "field", result: { ...result, documents: [{ ...result.documents[0], sessionId: "javascript:alert(1)", sessionUrl: "javascript:alert(1)", bonus: 1 }], citations: [0, 5, "x"], answer: 7 } },
+      { id: "no-query", at: "2026-10-23T01:00:00.000Z", query: "", result },
+      { id: "bad-date", at: "yesterday", query: "q", result },
+      "garbage", null,
+    ] }));
+    const [only, ...rest] = await store.load();
+    expect(rest).toEqual([]);
+    expect(only.id).toBe("ok");
+    expect("extra" in only).toBe(false);
+    expect(only.result.documents[0]).toMatchObject({ sessionId: "", sessionUrl: "" });
+    expect("bonus" in only.result.documents[0]).toBe(false);
+    expect(only.result.citations).toEqual([0]);
+    expect(only.result.answer).toBe("");
+    expect(normalizeHistoryEntry(undefined)).toBeUndefined();
+    expect(normalizeHistoryEntry({ id: "x", at: "2026-10-23T01:00:00.000Z", query: "q", threadId: "<bad>", result: {} })).toMatchObject({ mode: "SIMPLE", synthesize: false, result: { documents: [], answer: "", citations: [] } });
+    expect(normalizeHistoryEntry({ id: "x", at: "2026-10-23T01:00:00.000Z", query: "q", threadId: "<bad>", result: {} })!.threadId).toBeUndefined();
+  });
+
+  it("survives a corrupt file and resolves its default location from the environment", async () => {
+    const { store } = await tempStore();
+    await mkdir(join(store.path, ".."), { recursive: true });
+    await writeFile(store.path, "{not json");
+    expect(await store.load()).toEqual([]);
+    expect(historyFilePath({ PI_WEB_SESSION_SEARCH_HISTORY_FILE: "/tmp/x.json", PI_WEB_HOME: "/home/x" })).toBe("/tmp/x.json");
+    expect(historyFilePath({ PI_WEB_HOME: "/web-home" })).toBe(join("/web-home", "session-search-history.json"));
+    expect(historyFilePath({})).toMatch(/[\\/]\.pi[\\/]agent[\\/]session-search-history\.json$/);
+  });
+});
+
 describe("panel rendering", () => {
   const controller = new AbortController();
   it("renders explicit idle, running, empty, error, and result states", () => {
@@ -248,12 +369,16 @@ describe("panel rendering", () => {
 describe("extension wiring", () => {
   type Handler = (event: unknown, ctx: PiWebExtensionContext) => unknown;
 
-  function boot(fetchImpl: typeof fetch, env: NodeJS.ProcessEnv = { PI_WEB_SESSION_SEARCH_ENDPOINT: config.endpoint, PI_WEB_SESSION_SEARCH_PROFILE: "unit", PI_WEB_SESSION_SEARCH_REFRESH_HINT: "refresh-creds --once" }) {
+  async function boot(fetchImpl: typeof fetch, env: NodeJS.ProcessEnv = { PI_WEB_SESSION_SEARCH_ENDPOINT: config.endpoint, PI_WEB_SESSION_SEARCH_PROFILE: "unit", PI_WEB_SESSION_SEARCH_REFRESH_HINT: "refresh-creds --once" }) {
     const handlers = new Map<string, Handler>();
     const contributions = new Map<string, any>();
     const update = vi.fn();
     const notify = vi.fn();
-    createSessionSearchExtension({ fetch: fetchImpl, loadCredentials: async () => credentials, env })({ on: (name: string, handler: Handler) => handlers.set(name, handler) } as unknown as PiWebExtensionAPI);
+    const dir = await mkdtemp(join(tmpdir(), "pi-web-session-search-wiring-"));
+    tempDirs.push(dir);
+    const historyFile = join(dir, "history.json");
+    let threads = 0;
+    createSessionSearchExtension({ fetch: fetchImpl, loadCredentials: async () => credentials, env, historyFile, newThreadId: () => `thread-${++threads}` })({ on: (name: string, handler: Handler) => handlers.set(name, handler) } as unknown as PiWebExtensionAPI);
     const ctx = {
       ui: {
         notify,
@@ -266,11 +391,11 @@ describe("extension wiring", () => {
         },
       },
     } as unknown as PiWebExtensionContext;
-    return { handlers, contributions, update, notify, ctx };
+    return { handlers, contributions, update, notify, ctx, historyFile };
   }
 
   it("registers the panel, launcher, and header action, and searches inline when the upstream is fast", async () => {
-    const { handlers, contributions, update, ctx } = boot((async () => new Response(JSON.stringify(upstreamFixture), { status: 200 })) as typeof fetch);
+    const { handlers, contributions, update, ctx } = await boot((async () => new Response(JSON.stringify(upstreamFixture), { status: 200 })) as typeof fetch);
     await handlers.get("session_start")!({}, ctx);
     expect([...contributions.keys()]).toEqual([PANEL_KEY, `${PANEL_KEY}-launcher`, `${PANEL_KEY}-header`]);
     expect(contributions.get(`${PANEL_KEY}-launcher`)).toMatchObject({ slot: "fab", opens: PANEL_KEY });
@@ -302,7 +427,7 @@ describe("extension wiring", () => {
       releases.push(resolve);
     })) as unknown as typeof fetch;
     const release = (response: Response) => releases.shift()!(response);
-    const { handlers, contributions, update, ctx } = boot(fetchImpl);
+    const { handlers, contributions, update, ctx } = await boot(fetchImpl);
     await handlers.get("session_start")!({}, ctx);
     const panel = contributions.get(PANEL_KEY);
 
@@ -329,12 +454,155 @@ describe("extension wiring", () => {
   });
 
   it("surfaces expired credentials as an explicit error state", async () => {
-    const { handlers, contributions, ctx } = boot((async () => new Response('{"message":"ExpiredToken"}', { status: 403 })) as typeof fetch);
+    const { handlers, contributions, ctx } = await boot((async () => new Response('{"message":"ExpiredToken"}', { status: 403 })) as typeof fetch);
     await handlers.get("session_start")!({}, ctx);
     const view = await contributions.get(PANEL_KEY).render({ action: "search", fields: { query: "anything" } });
     expect(view.html).toContain('role="alert"');
     expect(view.html).toContain("probably expired");
     expect(view.html).toContain("refresh-creds --once");
     expect(view.html).not.toContain(credentials.sessionToken);
+  });
+
+  it("locks the mode and synthesis controls while a request is in flight, and a superseding search keeps the locked values", async () => {
+    const bodies: any[] = [];
+    const releases: Array<(response: Response) => void> = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      releases.push(resolve);
+    })) as typeof fetch;
+    const { handlers, contributions, ctx, update } = await boot(fetchImpl);
+    await handlers.get("session_start")!({}, ctx);
+    const panel = contributions.get(PANEL_KEY);
+
+    const running = await panel.render({ action: "search", fields: { query: "slow", mode: "AGENTIC", synthesize: "1" } });
+    expect(running.html).toMatch(/<select name="mode" aria-label="Retrieval mode" disabled>/);
+    expect(running.html).toMatch(/<input type="checkbox" name="synthesize" value="1" checked disabled>/);
+    expect(running.html).toContain('<input type="hidden" name="mode" value="AGENTIC">');
+    expect(running.html).toContain('<input type="hidden" name="synthesize" value="1">');
+    // The form itself carries no click action: only the submit button does.
+    expect(running.html).toContain('<form role="search">');
+    expect(running.html).not.toMatch(/<form[^>]*data-web-action/);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ retrieval: "AGENTIC", synthesize: true });
+
+    // A plain repaint (what update()/focusout triggers) never starts a request or changes the job.
+    const repaint = await panel.render();
+    expect(repaint.html).toContain("Searching (AGENTIC)");
+    expect(bodies).toHaveLength(1);
+
+    // The in-flight result still lands afterwards and is painted with the locked settings.
+    releases[0](new Response(JSON.stringify({ ...upstreamFixture, retrievalMode: "AGENTIC", answer: "Done [1].", citations: [{ documentIndex: 0 }] }), { status: 200 }));
+    await vi.waitFor(() => expect(update).toHaveBeenCalledWith(PANEL_KEY));
+    const done = await panel.render();
+    expect(done.html).toContain('<option value="AGENTIC" selected>');
+    expect(done.html).toMatch(/<select name="mode" aria-label="Retrieval mode">/);
+    expect(done.html).toContain('class="ssxAnswer"');
+    expect(done.html).toContain("Done <sup");
+    expect(done.html).toContain("[1] Create the pi sessions domain</a>");
+    expect(done.html).toContain('<span class="ssxIndex" aria-label="Result 1">1</span>');
+    expect(done.html).toContain("AGENTIC · 3 results");
+  });
+
+  it("only synthesizes AGENTIC searches and never asks SIMPLE for an answer", async () => {
+    const bodies: any[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => { bodies.push(JSON.parse(String(init?.body))); return new Response(JSON.stringify(upstreamFixture), { status: 200 }); }) as typeof fetch;
+    const { handlers, contributions, ctx } = await boot(fetchImpl);
+    await handlers.get("session_start")!({}, ctx);
+    const panel = contributions.get(PANEL_KEY);
+    await panel.render({ action: "search", fields: { query: "simple", mode: "SIMPLE", synthesize: "1" } });
+    expect(bodies[0]).not.toHaveProperty("synthesize");
+    const view = await panel.render({ action: "search", fields: { query: "agentic without synth", mode: "AGENTIC" } });
+    expect(bodies[1]).not.toHaveProperty("synthesize");
+    expect(view.html).toMatch(/<input type="checkbox" name="synthesize" value="1">/);
+    expect(view.html).not.toContain('class="ssxAnswer"');
+  });
+
+  it("records finished searches in history, restores them instantly, clears with New search, and deletes", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => { calls += 1; return new Response(JSON.stringify({ ...upstreamFixture, retrievalMode: "AGENTIC", answer: `Answer ${calls} [1].`, citations: [{ documentIndex: 0 }] }), { status: 200 }); }) as typeof fetch;
+    const { handlers, contributions, ctx, historyFile } = await boot(fetchImpl);
+    await handlers.get("session_start")!({}, ctx);
+    const panel = contributions.get(PANEL_KEY);
+    expect((await panel.render()).html).not.toContain('class="ssxHistory"');
+
+    await panel.render({ action: "search", fields: { query: "first question", mode: "AGENTIC", synthesize: "1" } });
+    const second = await panel.render({ action: "search", fields: { query: "second question", mode: "AGENTIC", synthesize: "1" } });
+    expect(calls).toBe(2);
+    expect(second.html).toContain("Answer 2 <sup");
+    const items = [...second.html.matchAll(/class="ssxHistoryItem" data-web-action="history-open" data-web-payload='([^']+)'( aria-current="true")?/g)];
+    expect(items).toHaveLength(2);
+    expect(second.html.indexOf("second question")).toBeLessThan(second.html.indexOf("first question"));
+    expect(items[0][2]).toBe(' aria-current="true"');
+    const firstId = JSON.parse(items[1][1].replace(/&quot;/g, '"')).id;
+
+    const stored = JSON.parse(await readFile(historyFile, "utf8"));
+    expect(stored.entries.map((entry: any) => entry.query)).toEqual(["second question", "first question"]);
+    expect(JSON.stringify(stored)).not.toContain("secret passage");
+    expect(JSON.stringify(stored)).not.toContain(credentials.sessionToken);
+
+    const restored = await panel.render({ action: "history-open", payload: { id: firstId } });
+    expect(calls).toBe(2);
+    expect(restored.html).toContain("Answer 1 <sup");
+    expect(restored.html).toContain('value="first question"');
+    expect(restored.html).toContain('<option value="AGENTIC" selected>');
+    expect(restored.html).toMatch(new RegExp(`data-web-payload='&quot;id&quot;:&quot;${firstId}&quot;}' aria-current="true"`.replace("'&quot;", "'{&quot;")));
+
+    const cleared = await panel.render({ action: "new" });
+    expect(cleared.html).toContain('value=""');
+    expect(cleared.html).toContain("Search the indexed history");
+    expect(cleared.html).toContain('class="ssxHistoryItem"');
+
+    const deleted = await panel.render({ action: "history-delete", payload: { id: firstId } });
+    expect(deleted.html).not.toContain("first question");
+    expect(deleted.html).toContain("second question");
+    expect(JSON.parse(await readFile(historyFile, "utf8")).entries).toHaveLength(1);
+    expect((await panel.render({ action: "history-open", payload: { id: "missing" } })).html).toContain("Search the indexed history");
+  });
+
+  it("continues a conversation under the same API sessionId and shows the turns", async () => {
+    const bodies: any[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)); bodies.push(body);
+      return new Response(JSON.stringify({ ...upstreamFixture, retrievalMode: "AGENTIC", answer: `Turn ${bodies.length} about ${body.query.intent} [1].`, citations: [{ documentIndex: 0 }] }), { status: 200 });
+    }) as typeof fetch;
+    const { handlers, contributions, ctx } = await boot(fetchImpl);
+    await handlers.get("session_start")!({}, ctx);
+    const panel = contributions.get(PANEL_KEY);
+
+    const idle = await panel.render();
+    expect(idle.html).not.toContain('name="continue"');
+    const first = await panel.render({ action: "search", fields: { query: "who created the domain?", mode: "AGENTIC", synthesize: "1" } });
+    expect(bodies[0].sessionId).toBe("thread-1");
+    expect(first.html).toMatch(/<input type="checkbox" name="continue" value="1">/);
+    expect(first.html).not.toContain('class="ssxThread"');
+
+    const second = await panel.render({ action: "search", fields: { query: "what project was it in?", mode: "AGENTIC", synthesize: "1", continue: "1" } });
+    expect(bodies[1].sessionId).toBe("thread-1");
+    expect(second.html).toContain("Conversation · 2 turns");
+    expect(second.html).toContain('<div class="ssxTurnQ">who created the domain?</div>');
+    expect(second.html).toContain('<div class="ssxTurnQ">what project was it in?</div>');
+    expect(second.html).toContain("Turn 1 about who created the domain? [1].");
+    expect(second.html).toMatch(/<input type="checkbox" name="continue" value="1" checked>/);
+
+    // Unticking starts a fresh conversation id; New search also drops the thread.
+    const third = await panel.render({ action: "search", fields: { query: "unrelated", mode: "AGENTIC", synthesize: "1" } });
+    expect(bodies[2].sessionId).toBe("thread-2");
+    expect(third.html).not.toContain('class="ssxThread"');
+    await panel.render({ action: "search", fields: { query: "follow", mode: "AGENTIC", synthesize: "1", continue: "1" } });
+    expect(bodies[3].sessionId).toBe("thread-2");
+    await panel.render({ action: "new" });
+    await panel.render({ action: "search", fields: { query: "again", mode: "AGENTIC", continue: "1" } });
+    expect(bodies[4].sessionId).toBe("thread-3");
+
+    // Restoring a threaded history entry brings its turns back and lets the user continue it.
+    const restoredThread = await panel.render();
+    const ids = [...restoredThread.html.matchAll(/data-web-action="history-open" data-web-payload='([^']+)'/g)].map((match) => JSON.parse(match[1].replace(/&quot;/g, '"')).id);
+    const secondTurnId = ids[ids.length - 2]; // newest first: "what project was it in?"
+    const restored = await panel.render({ action: "history-open", payload: { id: secondTurnId } });
+    expect(restored.html).toContain("Conversation · 2 turns");
+    expect(restored.html).toMatch(/<input type="checkbox" name="continue" value="1" checked>/);
+    await panel.render({ action: "search", fields: { query: "and then?", mode: "AGENTIC", continue: "1" } });
+    expect(bodies[5].sessionId).toBe("thread-1");
   });
 });

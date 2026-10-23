@@ -5,7 +5,7 @@
  * that verifies the SigV4 signature the way AWS would.
  */
 import { createHash, createHmac } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -108,13 +108,14 @@ describe("session-search extension through the pi-web contribution bridge", () =
     await bridge.bind(session);
 
     const handlers = new Map<string, (event: unknown, ctx: PiWebExtensionContext) => unknown>();
+    // History goes where a real install puts it: PI_WEB_HOME/session-search-history.json.
     const extension = createSessionSearchExtension({
-      env: { PI_WEB_SESSION_SEARCH_ENDPOINT: upstreamUrl, PI_WEB_SESSION_SEARCH_PROFILE: "integration", PI_WEB_SESSION_SEARCH_REGION: "us-east-1", PI_WEB_SESSION_SEARCH_SERVICE: "aisearch", PI_WEB_SESSION_SEARCH_REFRESH_HINT: "my-refresh --profile integration --once" },
+      env: { PI_WEB_SESSION_SEARCH_ENDPOINT: upstreamUrl, PI_WEB_SESSION_SEARCH_PROFILE: "integration", PI_WEB_SESSION_SEARCH_REGION: "us-east-1", PI_WEB_SESSION_SEARCH_SERVICE: "aisearch", PI_WEB_SESSION_SEARCH_REFRESH_HINT: "my-refresh --profile integration --once", PI_WEB_HOME: tempDir },
     });
     extension({ on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as PiWebExtensionAPI);
     await handlers.get("session_start")!({}, { ui, cwd: tempDir } as unknown as PiWebExtensionContext);
     const invoke = (event: Record<string, unknown>) => bridge.invokeContribution(session, { slot: "panel", key: PANEL_KEY, event });
-    return { bridge, session, emitted, invoke, handlers, ui, settingsStore };
+    return { bridge, session, emitted, invoke, handlers, ui, settingsStore, historyFile: join(tempDir, "session-search-history.json") };
   }
 
   it("publishes browser-safe descriptors and settings for the panel", async () => {
@@ -123,7 +124,8 @@ describe("session-search extension through the pi-web contribution bridge", () =
     expect(entries.map((entry) => [entry.key, entry.slot])).toEqual([
       [PANEL_KEY, "panel"], [`${PANEL_KEY}-launcher`, "fab"], [`${PANEL_KEY}-header`, "header-action"],
     ]);
-    expect(entries.find((entry) => entry.slot === "fab")).toMatchObject({ opens: PANEL_KEY, icon: "search" });
+    expect(entries.find((entry) => entry.slot === "fab")).toMatchObject({ opens: PANEL_KEY, icon: "session-search" });
+    expect(entries.find((entry) => entry.slot === "header-action")).toMatchObject({ icon: "session-search", title: "Session search" });
     const serialized = JSON.stringify(entries);
     expect(entries.every((entry) => !("render" in entry) && !("source" in entry))).toBe(true);
     expect(serialized).not.toContain(upstreamUrl);
@@ -144,7 +146,9 @@ describe("session-search extension through the pi-web contribution bridge", () =
     // Upstream saw exactly one signed POST with the API's request shape.
     expect(received).toHaveLength(1);
     expect(received[0].url).toBe("/apps/app-under-test/search");
-    expect(JSON.parse(received[0].body)).toEqual({ query: { intent: "which session created the OpenSearch domain for pi sessions" }, retrieval: "SIMPLE", maxResults: 5 });
+    const body = JSON.parse(received[0].body);
+    expect(body).toEqual({ query: { intent: "which session created the OpenSearch domain for pi sessions" }, retrieval: "SIMPLE", maxResults: 5, sessionId: body.sessionId });
+    expect(body.sessionId).toMatch(/^[0-9a-f-]{36}$/);
     expect(received[0].headers["x-amz-security-token"]).toBe(fakeCredentials.sessionToken);
     expect(received[0].headers.authorization).toContain(`Credential=${fakeCredentials.accessKeyId}/`);
     expect(received[0].headers.authorization).toContain("/us-east-1/aisearch/aws4_request");
@@ -166,6 +170,51 @@ describe("session-search extension through the pi-web contribution bridge", () =
     // A fast search is painted by the invoke response itself; no repaint event is needed.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(emitted.some((event) => event.type === "web_contribution_updated" && event.key === PANEL_KEY)).toBe(false);
+  });
+
+  it("asks AGENTIC searches for a synthesized answer, renders answer + citations above the list, and persists history that a fresh host reloads", async () => {
+    const answerFixture = {
+      ...upstreamFixture,
+      retrievalMode: "AGENTIC",
+      answer: "The domain was created by **this session** [1]; a later run indexed it [2]. <script>alert(1)</script>",
+      citations: [{ documentIndex: 0 }, { documentIndex: 1 }],
+      usage: { planningTokens: 331761, synthesisTokens: 1624, totalTokens: 333385 },
+    };
+    respond = () => ({ status: 200, body: JSON.stringify(answerFixture) });
+    try {
+      const first = await host();
+      const view = await first.invoke({ action: "search", fields: { query: "which session created the OpenSearch domain for pi sessions", mode: "AGENTIC", synthesize: "1" } });
+      const body = JSON.parse(received[0].body);
+      expect(body).toMatchObject({ retrieval: "AGENTIC", synthesize: true, synthesisOptions: { maxTokens: 600, temperature: 0, responseFormat: "MARKDOWN" }, maxResults: 5 });
+      expect(view.html).toContain('class="ssxAnswer"');
+      expect(view.html).toContain("The domain was created by <strong>this session</strong> <sup");
+      expect(view.html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+      expect(view.html).not.toContain("<script>");
+      expect(view.html).toContain('<a href="/?sessionId=01a13ce5-9ebc-716c-be1c-ec84cf90e58b">[1] Create the pi sessions OpenSearch domain</a>');
+      expect(view.html).toContain('<a href="/?sessionId=0199bbbb-0000-7000-8000-000000000001">[2] Index pi sessions</a>');
+      expect(view.html.indexOf('class="ssxAnswer"')).toBeLessThan(view.html.indexOf('class="ssxResults"'));
+      expect(view.html).toContain("tokens: planning 331761, synthesis 1624, total 333385");
+      expect(view.html).toContain('class="ssxHistoryItem"');
+      for (const leak of ["passage body", "embedding", fakeCredentials.secretAccessKey, fakeCredentials.sessionToken, fakeCredentials.accessKeyId, upstreamUrl]) expect(view.html).not.toContain(leak);
+
+      // The file holds the normalized result only — no raw upstream payload, vectors, or credentials.
+      const stored = await readFile(first.historyFile, "utf8");
+      expect(JSON.parse(stored).entries).toHaveLength(1);
+      expect(JSON.parse(stored).entries[0]).toMatchObject({ query: "which session created the OpenSearch domain for pi sessions", mode: "AGENTIC", synthesize: true, result: { citations: [0, 1] } });
+      for (const leak of ["passage body", "embedding", "0.1,0.2", fakeCredentials.secretAccessKey, fakeCredentials.sessionToken, upstreamUrl]) expect(stored).not.toContain(leak);
+
+      // A brand-new host (server restart / another session) lists the entry and restores it with no upstream call.
+      const second = await host();
+      const listed = await second.invoke({});
+      const id = JSON.parse(/data-web-action="history-open" data-web-payload='([^']+)'/.exec(listed.html)![1].replace(/&quot;/g, '"')).id;
+      const restored = await second.invoke({ action: "history-open", payload: { id } });
+      expect(received).toHaveLength(1);
+      expect(restored.html).toContain("The domain was created by <strong>this session</strong> <sup");
+      expect(restored.html).toContain('value="which session created the OpenSearch domain for pi sessions"');
+      expect(restored.html).toContain('<option value="AGENTIC" selected>');
+    } finally {
+      respond = () => ({ status: 200, body: JSON.stringify(upstreamFixture) });
+    }
   });
 
   it("renders an explicit credentials-expired state on 403 without leaking the token", async () => {
