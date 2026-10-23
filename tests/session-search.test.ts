@@ -544,6 +544,8 @@ describe("extension wiring", () => {
     const restored = await panel.render({ action: "history-open", payload: { id: firstId } });
     expect(calls).toBe(2);
     expect(restored.html).toContain("Answer 1 <sup");
+    // A single-turn entry restores its thread without pre-ticking "Continue conversation".
+    expect(restored.html).toMatch(/<input type="checkbox" name="continue" value="1">/);
     expect(restored.html).toContain('value="first question"');
     expect(restored.html).toContain('<option value="AGENTIC" selected>');
     expect(restored.html).toMatch(new RegExp(`data-web-payload='&quot;id&quot;:&quot;${firstId}&quot;}' aria-current="true"`.replace("'&quot;", "'{&quot;")));
