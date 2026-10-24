@@ -645,17 +645,17 @@ function formatRelative(iso: string, now = Date.now()) {
 const panelStyles = `
 <style>
 .ssx { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; height: 100%; min-height: 320px; font-size: 13.5px; }
-.ssx .ssxHead { display: flex; align-items: center; gap: 8px; padding: 0 0 8px; border-bottom: 1px solid var(--border); }
+.ssx .ssxHead { position: relative; display: flex; align-items: center; gap: 8px; padding: 0 0 8px; border-bottom: 1px solid var(--border); }
 .ssx .ssxHeadMain { display: grid; gap: 2px; flex: 1 1 auto; min-width: 0; }
 .ssx .ssxHeadTitle { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; line-height: 1.3; }
 .ssx .ssxHeadMeta { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ssx .ssxThreads { position: relative; flex: none; }
+.ssx .ssxThreads { position: static; flex: none; }
 .ssx .ssxThreads summary { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; box-sizing: border-box; padding: 4px 9px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; list-style: none; }
 .ssx .ssxThreads summary:hover { color: var(--text); border-color: var(--accent); }
 .ssx .ssxThreads summary::-webkit-details-marker { display: none; }
 .ssx .ssxThreads summary::after { content: "▾"; }
 .ssx .ssxThreads[open] summary::after { content: "▴"; }
-.ssx .ssxThreadList { position: absolute; z-index: 5; top: calc(100% + 4px); right: 0; display: grid; gap: 2px; width: min(360px, 80vw); max-height: 320px; margin: 0; padding: 6px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.35); list-style: none; }
+.ssx .ssxThreadList { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; right: 0; display: grid; gap: 2px; max-height: 320px; box-sizing: border-box; margin: 0; padding: 6px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.35); list-style: none; }
 .ssx .ssxThreadList li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
 .ssx .ssxThreadItem { display: grid; gap: 2px; width: 100%; height: auto; min-height: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .ssx .ssxThreadItem:hover { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
