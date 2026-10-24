@@ -42,8 +42,6 @@ export const SEARCH_TIMEOUT_MS = 180_000;
 export const MAX_THREADS = 50;
 /** Search turns usually answer well inside this window; longer ones render a spinner and finish via update(). */
 const INLINE_WAIT_MS = 1_500;
-/** While a turn runs, the panel repaints this often so the elapsed time keeps moving. */
-const RUNNING_TICK_MS = 5_000;
 const MAX_QUERY_CHARS = 2_000;
 const MAX_ANSWER_CHARS = 8_000;
 const SYNTHESIS_OPTIONS = { maxTokens: 600, temperature: 0, responseFormat: "MARKDOWN" } as const;
@@ -770,10 +768,10 @@ function renderJob(job: SearchJob, tracesUrl: string | undefined, now: number) {
   let body = "";
   if (job.state === "running") {
     const payload = escapeHtml(JSON.stringify({ jobId: job.id }));
-    const elapsed = Math.max(0, Math.round((now - job.startedAt) / 1000));
+    // No periodic repaint while running: the host blanks the panel on every update(), which would flash.
     body = `<div class="ssxStatus" role="status" tabindex="-1" autofocus>
       <span class="ssxSpinner" aria-hidden="true"></span>
-      <span>${job.kind === "ask" ? "Thinking" : "Searching"}… <span class="ssxElapsed">${elapsed}s</span>${job.kind === "ask" ? " <span class=\"ssxThreadMeta\">(answers usually take 30–90 s)</span>" : ""}</span>
+      <span>${job.kind === "ask" ? "Thinking…" : "Searching…"}${job.kind === "ask" ? " <span class=\"ssxThreadMeta\">answers usually take 30–90 s</span>" : ""}</span>
       <button class="webPanelButton ssxCancel" type="button" data-web-action="cancel" data-web-payload='${payload}'>Cancel</button>
     </div>`;
   } else if (job.state === "error" && job.error) {
@@ -900,7 +898,6 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
       function startJob(query: string, kind: TurnKind, threadId: string): SearchJob {
         const job: SearchJob = { id: `job-${++jobCounter}`, threadId, kind, query, startedAt: Date.now(), controller: new AbortController(), state: "running" };
         state.job = job;
-        const tick = setInterval(() => { if (job.state === "running" && !job.inlineWait) web.update(PANEL_KEY); }, RUNNING_TICK_MS);
         void (async () => {
           try {
             const result = await search(await currentConfig(), { intent: query, kind, threadId }, job.controller.signal);
@@ -914,8 +911,6 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
           } catch (error) {
             if (job.controller.signal.aborted) job.state = "cancelled";
             else { job.state = "error"; job.error = error instanceof SearchError ? error : new SearchError(error instanceof Error ? error.message : String(error), "network"); }
-          } finally {
-            clearInterval(tick);
           }
           // Skip the repaint when the result is painted by the originating render() or the cancel action already repainted.
           if (state.job === job && job.state !== "cancelled" && !job.inlineWait) web.update(PANEL_KEY);

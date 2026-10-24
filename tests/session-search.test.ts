@@ -440,12 +440,12 @@ describe("panel rendering", () => {
     expect(markup(empty)).not.toContain("ssxUser");
   });
 
-  it("shows the live turn while running (locked composer, Cancel, elapsed), then error and cancelled states", () => {
+  it("shows the live turn while running (locked composer, Cancel), then error and cancelled states", () => {
     const job = { id: "job-1", threadId: THREAD, kind: "ask" as const, query: "what engine version did it confirm?", startedAt: now - 12_000, controller, state: "running" as const };
     const running = renderPanel({ threadId: THREAD, threads: [thread], kind: "ask", job }, now).html;
     expect(running).toContain('<div class="ssxUser" role="group" aria-label="Question">what engine version did it confirm?</div>');
     expect(running).toContain("Thinking…");
-    expect(running).toContain('<span class="ssxElapsed">12s</span>');
+    expect(running).toContain("answers usually take 30–90 s");
     expect(running).toContain('data-web-action="cancel"');
     expect(running).toContain('class="ssxSpinner"');
     // Focus lands on the status element, not a form control, so update() can repaint when the job finishes.
