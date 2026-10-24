@@ -544,22 +544,31 @@ about your indexed pi-web session history and links every cited session back to
 its page. Its launcher is the top-right header icon (the `session-search` glyph —
 a magnifying glass peeking out of a chat bubble — also listed in the FAB menu).
 
-The panel is a **thread**: a scrolling timeline of turns with the composer pinned
-at the bottom. Each turn shows your full question in a user bubble, then an
-assistant bubble with the API's Markdown answer (rendered through a sanitizing
-subset, with inline `[n]` citations), a **Sessions** list (title · project · date ·
-passage count · *Open session*), and a muted footer: mode, elapsed time, token
-usage, and the upstream request id (`x-amzn-RequestId`) with a copy button and an
-optional **Open traces** link. The composer has one input and a two-way control:
-**Ask** (default — `AGENTIC` retrieval with synthesis, `retrievalOptions.maxTurns`
-6, five sessions) or **Search** (`SIMPLE`, ten sessions, list only, sub-second).
+The panel is a **thread**: a sticky header, a scrolling timeline of turns, and
+the composer pinned at the bottom. The header titles the thread by its first
+question (one line, full text on hover), shows when it started and how many
+turns it has, offers a **Switch thread** dropdown (threads listed by first
+question and relative time, each deletable), and a **+ New thread** button.
+Each turn is one card with explicit labels: a **You asked** header carrying the
+full question (left-aligned, wrapping, never clipped) and its relative time;
+then, for Ask turns, an **Answer** section (the API's Markdown rendered through
+a sanitizing subset, with inline `[n]` citations) followed by **Matching
+sessions (n)** numbered to match the citations (title · project · date · passage
+count · *Open session*); Search turns instead head their list `Results for "…"`
+and have no Answer section. A muted footer closes the card: mode, elapsed time,
+token usage, and the upstream request id (`x-amzn-RequestId`) with a copy
+button and an optional **Open traces** link. A thin divider separates turns, and
+opening the panel scrolls the newest turn's **You asked** header into view. The
+composer has one input and a two-way control with hover help: **Ask** (default —
+`AGENTIC` retrieval with synthesis, `retrievalOptions.maxTurns` 6, five
+sessions) or **Search** (`SIMPLE`, ten sessions, list only, sub-second).
 Every turn of a thread is sent under the same API conversation id
 (`sessionId`), so a follow-up such as "what engine version did it confirm?" is
-resolved against the earlier answers; **New thread** mints a fresh id. While a
-turn runs, the user bubble appears immediately, the assistant bubble shows a
-spinner, elapsed time and **Cancel**, and the composer is locked until it
-finishes (180 s upper bound). Expired credentials render an explicit error with
-the refresh command you configure.
+resolved against the earlier answers; **+ New thread** mints a fresh id. While a
+turn runs, its card appears immediately with the question, a spinner, and
+**Cancel**, and the composer is locked until it finishes (180 s upper bound).
+Expired credentials render an explicit error with the refresh command you
+configure.
 
 Requests are SigV4-signed on the server from a named profile in
 `~/.aws/credentials`; the browser only receives titles, projects, dates, session
@@ -569,7 +578,7 @@ credentials, passages, or vectors. Threads persist in
 or `~/.pi/agent/session-search-threads.json`, owner-only, newest 50), with a
 one-time migration from the previous version's flat `session-search-history.json`.
 Reopening the panel shows the most recent thread with all of its turns; the
-**Threads** picker switches between threads and deletes them.
+**Switch thread** dropdown switches between threads and deletes them.
 
 Configure it in Settings → **Session search**, or seed those values with
 `PI_WEB_SESSION_SEARCH_ENDPOINT`, `PI_WEB_SESSION_SEARCH_PROFILE`,

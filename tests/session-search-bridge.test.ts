@@ -140,7 +140,8 @@ describe("session-search extension through the pi-web contribution bridge", () =
     const { invoke, emitted } = await host();
     const idle = await invoke({});
     expect(idle.html).toContain('name="query"');
-    expect(idle.html).toContain("No threads yet");
+    expect(idle.html).toContain("Ask a question about your sessions — follow-ups in this thread keep the context.");
+    expect(idle.html).toContain('<div class="ssxHeadTitle" title="New thread">New thread</div>');
 
     const view = await invoke({ action: "send", fields: { query: "which session created the OpenSearch domain for pi sessions", kind: "search" } });
     expect(view.title).toBe("Session search");
@@ -158,7 +159,7 @@ describe("session-search extension through the pi-web contribution bridge", () =
     await expect(verifySignature(received[0], "us-west-2", "aisearch")).resolves.toBe(false);
 
     // The browser gets the question, titles, projects, dates, links, counts, usage and request id — nothing else.
-    expect(view.html).toContain('aria-label="Question">which session created the OpenSearch domain for pi sessions</div>');
+    expect(view.html).toContain('<p class="ssxQuestion">which session created the OpenSearch domain for pi sessions</p>');
     expect(view.html.match(/class="ssxHit"/g)).toHaveLength(3);
     expect(view.html).toContain("Create the pi sessions OpenSearch domain");
     expect(view.html).toContain('<a href="/?sessionId=01a13ce5-9ebc-716c-be1c-ec84cf90e58b">Open session</a>');
@@ -168,7 +169,9 @@ describe("session-search extension through the pi-web contribution bridge", () =
     expect(view.html).toContain("<span>Search · SIMPLE</span>");
     expect(view.html).toContain("tokens 33 (planning 11, synthesis 22)");
     expect(view.html).toContain('<code class="ssxReqId" title="Request id">upstream-req-1</code>');
+    expect(view.html).toContain('Results for <span class="ssxLabelText">“which session created the OpenSearch domain for pi sessions”</span> (3)');
     expect(view.html).not.toContain('class="ssxAnswer"');
+    expect(view.html).not.toContain('aria-label="Answer"');
     expect(view.html).not.toContain("Open traces");
     for (const leak of ["passage body", "embedding", "0.1,0.2", fakeCredentials.secretAccessKey, fakeCredentials.sessionToken, fakeCredentials.accessKeyId, "aws4_request"]) {
       expect(view.html).not.toContain(leak);
@@ -212,14 +215,14 @@ describe("session-search extension through the pi-web contribution bridge", () =
       // Follow-up in the same thread reuses the conversation id and renders both turns.
       const followUp = await first.invoke({ action: "send", fields: { query: "what engine version did it confirm?", kind: "ask" } });
       expect(JSON.parse(received[1].body).sessionId).toBe(body.sessionId);
-      expect(followUp.html).toContain('aria-label="Question">which session created the OpenSearch domain for pi sessions</div>');
-      expect(followUp.html).toContain('aria-label="Question">what engine version did it confirm?</div>');
+      expect(followUp.html).toContain('<p class="ssxQuestion">which session created the OpenSearch domain for pi sessions</p>');
+      expect(followUp.html).toContain('<p class="ssxQuestion">what engine version did it confirm?</p>');
       expect(followUp.html).toContain("(re: what engine version did it confirm?)");
       expect(followUp.html).toContain("2 turns");
 
       // New thread mints a different conversation id.
       const fresh = await first.invoke({ action: "new" });
-      expect(fresh.html).not.toContain("what engine version did it confirm?</div>");
+      expect(fresh.html).not.toContain("what engine version did it confirm?</p>");
       await first.invoke({ action: "send", fields: { query: "unrelated question", kind: "ask" } });
       expect(JSON.parse(received[2].body).sessionId).toMatch(/^[0-9a-f-]{36}$/);
       expect(JSON.parse(received[2].body).sessionId).not.toBe(body.sessionId);
@@ -240,11 +243,11 @@ describe("session-search extension through the pi-web contribution bridge", () =
       const second = await host();
       const opened = await second.invoke({});
       expect(received).toHaveLength(3);
-      expect(opened.html).toContain('aria-label="Question">unrelated question</div>');
-      expect(opened.html).not.toContain("what engine version did it confirm?</div>");
-      expect(opened.html).toContain("Threads <span>(2)</span>");
+      expect(opened.html).toContain('<p class="ssxQuestion">unrelated question</p>');
+      expect(opened.html).not.toContain("what engine version did it confirm?</p>");
+      expect(opened.html).toContain('title="2 saved threads">Switch thread</summary>');
       const switched = await second.invoke({ action: "thread-open", payload: { id: body.sessionId } });
-      expect(switched.html).toContain("what engine version did it confirm?</div>");
+      expect(switched.html).toContain("what engine version did it confirm?</p>");
       expect(switched.html).toContain("The domain was created by <strong>this session</strong> <sup");
       await second.invoke({ action: "send", fields: { query: "and the instance type?", kind: "ask" } });
       expect(JSON.parse(received[3].body).sessionId).toBe(body.sessionId);
@@ -263,9 +266,9 @@ describe("session-search extension through the pi-web contribution bridge", () =
     const { invoke, historyFile } = await host();
     const opened = await invoke({});
     expect(received).toHaveLength(0);
-    expect(opened.html).toContain("Threads <span>(2)</span>");
-    expect(opened.html).toContain('aria-label="Question">who created the domain?</div>');
-    expect(opened.html).toContain('aria-label="Question">what project was it in?</div>');
+    expect(opened.html).toContain('title="2 saved threads">Switch thread</summary>');
+    expect(opened.html).toContain('<p class="ssxQuestion">who created the domain?</p>');
+    expect(opened.html).toContain('<p class="ssxQuestion">what project was it in?</p>');
     expect(opened.html).toContain("In <strong>pi-web-origin</strong> <sup");
     expect(opened.html).toContain('<a href="/?sessionId=01a13ce5-9ebc-716c-be1c-ec84cf90e58b">Open session</a>');
     const stored = JSON.parse(await readFile(historyFile, "utf8"));
@@ -284,7 +287,7 @@ describe("session-search extension through the pi-web contribution bridge", () =
     try {
       const { invoke } = await host();
       const view = await invoke({ action: "send", fields: { query: "anything", kind: "ask" } });
-      expect(view.html).toContain('aria-label="Question">anything</div>');
+      expect(view.html).toContain('<p class="ssxQuestion">anything</p>');
       expect(view.html).toContain('role="alert"');
       expect(view.html).toContain('AWS credentials for profile &quot;integration&quot; were rejected (HTTP 403)');
       expect(view.html).toContain("my-refresh --profile integration --once");

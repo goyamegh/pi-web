@@ -390,14 +390,23 @@ describe("panel rendering", () => {
   ] };
   const now = Date.parse("2026-10-23T02:30:00.000Z");
 
-  it("renders the thread as question/answer bubbles with full questions, citations, sessions, and a footer with the request id", () => {
+  it("renders one labelled card per turn: \"You asked\" + full question, Answer or Results heading, numbered matching sessions, and a footer with the request id", () => {
     const html = renderPanel({ threadId: THREAD, threads: [thread], kind: "ask", tracesUrl: "https://traces.example/{requestId}" }, now).html;
-    expect(html).toContain(`<div class="ssxUser" role="group" aria-label="Question">${longQuestion}</div>`);
-    expect(html).toContain('<div class="ssxUserMeta" title="2026-10-23 01:00 UTC">2 h ago</div>');
+    expect(html).toContain(`<div class="ssxAsked" role="group" aria-label="You asked"><div class="ssxLabel">You asked<span class="ssxWhen" title="2026-10-23 01:00 UTC">2 h ago</span></div><p class="ssxQuestion">${longQuestion}</p></div>`);
+    expect(html).toContain('<article class="ssxTurn" aria-label="Turn 1"><div class="ssxCard"><div class="ssxAsked"');
+    expect(html).toContain('<article class="ssxTurn" aria-label="Turn 2">');
+    // Sticky thread header: the first question is the title, with when it started and how many turns it has.
+    expect(html).toContain(`<div class="ssxHeadTitle" title="${longQuestion}">${longQuestion}</div>`);
+    expect(html).toContain('<div class="ssxHeadMeta" title="started 2026-10-23 01:00 UTC">started 2 h ago · 2 turns</div>');
+    expect(html).toMatch(/<button class="webPanelButton ssxNew" type="button" data-web-action="new" title="[^"]+">\+ New thread<\/button>/);
+    expect(html).toContain('<summary aria-label="Switch thread" title="1 saved thread">Switch thread</summary>');
+    expect(html).not.toContain("Threads <span>");
+    // Ask turn: a labelled Answer section, then "Matching sessions (n)" numbered to match the [n] citations.
+    expect(html).toContain('<section class="ssxSection" aria-label="Answer"><div class="ssxLabel">Answer</div><div class="ssxAnswer">');
+    expect(html).toContain('<div class="ssxLabel ssxSessionsLabel">Matching sessions (3)</div>');
     expect(html).toContain("The <strong>domain</strong> <sup");
     expect(html).toContain('<sup class="ssxCite" title="Create the pi sessions domain">[1]</sup>');
     expect(html).toContain('<sup class="ssxCite" title="Untitled session">[3]</sup>');
-    expect(html).toContain('<div class="ssxSessionsLabel">Sessions</div>');
     expect(html.match(/class="ssxHit"/g)).toHaveLength(6);
     expect(html).toContain('<a href="/?sessionId=01a13ce5-9ebc-716c-be1c-ec84cf90e58b">Open session</a>');
     expect(html).toContain('<span class="ssxProject">pi-web-origin</span>');
@@ -410,19 +419,23 @@ describe("panel rendering", () => {
     expect(html).toContain('<code class="ssxReqId" title="Request id">req-render-1</code>');
     expect(html).toContain('data-copy="req-render-1" aria-label="Copy request id"');
     expect(html).toContain('<a href="https://traces.example/req-render-1" target="_blank" rel="noopener noreferrer">Open traces</a>');
-    // Search turns render the list only, never an answer; the question is escaped.
-    expect(html).toContain("plain list &lt;b&gt;");
+    // Search turns render `Results for "…"` and the list only, never an Answer section; the question is escaped.
+    expect(html).toContain('<p class="ssxQuestion">plain list &lt;b&gt;</p>');
+    expect(html).toContain('<div class="ssxLabel ssxSessionsLabel">Results for <span class="ssxLabelText">“plain list &lt;b&gt;”</span> (3)</div>');
+    expect(html.match(/<section class="ssxSection" aria-label="Answer">/g)).toHaveLength(1);
+    expect(html).toContain('<div class="ssxReply" role="group" aria-label="Results">');
     expect(html).not.toContain("ignored for search turns");
     expect(html).toContain("<span>Search · SIMPLE</span>");
     expect(html).toContain("<span>0.6s</span>");
     expect(html.match(/class="ssxAnswer"/g)).toHaveLength(1);
-    // Oldest turn first in the DOM; the trailing anchor image scrolls the timeline to the newest turn on load.
+    // Oldest turn first in the DOM; the trailing anchor image scrolls the newest turn's "You asked" header to the top of the view on load.
     expect(timeline(html).indexOf("plain list")).toBeGreaterThan(timeline(html).indexOf(longQuestion));
-    expect(timeline(html)).toMatch(/<img class="ssxAnchor" alt="" aria-hidden="true" src="data:image\/gif;base64,[A-Za-z0-9+/=]+" onload="var t=this\.parentElement,f=function\(\)\{t\.scrollTop=t\.scrollHeight\};f\(\);setTimeout\(f,250\);setTimeout\(f,700\)"><\/div><form/);
-    // Thread picker lists the thread as current; composer is live with Ask selected.
+    expect(timeline(html)).toMatch(/<img class="ssxAnchor" alt="" aria-hidden="true" src="data:image\/gif;base64,[A-Za-z0-9+/=]+" onload="var t=this\.parentElement,f=function\(\)\{var l=t\.querySelector\('\.ssxTurn:last-of-type'\);if\(l\)t\.scrollTop\+=l\.getBoundingClientRect\(\)\.top-t\.getBoundingClientRect\(\)\.top-2\};f\(\);setTimeout\(f,250\);setTimeout\(f,700\)"><\/div><form/);
+    // Thread switcher lists the thread (first question + relative time) as current; composer is live with Ask selected.
     expect(html).toContain('aria-current="true"');
-    expect(html).toContain("1 turns · 30 min ago".replace("1 turns", "2 turns"));
-    expect(html).toMatch(/<input type="search" name="query" placeholder="Search or ask your sessions…"[^>]* autofocus>/);
+    expect(html).toContain('<span class="ssxThreadMeta">30 min ago · 2 turns</span>');
+    expect(html).toMatch(/<input type="search" name="query" placeholder="Ask a question or search your sessions…"[^>]* autofocus>/);
+    expect(html).toMatch(/<label title="Ask: [^"]+"><input type="radio" name="kind" value="ask" checked>Ask<\/label><label title="Search: [^"]+"><input type="radio" name="kind" value="search">Search<\/label>/);
     expect(html).toContain('<input type="radio" name="kind" value="ask" checked>');
     expect(html).toContain('<button class="webPanelButton ssxSend" type="submit" data-web-action="send">Send</button>');
     expect(html).not.toContain("Continue conversation");
@@ -438,15 +451,18 @@ describe("panel rendering", () => {
     expect(html).not.toContain("Open traces");
     expect(html).toContain('<input type="radio" name="kind" value="search" checked>');
     const empty = renderPanel({ threadId: "fresh", threads: [], kind: "ask" }, now).html;
-    expect(empty).toContain("Ask a question about your indexed pi-web sessions");
-    expect(empty).toContain("No threads yet");
-    expect(markup(empty)).not.toContain("ssxUser");
+    expect(empty).toContain('<div class="ssxEmpty">Ask a question about your sessions — follow-ups in this thread keep the context.</div>');
+    expect(empty).toContain('<div class="ssxHeadTitle" title="New thread">New thread</div>');
+    expect(empty).toContain('<div class="ssxHeadMeta">nothing asked yet</div>');
+    expect(markup(empty)).not.toContain("ssxThreads");
+    expect(markup(empty)).not.toContain("ssxAsked");
   });
 
   it("shows the live turn while running (locked composer, Cancel), then error and cancelled states", () => {
     const job = { id: "job-1", threadId: THREAD, kind: "ask" as const, query: "what engine version did it confirm?", startedAt: now - 12_000, controller, state: "running" as const };
     const running = renderPanel({ threadId: THREAD, threads: [thread], kind: "ask", job }, now).html;
-    expect(running).toContain('<div class="ssxUser" role="group" aria-label="Question">what engine version did it confirm?</div>');
+    expect(running).toContain('<article class="ssxTurn ssxLive" aria-label="Turn 3"><div class="ssxCard"><div class="ssxAsked" role="group" aria-label="You asked"><div class="ssxLabel">You asked<span class="ssxWhen" title="2026-10-23 02:29 UTC">just now</span></div><p class="ssxQuestion">what engine version did it confirm?</p></div>');
+    expect(running).toContain("started 2 h ago · 3 turns");
     expect(running).toContain("Thinking…");
     expect(running).toContain("answers usually take 30–90 s");
     expect(running).toContain('data-web-action="cancel"');
@@ -457,9 +473,9 @@ describe("panel rendering", () => {
     expect(running).toMatch(/<input type="search" name="query"[^>]* disabled>/);
     expect(running).toContain('<input type="radio" name="kind" value="ask" checked disabled>');
     expect(running).toContain('data-web-action="send" disabled>Send</button>');
-    expect(running).toContain('data-web-action="new" disabled>New thread</button>');
+    expect(running).toMatch(/data-web-action="new" title="[^"]+" disabled>\+ New thread<\/button>/);
     // The live turn sits at the bottom, after the stored turns.
-    expect(timeline(running).indexOf("what engine version did it confirm?</div>")).toBeGreaterThan(timeline(running).indexOf("plain list"));
+    expect(timeline(running).indexOf("what engine version did it confirm?</p>")).toBeGreaterThan(timeline(running).indexOf("plain list"));
 
     const error = renderPanel({ threadId: THREAD, threads: [thread], kind: "ask", job: { ...job, state: "error", error: new SearchError("creds <expired>", "credentials", "req-err") } }, now).html;
     expect(error).toContain('<div class="ssxError" role="alert">creds &lt;expired&gt;</div>');
@@ -471,7 +487,7 @@ describe("panel rendering", () => {
     expect(markup(cancelled)).not.toContain("ssxSpinner");
     // A job that belongs to another thread is not drawn into this one.
     const elsewhere = renderPanel({ threadId: "other-thread-1", threads: [thread], kind: "ask", job }, now).html;
-    expect(timeline(elsewhere)).not.toContain("what engine version did it confirm?</div>");
+    expect(timeline(elsewhere)).not.toContain("what engine version did it confirm?</p>");
     expect(elsewhere).toMatch(/<input type="search" name="query"[^>]* disabled>/);
   });
 });
@@ -515,10 +531,12 @@ describe("extension wiring", () => {
     expect(contributions.get(`${PANEL_KEY}-launcher`)).toMatchObject({ slot: "fab", opens: PANEL_KEY });
     expect(contributions.get(`${PANEL_KEY}-header`).render()).toEqual({ effects: [{ type: "open-panel", key: PANEL_KEY }] });
 
-    expect((await panel.render()).html).toContain("Ask a question about your indexed pi-web sessions");
+    expect((await panel.render()).html).toContain("Ask a question about your sessions — follow-ups in this thread keep the context.");
     const view = await panel.render({ action: "send", fields: { query: "  which session created the domain  ", kind: "search" } });
     expect(view.title).toBe("Session search");
-    expect(view.html).toContain('aria-label="Question">which session created the domain</div>');
+    expect(view.html).toContain('<p class="ssxQuestion">which session created the domain</p>');
+    expect(view.html).toContain('Results for <span class="ssxLabelText">“which session created the domain”</span> (3)');
+    expect(view.html).not.toContain('aria-label="Answer"');
     expect(view.html).toContain("Open session");
     expect(view.html).toContain("<span>Search · SIMPLE</span>");
     expect(view.html).not.toContain('class="ssxAnswer"');
@@ -548,15 +566,17 @@ describe("extension wiring", () => {
 
     const second = await panel.render({ action: "send", fields: { query: "what engine version did it confirm?", kind: "ask" } });
     expect(bodies[1].sessionId).toBe("thread-1");
-    expect(second.html).toContain('aria-label="Question">who created the domain?</div>');
-    expect(second.html).toContain('aria-label="Question">what engine version did it confirm?</div>');
+    expect(second.html).toContain('<p class="ssxQuestion">who created the domain?</p>');
+    expect(second.html).toContain('<p class="ssxQuestion">what engine version did it confirm?</p>');
+    expect(second.html).toContain('<div class="ssxHeadTitle" title="who created the domain?">who created the domain?</div>');
     expect(second.html).toContain("Turn 2 about what engine version");
     expect(second.html).toContain("2 turns");
 
     const fresh = await panel.render({ action: "new" });
-    expect(fresh.html).toContain("Ask a question about your indexed pi-web sessions");
-    expect(fresh.html).not.toContain("who created the domain?</div>");
-    expect(fresh.html).toContain("Threads <span>(1)</span>");
+    expect(fresh.html).toContain("Ask a question about your sessions — follow-ups in this thread keep the context.");
+    expect(fresh.html).not.toContain("who created the domain?</p>");
+    expect(fresh.html).toContain('title="1 saved thread">Switch thread</summary>');
+    expect(fresh.html).toContain('<div class="ssxHeadTitle" title="New thread">New thread</div>');
     await panel.render({ action: "send", fields: { query: "unrelated", kind: "ask" } });
     expect(bodies[2].sessionId).toBe("thread-2");
 
@@ -567,15 +587,15 @@ describe("extension wiring", () => {
 
     // Switching threads shows that thread's turns and continues it under its id; deleting falls back to the latest.
     const switched = await panel.render({ action: "thread-open", payload: { id: "thread-1" } });
-    expect(switched.html).toContain("what engine version did it confirm?</div>");
-    expect(switched.html).not.toContain("unrelated</div>");
+    expect(switched.html).toContain("what engine version did it confirm?</p>");
+    expect(switched.html).not.toContain("unrelated</p>");
     await panel.render({ action: "send", fields: { query: "and the instance type?", kind: "ask" } });
     expect(bodies[3].sessionId).toBe("thread-1");
     const deleted = await panel.render({ action: "thread-delete", payload: { id: "thread-1" } });
-    expect(deleted.html).toContain("unrelated</div>");
+    expect(deleted.html).toContain("unrelated</p>");
     expect(deleted.html).not.toContain("instance type");
     expect(JSON.parse(await readFile(historyFile, "utf8")).threads).toHaveLength(1);
-    expect((await panel.render({ action: "thread-open", payload: { id: "missing" } })).html).toContain("unrelated</div>");
+    expect((await panel.render({ action: "thread-open", payload: { id: "missing" } })).html).toContain("unrelated</p>");
   });
 
   it("opens on the most recent thread (never a stale single result), and a fresh host reads the same file", async () => {
@@ -598,10 +618,11 @@ describe("extension wiring", () => {
 
     const other = await makeHost();
     const opened = await other.render();
-    expect(opened.html).toContain("newest thread question</div>");
+    expect(opened.html).toContain("newest thread question</p>");
     expect(opened.html).toContain("About newest thread question <sup");
-    expect(opened.html).not.toContain("older thread question</div>");
-    expect(opened.html).toContain("Threads <span>(2)</span>");
+    expect(opened.html).not.toContain("older thread question</p>");
+    expect(opened.html).toContain('title="2 saved threads">Switch thread</summary>');
+    expect(opened.html.match(/class="ssxThreadItem"/g)).toHaveLength(2);
     expect(markup(opened.html)).not.toContain("ssxSpinner");
   });
 
@@ -647,7 +668,7 @@ describe("extension wiring", () => {
     expect(stale.html).toContain("Thinking…");
     const cancelled = await panel.render({ action: "cancel", payload: { jobId: secondJobId } });
     expect(cancelled.html).toContain(">Cancelled.</div>");
-    expect(cancelled.html).toContain("cancel me</div>");
+    expect(cancelled.html).toContain("cancel me</p>");
     expect(cancelled.html).not.toContain('class="ssxSpinner"');
     expect(markup(cancelled.html)).not.toContain("disabled");
   });
@@ -655,14 +676,14 @@ describe("extension wiring", () => {
   it("surfaces expired credentials as an explicit error bubble that keeps the question and the request id", async () => {
     const { panel } = await boot((async () => jsonResponse({ message: "ExpiredToken" }, { status: 403 })) as typeof fetch);
     const view = await panel.render({ action: "send", fields: { query: "anything", kind: "ask" } });
-    expect(view.html).toContain('aria-label="Question">anything</div>');
+    expect(view.html).toContain('<p class="ssxQuestion">anything</p>');
     expect(view.html).toContain('role="alert"');
     expect(view.html).toContain("probably expired");
     expect(view.html).toContain("refresh-creds --once");
     expect(view.html).toContain("req-0001-abcd");
     expect(view.html).not.toContain(credentials.sessionToken);
-    // Nothing failed is persisted; the thread stays empty.
-    expect(view.html).toContain("No threads yet");
+    // Nothing failed is persisted; no thread is saved yet.
+    expect(markup(view.html)).not.toContain("ssxThreads");
   });
 
   it("reads the traces URL from live settings", async () => {
