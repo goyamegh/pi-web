@@ -359,6 +359,10 @@ test("follow-ups reuse the thread's conversation id, New thread mints another, a
   await threads.click();
   const items = panel.locator(".ssxThreadItem");
   await expect(items).toHaveCount(2);
+  // The open dropdown stays inside the panel (it is anchored to the header, not to the small summary button).
+  const [listBox, panelBodyBox] = await Promise.all([panel.locator(".ssxThreadList").boundingBox(), panel.locator(".webPanelBody").boundingBox()]);
+  expect(listBox!.x).toBeGreaterThanOrEqual(panelBodyBox!.x - 1);
+  expect(listBox!.x + listBox!.width).toBeLessThanOrEqual(panelBodyBox!.x + panelBodyBox!.width + 1);
   await expect(items.nth(0).locator(".ssxThreadQ")).toHaveText("unrelated question in a new thread");
   await expect(items.nth(0)).toHaveAttribute("aria-current", "true");
   await expect(items.nth(1).locator(".ssxThreadQ")).toHaveText("which session created the OpenSearch domain for pi sessions");
