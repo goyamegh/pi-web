@@ -474,7 +474,8 @@ const contributionPolicies = {
   },
   panel: {
     allowedKinds: ["rendered"], viewFields: ["html"], viewBudget: 500_000, maxFields: 128,
-    descriptor: (_entry: Extract<WebContribution, { slot: "panel" }>) => ({}),
+    // `chrome: "none"` is the only non-default value; anything else keeps the host title bar.
+    descriptor: (entry: Extract<WebContribution, { slot: "panel" }>) => (entry.source.chrome === "none" ? { chrome: "none" as const } : {}),
   },
   "system-info": {
     allowedKinds: ["rendered"], viewFields: ["html"], viewBudget: 500_000,

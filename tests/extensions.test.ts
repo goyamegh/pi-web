@@ -531,6 +531,19 @@ describe("bundled extension path discovery", () => {
       .resolves.toEqual({ label: "Open notes", effects: [{ type: "open-panel", key: "notes" }] });
     ui.web.setHeaderAction("open-missing", { title: "Broken", invoke: () => ({ effects: [{ type: "open-panel", key: "nope" }] }) });
     await expect(bridge.invokeHeaderAction(session, "open-missing")).rejects.toThrow('unknown panel "nope"');
+
+    // `chrome: "none"` is the only chrome value published to the browser; omitted, "default" and junk leave the host title bar on.
+    const panelEntry = (key: string) => bridge.entries(session).webContributions.find((entry: any) => entry.key === key);
+    ui.web.setPanel("bare", { title: "Bare", chrome: "none", render: () => ({ html: "<p>own header</p>" }) });
+    ui.web.setPanel("plain", { title: "Plain", chrome: "default", render: () => ({ html: "<p>host header</p>" }) });
+    ui.web.setPanel("junk", { title: "Junk", chrome: "sometimes" as any, render: () => ({ html: "<p>host header</p>" }) });
+    expect(panelEntry("bare")).toEqual({ version: 1, key: "bare", slot: "panel", kind: "rendered", title: "Bare", label: undefined, icon: undefined, chrome: "none" });
+    expect(panelEntry("plain")).not.toHaveProperty("chrome");
+    expect(panelEntry("junk")).not.toHaveProperty("chrome");
+    expect(panelEntry("notes")).not.toHaveProperty("chrome");
+    // The generic contribute() path carries it too.
+    ui.web.contribute("bare2", { slot: "panel", kind: "rendered", title: "Bare 2", chrome: "none", render: () => ({ html: "<p>x</p>" }) });
+    expect(panelEntry("bare2")).toMatchObject({ chrome: "none" });
   });
 
   it("re-emits a footer when the same session id gets a new runtime", async () => {

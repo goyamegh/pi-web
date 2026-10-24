@@ -118,3 +118,68 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
   await expect(panel).toBeVisible();
   await expect(page.locator(".webHeaderActionPopoverBody")).toContainText("Panel opened from the header.");
 });
+
+test("a panel registered with chrome: \"none\" gets no host title bar and closes itself via data-web-action=\"close-panel\"; a default panel keeps the title bar", async ({ page }) => {
+  await page.request.post("/api/mock/state", { data: {
+    webContributions: [
+      { version: 1, key: "bare", slot: "panel", kind: "rendered", title: "Bare panel", label: "Bare", icon: "notebook-pen", chrome: "none" },
+      { version: 1, key: "plain", slot: "panel", kind: "rendered", title: "Plain panel", label: "Plain", icon: "notebook-pen" },
+      { version: 1, key: "bare-launcher", slot: "fab", kind: "static", title: "Bare panel", label: "Bare", icon: "notebook-pen", opens: "bare" },
+      { version: 1, key: "plain-launcher", slot: "fab", kind: "static", title: "Plain panel", label: "Plain", icon: "notebook-pen", opens: "plain" },
+    ],
+  } });
+  const invocations: any[] = [];
+  await page.route("**/api/web-contributions/invoke", async (route) => {
+    const input = route.request().postDataJSON();
+    invocations.push(input);
+    const own = input.key === "bare";
+    await route.fulfill({ json: {
+      ok: true,
+      title: own ? "Bare panel" : "Plain panel",
+      html: own
+        ? `<header class="ownBar" style="display:flex;justify-content:space-between"><span>My own header</span><button type="button" data-web-action="close-panel" aria-label="Close my panel">×</button></header><p>bare body</p>`
+        : `<p>plain body</p>`,
+    } });
+  });
+
+  const stateLoaded = page.waitForResponse((response) => response.url().includes("/api/state") && response.ok());
+  await page.goto("/");
+  await stateLoaded;
+  await expect(page.locator(".actionLauncherToggle")).toBeVisible();
+  const panel = page.locator("#webExtensionPanel");
+  const hostHeader = panel.locator("header.webPanelHeader");
+
+  // chrome: "none" — no host title bar, no host close button, no gap above the panel's own header.
+  await page.locator(".actionLauncherToggle").click();
+  await page.locator(".actionLauncherItem", { hasText: "Bare" }).click();
+  await expect(panel).toBeVisible();
+  await expect(panel.locator(".ownBar")).toHaveText(/My own header/);
+  await expect(hostHeader).toBeHidden();
+  await expect(panel.getByRole("button", { name: "Close panel" })).toHaveCount(0);
+  await expect(panel.getByText("Bare panel")).toBeHidden();
+  await expect(panel).toHaveClass(/webPanelChromeless/);
+  const [panelBox, barBox] = await Promise.all([panel.boundingBox(), panel.locator(".ownBar").boundingBox()]);
+  expect(barBox!.y - panelBox!.y).toBeLessThanOrEqual(2);
+  // The reserved action closes the panel on the host side and never reaches the extension.
+  const invokesBeforeClose = invocations.length;
+  await panel.getByRole("button", { name: "Close my panel" }).click();
+  await expect(panel).toBeHidden();
+  expect(invocations.length).toBe(invokesBeforeClose);
+  expect(invocations.some((input) => input.event?.action === "close-panel")).toBe(false);
+
+  // A panel without the option is unchanged: host title bar with the title and its close button.
+  await page.locator(".actionLauncherToggle").click();
+  await page.locator(".actionLauncherItem", { hasText: "Plain" }).click();
+  await expect(panel).toBeVisible();
+  await expect(hostHeader).toBeVisible();
+  await expect(panel.locator("h2")).toHaveText("Plain panel");
+  await expect(panel).not.toHaveClass(/webPanelChromeless/);
+  await panel.getByRole("button", { name: "Close panel" }).click();
+  await expect(panel).toBeHidden();
+
+  // Switching back to the chromeless panel hides the bar again.
+  await page.locator(".actionLauncherToggle").click();
+  await page.locator(".actionLauncherItem", { hasText: "Bare" }).click();
+  await expect(panel).toBeVisible();
+  await expect(hostHeader).toBeHidden();
+});

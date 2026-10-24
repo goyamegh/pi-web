@@ -70,6 +70,12 @@
 
 .webPanel[aria-busy="true"] .webPanelBody { color: var(--muted); }
 
+/* chrome: "none" — the panel's own HTML draws the top row; no host title bar and no gap above it. */
+.webPanel.webPanelChromeless { grid-template-rows: minmax(0, 1fr); }
+.webPanel.webPanelChromeless .webPanelHeader,
+.webPanelHeader[hidden] { display: none; }
+.webPanel.webPanelChromeless .webPanelBody { padding-top: 0; }
+
 .webPanelError {
   padding: 12px;
   border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border));
