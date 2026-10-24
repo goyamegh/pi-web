@@ -231,10 +231,15 @@ test("an Ask turn renders the full question, the answer with citations, the sess
   await input.fill("index pi sessions");
   await send.click();
   await expect(question).toHaveCount(2);
-  await expect(question.nth(0)).toHaveText("index pi sessions"); // newest first in the DOM…
+  await expect(question.last()).toHaveText("index pi sessions"); // newest turn last, drawn below the earlier one…
   const positions = await question.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().y));
-  expect(positions[0]).toBeGreaterThan(positions[1]); // …but drawn below the earlier turn.
-  const latest = answer.nth(0);
+  expect(positions[1]).toBeGreaterThan(positions[0]);
+  // …and the timeline is scrolled so the newest turn's answer is in view.
+  const latest = answer.last();
+  await expect(latest.locator(".ssxFooter")).toBeInViewport();
+  const timelineBox = (await panel.locator(".ssxTimeline").boundingBox())!;
+  const latestFooterBox = (await latest.locator(".ssxFooter").boundingBox())!;
+  expect(latestFooterBox.y + latestFooterBox.height).toBeLessThanOrEqual(timelineBox.y + timelineBox.height + 1);
   await expect(latest.locator(".ssxAnswer")).toHaveCount(0);
   await expect(latest.locator(".ssxHit")).toHaveCount(3);
   await expect(latest.locator(".ssxFooter")).toContainText("Search · SIMPLE");
@@ -245,13 +250,13 @@ test("an Ask turn renders the full question, the answer with citations, the sess
   // Empty and error turns stay in the thread with their question.
   await input.fill("nothing like this");
   await input.press("Enter");
-  await expect(answer.nth(0)).toContainText("No sessions matched.");
+  await expect(answer.last()).toContainText("No sessions matched.");
   await input.fill("expired credentials please");
   await input.press("Enter");
   const alert = panel.getByRole("alert");
   await expect(alert).toContainText('AWS credentials for profile "e2e" were rejected (HTTP 403)');
   await expect(alert).toContainText("refresh-e2e-creds --once");
-  await expect(question.nth(0)).toHaveText("expired credentials please");
+  await expect(question.last()).toHaveText("expired credentials please");
   await expect(panel.locator(".webPanelBody")).not.toContainText(credentials.sessionToken);
   await expect(input).toBeEnabled();
 });
@@ -268,7 +273,7 @@ test("follow-ups reuse the thread's conversation id, New thread mints another, a
   await input.fill("what engine version did it confirm?");
   await send.click();
   await expect(question).toHaveCount(2);
-  await expect(panel.locator(".ssxAnswer").nth(0)).toContainText("(re: what engine version did it confirm?)");
+  await expect(panel.locator(".ssxAnswer").last()).toContainText("(re: what engine version did it confirm?)");
   expect(requests).toHaveLength(2);
   expect(requests[0].sessionId).toMatch(/^[0-9a-f-]{36}$/);
   expect(requests[1].sessionId).toBe(requests[0].sessionId);
@@ -305,7 +310,7 @@ test("follow-ups reuse the thread's conversation id, New thread mints another, a
   await expect(items.nth(1)).toContainText("2 turns");
   await items.nth(1).click();
   await expect(question).toHaveCount(2);
-  await expect(question.nth(1)).toHaveText("which session created the OpenSearch domain for pi sessions");
+  await expect(question.first()).toHaveText("which session created the OpenSearch domain for pi sessions");
   await input.fill("and the instance type?");
   await input.press("Enter");
   await expect(question).toHaveCount(3);
@@ -315,7 +320,9 @@ test("follow-ups reuse the thread's conversation id, New thread mints another, a
   await page.reload();
   await page.locator('#headerActions .webHeaderActionButton[title="Session search"]').click();
   await expect(question).toHaveCount(3);
-  await expect(question.nth(0)).toHaveText("and the instance type?");
+  await expect(question.last()).toHaveText("and the instance type?");
+  // …scrolled to the newest turn: its footer is in view (on a short viewport the tall answer fills it).
+  await expect(panel.getByRole("group", { name: "Answer" }).last().locator(".ssxFooter")).toBeInViewport();
 
   await threads.click();
   await panel.getByRole("button", { name: "Delete thread" }).nth(0).click();

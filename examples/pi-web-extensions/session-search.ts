@@ -45,6 +45,8 @@ const INLINE_WAIT_MS = 1_500;
 const MAX_QUERY_CHARS = 2_000;
 const MAX_ANSWER_CHARS = 8_000;
 const SYNTHESIS_OPTIONS = { maxTokens: 600, temperature: 0, responseFormat: "MARKDOWN" } as const;
+/** Transparent 1×1 GIF; its onload scrolls the timeline to the newest turn (see renderPanel). */
+const SCROLL_ANCHOR_GIF = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
 export type RetrievalMode = "SIMPLE" | "AGENTIC";
 /** What the composer's segmented control offers: Ask answers, Search only lists sessions. */
@@ -659,7 +661,8 @@ const panelStyles = `
 .ssx .ssxThreadDelete { height: auto; min-height: 0; padding: 4px 6px; border: 0; background: none; color: var(--muted); font: inherit; cursor: pointer; }
 .ssx .ssxThreadDelete:hover { color: var(--danger); }
 .ssx .ssxNew { min-height: 32px; padding: 5px 10px; font-size: 12px; }
-.ssx .ssxTimeline { display: flex; flex-direction: column-reverse; justify-content: flex-end; gap: 12px; min-height: 0; overflow: auto; padding: 2px 2px 4px; overscroll-behavior: contain; }
+.ssx .ssxTimeline { display: grid; align-content: start; gap: 12px; min-height: 0; overflow: auto; padding: 2px 2px 4px; overscroll-behavior: contain; }
+.ssx .ssxAnchor { display: block; width: 1px; height: 1px; margin-top: -12px; opacity: 0; }
 .ssx .ssxTurn { display: grid; gap: 8px; }
 .ssx .ssxUser { justify-self: end; max-width: 92%; padding: 9px 12px; border-radius: 14px 14px 4px 14px; background: color-mix(in srgb, var(--accent) 22%, var(--panel-2)); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
 .ssx .ssxUserMeta { justify-self: end; margin-top: -4px; font-size: 10.5px; color: var(--muted); }
@@ -800,9 +803,12 @@ export function renderPanel(state: PanelState, now = Date.now()): PiWebPanelView
   const turns = (thread?.turns ?? []).map((turn) => `<div class="ssxTurn">${renderUser(turn.query, turn.at, now)}${renderAssistant(turn, state.tracesUrl)}</div>`);
   const job = state.job && state.job.threadId === state.threadId && state.job.state !== "done" ? renderJob(state.job, state.tracesUrl, now) : "";
   const items = [...turns, job].filter(Boolean);
-  // The timeline is a column-reverse flex box so it opens scrolled to the newest turn; DOM order is newest first.
+  // Oldest turn first. Panel HTML cannot run <script>, so a 1×1 image at the end scrolls the timeline to the
+  // newest turn when it loads (Chrome cannot scroll a column-reverse flex box to its overflowing start side).
+  // The scroll repeats briefly because the host may still be animating the panel open when the image loads.
+  const anchor = `<img class="ssxAnchor" alt="" aria-hidden="true" src="${SCROLL_ANCHOR_GIF}" onload="var t=this.parentElement,f=function(){t.scrollTop=t.scrollHeight};f();setTimeout(f,250);setTimeout(f,700)">`;
   const timeline = items.length
-    ? items.reverse().join("")
+    ? items.join("") + anchor
     : `<div class="ssxEmpty">Ask a question about your indexed pi-web sessions, or switch to Search for a plain list of matching sessions. Follow-ups in the same thread can refer back to earlier answers.</div>`;
   return {
     title: "Session search",
