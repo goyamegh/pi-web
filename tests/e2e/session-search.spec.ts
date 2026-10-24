@@ -336,7 +336,7 @@ test("while an Ask turn is in flight the composer is locked, Cancel ends it, and
   await expect(question).toHaveText("slow agentic question");
   const status = panel.getByRole("status");
   await expect(status).toContainText("Thinking…");
-  await expect(status).toContainText(/\d+s/);
+  await expect(status).toContainText("answers usually take 30–90 s");
   await expect(panel.locator(".ssxSpinner")).toBeVisible();
   await expect(input).toBeDisabled();
   await expect(send).toBeDisabled();
