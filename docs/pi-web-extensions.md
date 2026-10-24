@@ -242,6 +242,24 @@ ctx.ui.web.setPanel("notes", undefined);
 ctx.ui.web.setFabAction("notes-launcher", undefined);
 ```
 
+By default the host draws a title bar above the HTML (icon, title, close
+button). A panel that renders its own top row sets `chrome: "none"` so the host
+draws no title bar and no padding above the HTML; the markup then closes the
+panel itself with any element carrying `data-web-action="close-panel"`, a
+reserved action the host handles without calling `render()`. The `title` is
+still used by launchers and as the panel's accessible name. Panels that omit
+`chrome` (or pass `"default"`) are unchanged.
+
+```ts
+ctx.ui.web.setPanel("notes", {
+  title: "Notes",
+  chrome: "none",
+  render: () => ({ html: `<header class="notesBar">Notes
+    <button type="button" data-web-action="close-panel" aria-label="Close panel">×</button>
+  </header>…` }),
+});
+```
+
 Register a FAB launcher for a panel, or open it from a header action — or both:
 
 ```ts
@@ -544,31 +562,38 @@ about your indexed pi-web session history and links every cited session back to
 its page. Its launcher is the top-right header icon (the `session-search` glyph —
 a magnifying glass peeking out of a chat bubble — also listed in the FAB menu).
 
-The panel is a **thread**: a sticky header, a scrolling timeline of turns, and
-the composer pinned at the bottom. The header titles the thread by its first
-question (one line, full text on hover), shows when it started and how many
-turns it has, offers a **Switch thread** dropdown (threads listed by first
-question and relative time, each deletable), and a **+ New thread** button.
-Each turn is one card with explicit labels: a **You asked** header carrying the
-full question (left-aligned, wrapping, never clipped) and its relative time;
-then, for Ask turns, an **Answer** section (the API's Markdown rendered through
-a sanitizing subset, with inline `[n]` citations) followed by **Matching
-sessions (n)** numbered to match the citations (title · project · date · passage
-count · *Open session*); Search turns instead head their list `Results for "…"`
-and have no Answer section. A muted footer closes the card: mode, elapsed time,
+The panel is a **thread**: one sticky header row, a scrolling timeline of
+turns, and the composer pinned at the bottom. The panel registers with
+`chrome: "none"`, so pi-web draws no title bar of its own: the single header row
+holds the thread title (its first question, one line, full text on hover),
+"started … · k turns", a **Switch thread** dropdown (threads listed by first
+question and relative time, each deletable), **+ New thread**, and the × that
+closes the panel (`data-web-action="close-panel"`). The layout is flat: no
+nested cards. Each turn is a tinted **You asked** band carrying the full question
+(left-aligned, wrapping, never clipped) and its relative time, followed by a
+plain reply; a hairline separates turns, and matching sessions are list rows
+(title · project · date · passage count · *Open session*) with hairlines between
+them. The composer has one input and three explicit modes with one-line hover
+help — **SIMPLE** (`SIMPLE` retrieval, ten sessions, list only, sub-second),
+**AGENTIC** (`AGENTIC` retrieval, five sessions, list only, no synthesis — the
+API returns documents and no answer) and **AGENTIC + ANSWER** (default:
+`AGENTIC` retrieval with `synthesize: true`, `retrievalOptions.maxTurns` 6,
+five sessions). An AGENTIC + ANSWER turn renders an **Answer** section (the
+API's Markdown through a sanitizing subset, inline `[n]` citations) then
+**Matching sessions (AGENTIC + ANSWER) · n** numbered to match the citations;
+SIMPLE and AGENTIC turns head their list `Results (MODE) for "…" · n` and have
+no Answer section. A muted footer names the mode that ran, the elapsed time,
 token usage, and the upstream request id (`x-amzn-RequestId`) with a copy
-button and an optional **Open traces** link. A thin divider separates turns, and
-opening the panel scrolls the newest turn's **You asked** header into view. The
-composer has one input and a two-way control with hover help: **Ask** (default —
-`AGENTIC` retrieval with synthesis, `retrievalOptions.maxTurns` 6, five
-sessions) or **Search** (`SIMPLE`, ten sessions, list only, sub-second).
-Every turn of a thread is sent under the same API conversation id
-(`sessionId`), so a follow-up such as "what engine version did it confirm?" is
-resolved against the earlier answers; **+ New thread** mints a fresh id. While a
-turn runs, its card appears immediately with the question, a spinner, and
-**Cancel**, and the composer is locked until it finishes (180 s upper bound).
-Expired credentials render an explicit error with the refresh command you
-configure.
+button and an optional **Open traces** link. The chosen mode is remembered per
+thread and preselected whenever that thread is shown; a new thread starts on
+AGENTIC + ANSWER. Opening the panel scrolls the newest turn's **You asked**
+band into view. Every turn of a thread is sent under the same API conversation
+id (`sessionId`), so a follow-up such as "what engine version did it confirm?"
+is resolved against the earlier answers; **+ New thread** mints a fresh id.
+While a turn runs, its band appears immediately with the question, a spinner,
+and **Cancel**, and the composer is locked until it finishes (180 s upper
+bound). Expired credentials render an explicit error with the refresh command
+you configure.
 
 Requests are SigV4-signed on the server from a named profile in
 `~/.aws/credentials`; the browser only receives titles, projects, dates, session

@@ -7,7 +7,12 @@ type WebPanelEntry = {
   title: string;
   label: string;
   icon: string;
+  /** "none" hides the host title bar; the panel's HTML then owns its top row and closes itself via data-web-action="close-panel". */
+  chrome: "default" | "none";
 };
+
+/** Reserved action: the host closes the panel instead of invoking the extension. */
+export const CLOSE_PANEL_ACTION = "close-panel";
 
 type WebPanelView = {
   title?: string;
@@ -22,7 +27,7 @@ export type WebPanelsController = {
   isOpen(): boolean;
 };
 
-function normalizePanels(value: unknown): WebPanelEntry[] {
+export function normalizePanels(value: unknown): WebPanelEntry[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   return value.flatMap((raw): WebPanelEntry[] => {
@@ -34,7 +39,8 @@ function normalizePanels(value: unknown): WebPanelEntry[] {
     const title = typeof entry.title === "string" && entry.title.trim() ? entry.title.trim() : key;
     const label = typeof entry.label === "string" && entry.label.trim() ? entry.label.trim() : title;
     const icon = typeof entry.icon === "string" && isIconName(entry.icon) ? entry.icon : "square-pen";
-    return [{ key, title, label, icon }];
+    const chrome = entry.chrome === "none" ? "none" : "default";
+    return [{ key, title, label, icon, chrome }];
   });
 }
 
@@ -110,6 +116,10 @@ export function createWebPanels(options: {
     headingIcon.textContent = "";
     headingIcon.append(iconElement(isIconName(entry.icon) ? entry.icon : "square-pen"));
     headingText.textContent = title?.trim() || entry.title;
+    // The heading keeps labelling the panel for assistive tech even when the title bar is not drawn.
+    const chromeless = entry.chrome === "none";
+    header.hidden = chromeless;
+    panel.classList.toggle("webPanelChromeless", chromeless);
   }
 
   function renderError(error: unknown) {
@@ -173,8 +183,10 @@ export function createWebPanels(options: {
       && target.type === "submit" && target.form) return;
     event.preventDefault();
     updatePending = false;
+    const action = target.dataset.webAction || target.dataset.webPanelAction || "";
+    if (action === CLOSE_PANEL_ACTION) { panelHandle.close(); return; }
     void invoke({
-      action: target.dataset.webAction || target.dataset.webPanelAction || "",
+      action,
       payload: parsePayload(target.dataset.webPayload || target.dataset.webPanelPayload),
       fields: formFields(target.closest("form")),
     });
@@ -206,7 +218,7 @@ export function createWebPanels(options: {
     width: "480px",
     minWidth: 320,
     maxWidth: 900,
-    focusOnOpen: close,
+    focusOnOpen: () => (header.hidden ? undefined : close),
     onClose: () => { requestGeneration += 1; updatePending = false; },
   });
 

@@ -6,6 +6,10 @@
  * your question, then the API's answer with the sessions it cites. Every turn
  * of a thread is sent under the same API conversation id, so follow-ups like
  * "what engine version did it confirm?" resolve against the earlier turns.
+ * The composer offers three explicit modes — SIMPLE, AGENTIC (list only) and
+ * AGENTIC + ANSWER (default) — remembered per thread. The panel registers with
+ * `chrome: "none"` and draws its own single header row (title, thread switcher,
+ * new thread, close), so the host adds no title bar above it.
  *
  * The browser never sees AWS credentials or raw search passages: the panel is
  * server-rendered HTML, the upstream request is SigV4-signed here on the
@@ -49,13 +53,20 @@ const SYNTHESIS_OPTIONS = { maxTokens: 600, temperature: 0, responseFormat: "MAR
 const SCROLL_ANCHOR_GIF = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 
 export type RetrievalMode = "SIMPLE" | "AGENTIC";
-/** What the composer's segmented control offers: Ask answers, Search only lists sessions. */
-export type TurnKind = "ask" | "search";
+/** The composer's three explicit modes; the stored id of each turn and of each thread's current selection. */
+export type TurnMode = "simple" | "agentic" | "agentic-answer";
 
-export const TURN_PLANS: Record<TurnKind, { mode: RetrievalMode; synthesize: boolean; maxResults: number; maxTurns?: number; label: string }> = {
-  ask: { mode: "AGENTIC", synthesize: true, maxResults: 5, maxTurns: 6, label: "Ask" },
-  search: { mode: "SIMPLE", synthesize: false, maxResults: 10, label: "Search" },
+export const MODES: Record<TurnMode, { label: string; retrieval: RetrievalMode; synthesize: boolean; maxResults: number; maxTurns?: number; help: string }> = {
+  simple: { label: "SIMPLE", retrieval: "SIMPLE", synthesize: false, maxResults: 10, help: "SIMPLE: plain retrieval — lists up to 10 matching sessions, no answer (a few seconds)." },
+  agentic: { label: "AGENTIC", retrieval: "AGENTIC", synthesize: false, maxResults: 5, help: "AGENTIC: multi-step retrieval — lists up to 5 matching sessions, no answer." },
+  "agentic-answer": { label: "AGENTIC + ANSWER", retrieval: "AGENTIC", synthesize: true, maxResults: 5, maxTurns: 6, help: "AGENTIC + ANSWER: multi-step retrieval plus a synthesized answer citing up to 5 sessions (usually 30–90 s)." },
 };
+export const MODE_ORDER: TurnMode[] = ["simple", "agentic", "agentic-answer"];
+export const DEFAULT_MODE: TurnMode = "agentic-answer";
+
+export function parseMode(value: unknown): TurnMode | undefined {
+  return value === "simple" || value === "agentic" || value === "agentic-answer" ? value : undefined;
+}
 
 export type SearchConfig = {
   endpoint: string;
@@ -96,7 +107,7 @@ export type SearchResult = {
 
 export type SearchInput = {
   intent: string;
-  kind: TurnKind;
+  mode: TurnMode;
   /** API conversation id: every turn of a thread sends the same one so follow-ups resolve. */
   threadId: string;
 };
@@ -252,14 +263,14 @@ export function signRequest(input: SignInput): Record<string, string> {
 // --- Request / response shaping ----------------------------------------------
 
 export function buildSearchRequest(endpoint: string, input: SearchInput) {
-  const plan = TURN_PLANS[input.kind];
+  const plan = MODES[input.mode];
   return {
     url: endpoint,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       query: { intent: input.intent },
-      retrieval: plan.mode,
+      retrieval: plan.retrieval,
       sessionId: input.threadId,
       ...(plan.synthesize ? { synthesize: true, synthesisOptions: SYNTHESIS_OPTIONS } : {}),
       ...(plan.maxTurns ? { retrievalOptions: { maxTurns: plan.maxTurns } } : {}),
@@ -395,7 +406,7 @@ export type Turn = {
   id: string;
   /** ISO timestamp of when the turn finished. */
   at: string;
-  kind: TurnKind;
+  mode: TurnMode;
   query: string;
   result: SearchResult;
 };
@@ -405,6 +416,8 @@ export type Thread = {
   id: string;
   createdAt: string;
   updatedAt: string;
+  /** The composer mode last used in this thread; preselected whenever the thread is shown. */
+  mode: TurnMode;
   turns: Turn[];
 };
 
@@ -433,9 +446,10 @@ export function normalizeTurn(raw: unknown): Turn | undefined {
   const id = text(entry.id);
   const query = text(entry.query).slice(0, MAX_QUERY_CHARS);
   if (!id || !query || !ISO_DATE.test(text(entry.at)) || !entry.result || typeof entry.result !== "object") return undefined;
-  // Legacy entries carried `mode` instead of `kind`: AGENTIC searches were answers, SIMPLE ones lists.
-  const kind: TurnKind = entry.kind === "search" || (entry.kind === undefined && entry.mode === "SIMPLE") ? "search" : "ask";
-  return { id, at: text(entry.at), kind, query, result: normalizeStoredResult(entry.result) };
+  // Older entries carried `kind` (ask/search) or, before that, `mode` as the retrieval mode: lists were SIMPLE, answers AGENTIC.
+  const mode: TurnMode = parseMode(entry.mode)
+    ?? (entry.kind === "search" || (entry.kind === undefined && entry.mode === "SIMPLE") ? "simple" : "agentic-answer");
+  return { id, at: text(entry.at), mode, query, result: normalizeStoredResult(entry.result) };
 }
 
 export function normalizeThread(raw: unknown): Thread | undefined {
@@ -447,7 +461,8 @@ export function normalizeThread(raw: unknown): Thread | undefined {
   if (!turns.length) return undefined;
   const createdAt = ISO_DATE.test(text(entry.createdAt)) ? text(entry.createdAt) : turns[0].at;
   const updatedAt = ISO_DATE.test(text(entry.updatedAt)) ? text(entry.updatedAt) : turns[turns.length - 1].at;
-  return { id, createdAt, updatedAt, turns };
+  const mode = parseMode(entry.mode) ?? turns[turns.length - 1].mode;
+  return { id, createdAt, updatedAt, mode, turns };
 }
 
 /** Turns the previous flat "past searches" list into threads: entries sharing a conversation id form one thread, the rest become single-turn threads. */
@@ -518,13 +533,13 @@ export function createThreadStore(path: string, options: ThreadStoreOptions = {}
   return {
     path,
     load,
-    /** Appends a finished turn, creating the thread if needed, and moves the thread to the front; drops the oldest beyond the limit. */
+    /** Appends a finished turn, creating the thread if needed, and moves the thread to the front; drops the oldest beyond the limit. The thread remembers the turn's mode. */
     addTurn: (threadId: string, turn: Turn) => serial(async () => {
       const threads = await load();
       const existing = threads.find((thread) => thread.id === threadId);
       const thread: Thread = existing
-        ? { ...existing, updatedAt: turn.at, turns: [...existing.turns.filter((candidate) => candidate.id !== turn.id), turn] }
-        : { id: threadId, createdAt: turn.at, updatedAt: turn.at, turns: [turn] };
+        ? { ...existing, updatedAt: turn.at, mode: turn.mode, turns: [...existing.turns.filter((candidate) => candidate.id !== turn.id), turn] }
+        : { id: threadId, createdAt: turn.at, updatedAt: turn.at, mode: turn.mode, turns: [turn] };
       const next = [thread, ...threads.filter((candidate) => candidate.id !== threadId)].slice(0, limit);
       await save(next);
       return next;
@@ -603,7 +618,7 @@ export function renderAnswerMarkdown(markdown: string, hits: SessionHit[] = []):
 export type SearchJob = {
   id: string;
   threadId: string;
-  kind: TurnKind;
+  mode: TurnMode;
   query: string;
   startedAt: number;
   controller: AbortController;
@@ -617,8 +632,8 @@ export type PanelState = {
   /** Thread shown in the timeline; also the API conversation id for the next turn. */
   threadId: string;
   threads: Thread[];
-  /** Segmented-control position for the next turn. */
-  kind: TurnKind;
+  /** Composer mode for the next turn of the current thread (the thread's remembered mode, or the default). */
+  mode: TurnMode;
   job?: SearchJob;
   tracesUrl?: string;
 };
@@ -642,13 +657,18 @@ function formatRelative(iso: string, now = Date.now()) {
   return `${Math.round(hours / 24)} d ago`;
 }
 
+/**
+ * Flat layout: the host draws no chrome (panel `chrome: "none"`), so the only border steps between the panel
+ * edge and the content are hairline dividers — under the header, between turns, between result rows — plus
+ * the controls themselves (buttons, the composer box, the thread dropdown). Turns and rows carry no box border.
+ */
 const panelStyles = `
 <style>
-.ssx { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; height: 100%; min-height: 320px; font-size: 13.5px; }
-.ssx .ssxHead { position: relative; display: flex; align-items: center; gap: 8px; padding: 0 0 8px; border-bottom: 1px solid var(--border); }
-.ssx .ssxHeadMain { display: grid; gap: 2px; flex: 1 1 auto; min-width: 0; }
-.ssx .ssxHeadTitle { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; line-height: 1.3; }
-.ssx .ssxHeadMeta { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ssx { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; height: 100%; min-height: 320px; font-size: 13.5px; }
+.ssx .ssxHead { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 44px; padding: 6px 0 7px; border-bottom: 1px solid var(--border); }
+.ssx .ssxHeadMain { display: flex; align-items: baseline; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.ssx .ssxHeadTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; line-height: 1.3; }
+.ssx .ssxHeadMeta { flex: none; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .ssx .ssxThreads { position: static; flex: none; }
 .ssx .ssxThreads summary { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; box-sizing: border-box; padding: 4px 9px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; list-style: none; }
 .ssx .ssxThreads summary:hover { color: var(--text); border-color: var(--accent); }
@@ -665,17 +685,18 @@ const panelStyles = `
 .ssx .ssxThreadDelete { height: auto; min-height: 0; padding: 4px 6px; border: 0; background: none; color: var(--muted); font: inherit; cursor: pointer; }
 .ssx .ssxThreadDelete:hover { color: var(--danger); }
 .ssx .ssxNew { flex: none; min-height: 30px; padding: 4px 10px; font-size: 12px; white-space: nowrap; }
-.ssx .ssxTimeline { display: grid; align-content: start; min-height: 0; overflow: auto; padding: 2px 2px 4px; overscroll-behavior: contain; }
+.ssx .ssxClose { flex: none; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: 18px; line-height: 1; cursor: pointer; }
+.ssx .ssxClose:hover, .ssx .ssxClose:focus-visible { border-color: var(--border); background: var(--panel-2); color: var(--text); }
+.ssx .ssxTimeline { display: grid; align-content: start; min-height: 0; overflow: auto; padding: 0 2px 4px; overscroll-behavior: contain; }
 .ssx .ssxAnchor { display: block; width: 1px; height: 1px; opacity: 0; }
-.ssx .ssxTurn { padding: 0 0 14px; }
-.ssx .ssxTurn + .ssxTurn { padding-top: 14px; border-top: 1px solid var(--border); }
-.ssx .ssxCard { display: grid; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--panel-2) 55%, transparent); overflow: hidden; }
-.ssx .ssxAsked { display: grid; gap: 4px; padding: 10px 13px 11px; background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); border-bottom: 1px solid var(--border); }
-.ssx .ssxLabel { display: flex; align-items: baseline; gap: 8px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.ssx .ssxTurn { display: grid; gap: 8px; padding: 0 0 14px; border: 0; }
+.ssx .ssxTurn + .ssxTurn::before { content: ""; display: block; height: 1px; margin-bottom: 6px; background: var(--border); }
+.ssx .ssxAsked { display: grid; gap: 4px; padding: 9px 12px 10px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); }
+.ssx .ssxLabel { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .ssx .ssxLabel .ssxLabelText { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 .ssx .ssxWhen { font-weight: 400; letter-spacing: 0; text-transform: none; font-size: 10.5px; }
 .ssx .ssxQuestion { margin: 0; width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; color: var(--text); }
-.ssx .ssxReply { display: grid; gap: 10px; padding: 11px 13px 10px; line-height: 1.5; }
+.ssx .ssxReply { display: grid; gap: 10px; padding: 2px 4px 0; line-height: 1.5; }
 .ssx .ssxSection { display: grid; gap: 6px; }
 .ssx .ssxAnswer p, .ssx .ssxAnswer pre { margin: 0 0 6px; }
 .ssx .ssxAnswer > :last-child { margin-bottom: 0; }
@@ -684,14 +705,16 @@ const panelStyles = `
 .ssx .ssxAnswer code { font-size: 12.5px; }
 .ssx .ssxCite { font-size: 10px; color: var(--accent); margin-left: 1px; }
 .ssx ol, .ssx ul { margin: 0; padding: 0; }
-.ssx .ssxSessions { display: grid; gap: 6px; list-style: none; }
-.ssx .ssxHit { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel) 60%, transparent); }
-.ssx .ssxIndex { grid-row: 1 / span 2; align-self: start; min-width: 18px; padding: 1px 5px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-size: 11px; font-weight: 600; text-align: center; }
+.ssx .ssxSessions { display: grid; list-style: none; }
+.ssx .ssxHit { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; padding: 7px 2px; border: 0; background: none; }
+.ssx .ssxHit + .ssxHit::before { content: ""; grid-column: 1 / -1; height: 1px; margin: -7px 0 5px; background: var(--border); }
+.ssx .ssxIndex { grid-row: span 2; align-self: start; min-width: 18px; padding: 1px 5px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-size: 11px; font-weight: 600; text-align: center; }
 .ssx .ssxTitle { font-weight: 600; overflow-wrap: anywhere; }
 .ssx .ssxMeta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11.5px; color: var(--muted); }
 .ssx .ssxProject { color: var(--text); }
 .ssx .ssxMeta a, .ssx .ssxFooter a { color: var(--accent); text-decoration: underline dotted; }
-.ssx .ssxFooter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 11px; color: var(--muted); }
+.ssx .ssxFooter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding-top: 2px; font-size: 11px; color: var(--muted); }
+.ssx .ssxFooterMode { font-weight: 600; letter-spacing: .03em; }
 .ssx .ssxReqId { user-select: all; font-size: 10.5px; }
 .ssx .ssxCopy { height: auto; min-height: 0; padding: 1px 7px; border: 1px solid var(--border); border-radius: 6px; background: none; color: var(--muted); font: inherit; font-size: 10.5px; cursor: pointer; }
 .ssx .ssxCopy:hover { color: var(--text); border-color: var(--accent); }
@@ -707,24 +730,22 @@ const panelStyles = `
 .ssx .ssxComposer input[type="search"] { box-sizing: border-box; width: 100%; padding: 6px 4px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; outline: none; }
 .ssx .ssxComposer input:disabled { opacity: .55; }
 .ssx .ssxComposerRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.ssx .ssxKind { display: inline-flex; padding: 2px; border: 1px solid var(--border); border-radius: 9px; font-size: 12px; }
-.ssx .ssxKind label { position: relative; display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 7px; color: var(--muted); cursor: pointer; }
-.ssx .ssxKind input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
-.ssx .ssxKind label:has(input:checked) { background: color-mix(in srgb, var(--accent) 22%, var(--panel-2)); color: var(--text); font-weight: 600; }
-.ssx .ssxKind label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
-.ssx .ssxKind label:has(input:disabled) { cursor: default; opacity: .6; }
+.ssx .ssxModes { display: inline-flex; padding: 2px; border: 1px solid var(--border); border-radius: 9px; font-size: 11px; letter-spacing: .03em; }
+.ssx .ssxModes label { position: relative; display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 7px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.ssx .ssxModes input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.ssx .ssxModes label:has(input:checked) { background: color-mix(in srgb, var(--accent) 22%, var(--panel-2)); color: var(--text); font-weight: 600; }
+.ssx .ssxModes label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ssx .ssxModes label:has(input:disabled) { cursor: default; opacity: .6; }
 .ssx .ssxSend { min-height: 32px; padding: 5px 14px; }
 .ssx .ssxSend:disabled { opacity: .55; cursor: default; }
 </style>`;
 
-const KIND_HELP: Record<TurnKind, string> = {
-  ask: "Ask: the API answers your question from your sessions and cites them as [n] (agentic retrieval, usually 30–90 s).",
-  search: "Search: lists the sessions that match, without an answer (plain retrieval, a few seconds).",
-};
-
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-/** Sticky header: the thread's title (its first question), when it started, its turn count, the thread switcher, and "+ New thread". */
+/**
+ * The panel's only header, one row: [thread title · "started … · k turns"] … [Switch thread ▾] [+ New thread] [×].
+ * The × is the host-handled `close-panel` action (the panel is registered with `chrome: "none"`).
+ */
 function renderThreadHeader(state: PanelState, thread: Thread | undefined, now: number) {
   const running = state.job?.state === "running";
   const liveQuery = state.job && state.job.threadId === state.threadId && state.job.state !== "done" ? state.job.query : "";
@@ -750,11 +771,12 @@ function renderThreadHeader(state: PanelState, thread: Thread | undefined, now: 
     : "";
   return `<header class="ssxHead" aria-label="Current thread">
     <div class="ssxHeadMain">
-      <div class="ssxHeadTitle" title="${escapeHtml(title || "New thread")}">${title ? escapeHtml(title) : "New thread"}</div>
-      <div class="ssxHeadMeta"${startedAt ? ` title="started ${escapeHtml(formatDate(startedAt))}"` : ""}>${meta}</div>
+      <span class="ssxHeadTitle" title="${escapeHtml(title || "New thread")}">${title ? escapeHtml(title) : "New thread"}</span>
+      <span class="ssxHeadMeta"${startedAt ? ` title="started ${escapeHtml(formatDate(startedAt))}"` : ""}>${meta}</span>
     </div>
     ${switcher}
     <button class="webPanelButton ssxNew" type="button" data-web-action="new" title="Start a new thread: the next question will not see this thread's earlier turns"${running ? " disabled" : ""}>+ New thread</button>
+    <button class="ssxClose" type="button" data-web-action="close-panel" aria-label="Close panel" title="Close panel">×</button>
   </header>`;
 }
 
@@ -779,44 +801,52 @@ function renderRequestId(requestId: string, tracesUrl: string | undefined) {
     + (traces ? `<a href="${escapeHtml(traces)}" target="_blank" rel="noopener noreferrer">Open traces</a>` : "");
 }
 
-/** The reply half of a finished turn: an "Answer" section (Ask) or a `Results for "…"` heading (Search), the numbered sessions, and the footer. */
+/**
+ * The reply half of a finished turn. AGENTIC + ANSWER turns get an "Answer" section then `Matching sessions (MODE) · n`;
+ * the list-only modes head their list `Results (MODE) for "…" · n` and have no Answer section. The footer names the mode too.
+ */
 function renderReply(turn: Turn, tracesUrl: string | undefined) {
   const { result } = turn;
-  const isAsk = turn.kind === "ask";
-  const answer = isAsk
+  const plan = MODES[turn.mode];
+  const label = escapeHtml(plan.label);
+  const answer = plan.synthesize
     ? `<section class="ssxSection" aria-label="Answer"><div class="ssxLabel">Answer</div>${result.answer ? `<div class="ssxAnswer">${renderAnswerMarkdown(result.answer, result.documents)}</div>` : `<div class="ssxNone">The API returned no answer for this question.</div>`}</section>`
     : "";
-  const sessionsLabel = isAsk
-    ? `Matching sessions (${result.documents.length})`
-    : `Results for <span class="ssxLabelText">“${escapeHtml(turn.query)}”</span> (${result.documents.length})`;
-  const sessions = `<section class="ssxSection" aria-label="${isAsk ? "Matching sessions" : "Results"}"><div class="ssxLabel ssxSessionsLabel">${sessionsLabel}</div>${result.documents.length ? `<ol class="ssxSessions">${result.documents.map(renderHit).join("")}</ol>` : `<div class="ssxNone">No sessions matched.</div>`}</section>`;
+  const sessionsLabel = plan.synthesize
+    ? `Matching sessions (${label}) · ${result.documents.length}`
+    : `Results (${label}) for <span class="ssxLabelText">“${escapeHtml(turn.query)}”</span> · ${result.documents.length}`;
+  const sessions = `<section class="ssxSection" aria-label="${plan.synthesize ? "Matching sessions" : "Results"}"><div class="ssxLabel ssxSessionsLabel">${sessionsLabel}</div>${result.documents.length ? `<ol class="ssxSessions">${result.documents.map(renderHit).join("")}</ol>` : `<div class="ssxNone">No sessions matched.</div>`}</section>`;
   const usage = result.usage;
   const footer = [
-    `<span>${TURN_PLANS[turn.kind].label} · ${result.retrievalMode}</span>`,
+    `<span class="ssxFooterMode" title="Mode of this turn">${label}</span>`,
+    result.retrievalMode !== plan.retrieval ? `<span>ran ${result.retrievalMode}</span>` : "",
     `<span>${formatSeconds(result.elapsedMs)}</span>`,
     `<span>tokens ${usage.totalTokens}${usage.planningTokens || usage.synthesisTokens ? ` (planning ${usage.planningTokens}, synthesis ${usage.synthesisTokens})` : ""}</span>`,
     renderRequestId(result.requestId, tracesUrl),
   ].filter(Boolean).join('<span aria-hidden="true">·</span>');
-  return `<div class="ssxReply" role="group" aria-label="${isAsk ? "Answer" : "Results"}">${answer}${sessions}<div class="ssxFooter">${footer}</div></div>`;
+  return `<div class="ssxReply" role="group" aria-label="${plan.synthesize ? "Answer" : "Results"}">${answer}${sessions}<div class="ssxFooter">${footer}</div></div>`;
 }
 
-/** The "You asked" header of a turn card: label, relative time, then the full question (wrapping, never clipped). */
+/** The "You asked" band of a turn: label, relative time, then the full question (wrapping, never clipped). */
 function renderAsked(query: string, at: string, now: number) {
   return `<div class="ssxAsked" role="group" aria-label="You asked"><div class="ssxLabel">You asked<span class="ssxWhen" title="${escapeHtml(formatDate(at))}">${escapeHtml(formatRelative(at, now))}</span></div><p class="ssxQuestion">${escapeHtml(query)}</p></div>`;
 }
 
+/** A turn is borderless: the tinted "You asked" band, then the plain reply; a hairline (CSS ::before) separates turns. */
 function renderTurn(index: number, asked: string, reply: string, live = false) {
-  return `<article class="ssxTurn${live ? " ssxLive" : ""}" aria-label="Turn ${index + 1}"><div class="ssxCard">${asked}${reply}</div></article>`;
+  return `<article class="ssxTurn${live ? " ssxLive" : ""}" aria-label="Turn ${index + 1}">${asked}${reply}</article>`;
 }
 
 function renderJob(job: SearchJob, index: number, tracesUrl: string | undefined, now: number) {
   let body = "";
   if (job.state === "running") {
     const payload = escapeHtml(JSON.stringify({ jobId: job.id }));
+    const plan = MODES[job.mode];
+    const hint = plan.synthesize ? "answers usually take 30–90 s" : plan.retrieval === "AGENTIC" ? "agentic retrieval, no answer" : "";
     // No periodic repaint while running: the host blanks the panel on every update(), which would flash.
     body = `<div class="ssxStatus" role="status" tabindex="-1" autofocus>
       <span class="ssxSpinner" aria-hidden="true"></span>
-      <span>${job.kind === "ask" ? "Thinking…" : "Searching…"}${job.kind === "ask" ? " <span class=\"ssxThreadMeta\">answers usually take 30–90 s</span>" : ""}</span>
+      <span>${plan.synthesize ? "Thinking…" : "Searching…"}${hint ? ` <span class="ssxThreadMeta">${hint}</span>` : ""}</span>
       <button class="webPanelButton ssxCancel" type="button" data-web-action="cancel" data-web-payload='${payload}'>Cancel</button>
     </div>`;
   } else if (job.state === "error" && job.error) {
@@ -830,11 +860,11 @@ function renderJob(job: SearchJob, index: number, tracesUrl: string | undefined,
 function renderComposer(state: PanelState) {
   const running = state.job?.state === "running";
   const lock = running ? " disabled" : "";
-  const radio = (kind: TurnKind) => `<label title="${escapeHtml(KIND_HELP[kind])}"><input type="radio" name="kind" value="${kind}"${state.kind === kind ? " checked" : ""}${lock}>${TURN_PLANS[kind].label}</label>`;
+  const radio = (mode: TurnMode) => `<label title="${escapeHtml(MODES[mode].help)}"><input type="radio" name="mode" value="${mode}"${state.mode === mode ? " checked" : ""}${lock}>${escapeHtml(MODES[mode].label)}</label>`;
   return `<form class="ssxComposer" role="search" aria-label="Composer">
     <input type="search" name="query" placeholder="Ask a question or search your sessions…" maxlength="${MAX_QUERY_CHARS}" aria-label="Ask a question or search your sessions" autocomplete="off"${running ? " disabled" : " autofocus"}>
     <div class="ssxComposerRow">
-      <div class="ssxKind" role="radiogroup" aria-label="Mode" title="Ask answers your question with citations; Search only lists matching sessions.">${radio("ask")}${radio("search")}</div>
+      <div class="ssxModes" role="radiogroup" aria-label="Mode" title="Retrieval mode for the next turn; remembered per thread.">${MODE_ORDER.map(radio).join("")}</div>
       <button class="webPanelButton ssxSend" type="submit" data-web-action="send"${lock}>Send</button>
     </div>
   </form>`;
@@ -923,10 +953,16 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
         catch { return envConfig; }
       }
 
-      const state: PanelState = { threadId: "", threads: [], kind: "ask", tracesUrl: envConfig.tracesUrl };
+      const state: PanelState = { threadId: "", threads: [], mode: DEFAULT_MODE, tracesUrl: envConfig.tracesUrl };
       /** A thread the user started with "New thread" in this session; kept current even while it has no turns. */
       let freshThreadId = "";
       let jobCounter = 0;
+
+      /** Shows a thread and preselects the mode it was last used with (a thread without turns uses the default). */
+      function showThread(threadId: string) {
+        state.threadId = threadId;
+        state.mode = state.threads.find((thread) => thread.id === threadId)?.mode ?? DEFAULT_MODE;
+      }
 
       async function refreshThreads(threads?: Thread[]) {
         try { state.threads = threads ?? await store.load(); } catch { /* threads are best effort */ }
@@ -935,7 +971,7 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
         const current = state.threads.some((thread) => thread.id === state.threadId);
         const keepFresh = state.threadId && state.threadId === freshThreadId;
         const keepRunning = state.job?.state === "running" && state.job.threadId === state.threadId;
-        if (!current && !keepFresh && !keepRunning) state.threadId = state.threads[0]?.id ?? startFreshThread();
+        if (!current && !keepFresh && !keepRunning) showThread(state.threads[0]?.id ?? startFreshThread());
       }
 
       function startFreshThread() {
@@ -943,15 +979,15 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
         return freshThreadId;
       }
 
-      function startJob(query: string, kind: TurnKind, threadId: string): SearchJob {
-        const job: SearchJob = { id: `job-${++jobCounter}`, threadId, kind, query, startedAt: Date.now(), controller: new AbortController(), state: "running" };
+      function startJob(query: string, mode: TurnMode, threadId: string): SearchJob {
+        const job: SearchJob = { id: `job-${++jobCounter}`, threadId, mode, query, startedAt: Date.now(), controller: new AbortController(), state: "running" };
         state.job = job;
         void (async () => {
           try {
-            const result = await search(await currentConfig(), { intent: query, kind, threadId }, job.controller.signal);
+            const result = await search(await currentConfig(), { intent: query, mode, threadId }, job.controller.signal);
             if (!job.controller.signal.aborted) {
               // Persist the turn before the job reads as done, so the view that paints it already lists it.
-              const turn: Turn = { id: randomUUID(), at: new Date().toISOString(), kind, query, result };
+              const turn: Turn = { id: randomUUID(), at: new Date().toISOString(), mode, query, result };
               try { await refreshThreads(await store.addTurn(threadId, turn)); } catch { /* best effort */ }
               if (freshThreadId === threadId) freshThreadId = "";
             }
@@ -972,6 +1008,8 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
         title: "Session search",
         label: "Session search",
         icon: "session-search",
+        // The panel draws its own single header row (title, thread switcher, new thread, close); no host title bar.
+        chrome: "none",
         async render(event) {
           const action = event?.action || "view";
           await refreshThreads();
@@ -979,10 +1017,10 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
             // In-flight guard: one turn at a time; a second submit while running changes nothing.
             if (state.job?.state === "running") return renderPanel(state);
             const query = firstField(event, "query").trim().slice(0, MAX_QUERY_CHARS);
-            const kind: TurnKind = firstField(event, "kind") === "search" ? "search" : "ask";
-            state.kind = kind;
+            const mode = parseMode(firstField(event, "mode")) ?? state.mode;
+            state.mode = mode;
             if (!query) return renderPanel(state);
-            const job = startJob(query, kind, state.threadId);
+            const job = startJob(query, mode, state.threadId);
             job.inlineWait = true;
             const deadline = Date.now() + INLINE_WAIT_MS;
             while (job.state === "running" && Date.now() < deadline) await sleep(25);
@@ -1000,12 +1038,12 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
           if (action === "new") {
             if (state.job?.state === "running") { state.job.controller.abort(); state.job.state = "cancelled"; }
             state.job = undefined;
-            state.threadId = startFreshThread();
+            showThread(startFreshThread());
             return renderPanel(state);
           }
           if (action === "thread-open") {
             const id = payloadString(event, "id");
-            if (state.threads.some((thread) => thread.id === id)) state.threadId = id;
+            if (state.threads.some((thread) => thread.id === id)) showThread(id);
             return renderPanel(state);
           }
           if (action === "thread-delete") {
@@ -1013,7 +1051,7 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
             if (id) {
               if (state.job?.threadId === id && state.job.state === "running") { state.job.controller.abort(); state.job.state = "cancelled"; }
               try { await refreshThreads(await store.remove(id)); } catch { /* best effort */ }
-              if (state.threadId === id) state.threadId = state.threads[0]?.id ?? startFreshThread();
+              if (state.threadId === id) showThread(state.threads[0]?.id ?? startFreshThread());
             }
             return renderPanel(state);
           }

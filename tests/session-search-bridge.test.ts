@@ -125,6 +125,8 @@ describe("session-search extension through the pi-web contribution bridge", () =
       [PANEL_KEY, "panel"], [`${PANEL_KEY}-launcher`, "fab"], [`${PANEL_KEY}-header`, "header-action"],
     ]);
     expect(entries.find((entry) => entry.slot === "fab")).toMatchObject({ opens: PANEL_KEY, icon: "session-search" });
+    // The panel asks the host for no title bar; it draws its own header row with a host-handled close action.
+    expect(entries.find((entry) => entry.slot === "panel")).toMatchObject({ chrome: "none", title: "Session search", icon: "session-search" });
     expect(entries.find((entry) => entry.slot === "header-action")).toMatchObject({ icon: "session-search", title: "Session search" });
     const serialized = JSON.stringify(entries);
     expect(entries.every((entry) => !("render" in entry) && !("source" in entry))).toBe(true);
@@ -141,9 +143,9 @@ describe("session-search extension through the pi-web contribution bridge", () =
     const idle = await invoke({});
     expect(idle.html).toContain('name="query"');
     expect(idle.html).toContain("Ask a question about your sessions — follow-ups in this thread keep the context.");
-    expect(idle.html).toContain('<div class="ssxHeadTitle" title="New thread">New thread</div>');
+    expect(idle.html).toContain('<span class="ssxHeadTitle" title="New thread">New thread</span>');
 
-    const view = await invoke({ action: "send", fields: { query: "which session created the OpenSearch domain for pi sessions", kind: "search" } });
+    const view = await invoke({ action: "send", fields: { query: "which session created the OpenSearch domain for pi sessions", mode: "simple" } });
     expect(view.title).toBe("Session search");
 
     // Upstream saw exactly one signed POST with the API's request shape.
@@ -166,10 +168,10 @@ describe("session-search extension through the pi-web contribution bridge", () =
     expect(view.html).toContain('<span class="ssxProject">agent-health</span>');
     expect(view.html).toContain("2026-10-21 10:00 UTC");
     expect(view.html).toContain("7 passages");
-    expect(view.html).toContain("<span>Search · SIMPLE</span>");
+    expect(view.html).toContain('<span class="ssxFooterMode" title="Mode of this turn">SIMPLE</span>');
     expect(view.html).toContain("tokens 33 (planning 11, synthesis 22)");
     expect(view.html).toContain('<code class="ssxReqId" title="Request id">upstream-req-1</code>');
-    expect(view.html).toContain('Results for <span class="ssxLabelText">“which session created the OpenSearch domain for pi sessions”</span> (3)');
+    expect(view.html).toContain('Results (SIMPLE) for <span class="ssxLabelText">“which session created the OpenSearch domain for pi sessions”</span> · 3');
     expect(view.html).not.toContain('class="ssxAnswer"');
     expect(view.html).not.toContain('aria-label="Answer"');
     expect(view.html).not.toContain("Open traces");
@@ -180,6 +182,19 @@ describe("session-search extension through the pi-web contribution bridge", () =
     // A fast turn is painted by the invoke response itself; no repaint event is needed.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(emitted.some((event) => event.type === "web_contribution_updated" && event.key === PANEL_KEY)).toBe(false);
+
+    // AGENTIC (no synthesis) in the same thread: AGENTIC retrieval, five results, no synthesize flag, no retrieval budget; the
+    // reply is a list headed by the mode with no Answer section, even if the upstream happened to include an answer.
+    respond = () => ({ status: 200, body: JSON.stringify({ ...upstreamFixture, retrievalMode: "AGENTIC", answer: "should not be shown", citations: [{ documentIndex: 0 }] }) });
+    const agentic = await invoke({ action: "send", fields: { query: "index pi sessions", mode: "agentic" } });
+    expect(received).toHaveLength(2);
+    expect(JSON.parse(received[1].body)).toEqual({ query: { intent: "index pi sessions" }, retrieval: "AGENTIC", maxResults: 5, sessionId: body.sessionId });
+    expect(agentic.html).toContain('Results (AGENTIC) for <span class="ssxLabelText">“index pi sessions”</span> · 3');
+    expect(agentic.html).toContain('<span class="ssxFooterMode" title="Mode of this turn">AGENTIC</span>');
+    expect(agentic.html).not.toContain('aria-label="Answer"');
+    expect(agentic.html).not.toContain("should not be shown");
+    expect(agentic.html).toContain('<input type="radio" name="mode" value="agentic" checked>');
+    expect(agentic.html).toContain("started just now · 2 turns");
   });
 
   it("Ask turns: one conversation id per thread, a new one after New thread, answer + citations + sessions + footer rendered, threads persisted and reloaded by a fresh host", async () => {
@@ -194,7 +209,7 @@ describe("session-search extension through the pi-web contribution bridge", () =
     try {
       const first = await host();
       await first.settingsStore.patchExtension(SETTINGS_ID, { tracesUrl: "https://traces.example.test/{requestId}" }, { schemaVersion: 1 });
-      const view = await first.invoke({ action: "send", fields: { query: "which session created the OpenSearch domain for pi sessions", kind: "ask" } });
+      const view = await first.invoke({ action: "send", fields: { query: "which session created the OpenSearch domain for pi sessions", mode: "agentic-answer" } });
       const body = JSON.parse(received[0].body);
       expect(body).toMatchObject({ retrieval: "AGENTIC", synthesize: true, synthesisOptions: { maxTokens: 600, temperature: 0, responseFormat: "MARKDOWN" }, retrievalOptions: { maxTurns: 6 }, maxResults: 5 });
       expect(body.sessionId).toMatch(/^[0-9a-f-]{36}$/);
@@ -206,14 +221,14 @@ describe("session-search extension through the pi-web contribution bridge", () =
       expect(view.html).toContain('<sup class="ssxCite" title="Create the pi sessions OpenSearch domain">[1]</sup>');
       expect(view.html).toContain('<sup class="ssxCite" title="Index pi sessions">[2]</sup>');
       expect(view.html.indexOf('class="ssxAnswer"')).toBeLessThan(view.html.indexOf('class="ssxSessions"'));
-      expect(view.html).toContain("<span>Ask · AGENTIC</span>");
+      expect(view.html).toContain('<span class="ssxFooterMode" title="Mode of this turn">AGENTIC + ANSWER</span>');
       expect(view.html).toContain("tokens 333385 (planning 331761, synthesis 1624)");
       expect(view.html).toContain('<code class="ssxReqId" title="Request id">upstream-req-1</code>');
       expect(view.html).toContain('<a href="https://traces.example.test/upstream-req-1" target="_blank" rel="noopener noreferrer">Open traces</a>');
       for (const leak of ["passage body", "embedding", fakeCredentials.secretAccessKey, fakeCredentials.sessionToken, fakeCredentials.accessKeyId, upstreamUrl]) expect(view.html).not.toContain(leak);
 
       // Follow-up in the same thread reuses the conversation id and renders both turns.
-      const followUp = await first.invoke({ action: "send", fields: { query: "what engine version did it confirm?", kind: "ask" } });
+      const followUp = await first.invoke({ action: "send", fields: { query: "what engine version did it confirm?", mode: "agentic-answer" } });
       expect(JSON.parse(received[1].body).sessionId).toBe(body.sessionId);
       expect(followUp.html).toContain('<p class="ssxQuestion">which session created the OpenSearch domain for pi sessions</p>');
       expect(followUp.html).toContain('<p class="ssxQuestion">what engine version did it confirm?</p>');
@@ -223,7 +238,7 @@ describe("session-search extension through the pi-web contribution bridge", () =
       // New thread mints a different conversation id.
       const fresh = await first.invoke({ action: "new" });
       expect(fresh.html).not.toContain("what engine version did it confirm?</p>");
-      await first.invoke({ action: "send", fields: { query: "unrelated question", kind: "ask" } });
+      await first.invoke({ action: "send", fields: { query: "unrelated question", mode: "agentic-answer" } });
       expect(JSON.parse(received[2].body).sessionId).toMatch(/^[0-9a-f-]{36}$/);
       expect(JSON.parse(received[2].body).sessionId).not.toBe(body.sessionId);
 
@@ -235,7 +250,7 @@ describe("session-search extension through the pi-web contribution bridge", () =
         [JSON.parse(received[2].body).sessionId, ["unrelated question"]],
         [body.sessionId, ["which session created the OpenSearch domain for pi sessions", "what engine version did it confirm?"]],
       ]);
-      expect(parsed.threads[1].turns[0]).toMatchObject({ kind: "ask", result: { citations: [0, 1], requestId: "upstream-req-1" } });
+      expect(parsed.threads[1].turns[0]).toMatchObject({ mode: "agentic-answer", result: { citations: [0, 1], requestId: "upstream-req-1" } });
       for (const leak of ["passage body", "embedding", "0.1,0.2", fakeCredentials.secretAccessKey, fakeCredentials.sessionToken, upstreamUrl]) expect(stored).not.toContain(leak);
 
       // A brand-new host (server restart / another session) opens on the most recent thread with no upstream call,
@@ -249,7 +264,7 @@ describe("session-search extension through the pi-web contribution bridge", () =
       const switched = await second.invoke({ action: "thread-open", payload: { id: body.sessionId } });
       expect(switched.html).toContain("what engine version did it confirm?</p>");
       expect(switched.html).toContain("The domain was created by <strong>this session</strong> <sup");
-      await second.invoke({ action: "send", fields: { query: "and the instance type?", kind: "ask" } });
+      await second.invoke({ action: "send", fields: { query: "and the instance type?", mode: "agentic-answer" } });
       expect(JSON.parse(received[3].body).sessionId).toBe(body.sessionId);
     } finally {
       respond = () => ({ status: 200, body: JSON.stringify(upstreamFixture) });
@@ -272,13 +287,14 @@ describe("session-search extension through the pi-web contribution bridge", () =
     expect(opened.html).toContain("In <strong>pi-web-origin</strong> <sup");
     expect(opened.html).toContain('<a href="/?sessionId=01a13ce5-9ebc-716c-be1c-ec84cf90e58b">Open session</a>');
     const stored = JSON.parse(await readFile(historyFile, "utf8"));
-    expect(stored.threads.map((thread: any) => thread.turns.map((turn: any) => [turn.query, turn.kind]))).toEqual([
-      [["who created the domain?", "ask"], ["what project was it in?", "ask"]],
-      [["lone simple search", "search"]],
+    expect(stored.threads.map((thread: any) => thread.turns.map((turn: any) => [turn.query, turn.mode]))).toEqual([
+      [["who created the domain?", "agentic-answer"], ["what project was it in?", "agentic-answer"]],
+      [["lone simple search", "simple"]],
     ]);
+    expect(stored.threads.map((thread: any) => thread.mode)).toEqual(["agentic-answer", "simple"]);
     expect(JSON.parse(await readFile(join(tempDir, "session-search-history.json"), "utf8"))).toEqual(legacy);
     // Continuing the migrated thread keeps its original conversation id.
-    await invoke({ action: "send", fields: { query: "and then?", kind: "search" } });
+    await invoke({ action: "send", fields: { query: "and then?", mode: "simple" } });
     expect(JSON.parse(received[0].body).sessionId).toBe("aaaaaaaa-0000-4000-8000-000000000001");
   });
 
@@ -286,7 +302,7 @@ describe("session-search extension through the pi-web contribution bridge", () =
     respond = () => ({ status: 403, body: JSON.stringify({ message: "The security token included in the request is expired" }) });
     try {
       const { invoke } = await host();
-      const view = await invoke({ action: "send", fields: { query: "anything", kind: "ask" } });
+      const view = await invoke({ action: "send", fields: { query: "anything", mode: "agentic-answer" } });
       expect(view.html).toContain('<p class="ssxQuestion">anything</p>');
       expect(view.html).toContain('role="alert"');
       expect(view.html).toContain('AWS credentials for profile &quot;integration&quot; were rejected (HTTP 403)');
@@ -304,15 +320,15 @@ describe("session-search extension through the pi-web contribution bridge", () =
     respond = () => ({ status: 200, body: JSON.stringify({ documents: [], retrievalMode: "SIMPLE", usage: { planningTokens: 0, synthesisTokens: 0, totalTokens: 0 } }) });
     try {
       const { invoke, settingsStore, ui } = await host();
-      const empty = await invoke({ action: "send", fields: { query: "nothing here", kind: "search" } });
+      const empty = await invoke({ action: "send", fields: { query: "nothing here", mode: "simple" } });
       expect(empty.html).toContain("No sessions matched.");
-      expect(empty.html).toContain("<span>Search · SIMPLE</span>");
+      expect(empty.html).toContain('<span class="ssxFooterMode" title="Mode of this turn">SIMPLE</span>');
       expect(received).toHaveLength(1);
 
       // Settings are read on every turn: switching the profile through the real store changes the next request.
       await settingsStore.patchExtension(SETTINGS_ID, { profile: "absent" }, { schemaVersion: 1 });
       expect((await ui.web.getSettings(SETTINGS_ID)).values.profile).toBe("absent");
-      const missing = await invoke({ action: "send", fields: { query: "nothing here", kind: "search" } });
+      const missing = await invoke({ action: "send", fields: { query: "nothing here", mode: "simple" } });
       expect(missing.html).toContain('role="alert"');
       expect(missing.html).toContain("AWS profile &quot;absent&quot; has no access key");
       expect(received).toHaveLength(1);

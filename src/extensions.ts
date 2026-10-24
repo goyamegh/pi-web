@@ -95,6 +95,8 @@ export type PiWebContribution =
       label?: string;
       icon?: string;
       match?: { kinds?: PiWebArtifactContext["kind"][]; extensions?: string[] };
+      /** Panels only: `"none"` hides the host title bar (see PiWebPanel.chrome). */
+      chrome?: "default" | "none";
       render: (event?: PiWebContributionEvent) => PiWebContributionView | Promise<PiWebContributionView>;
     };
 
@@ -210,6 +212,13 @@ export type PiWebPanel = {
   label?: string;
   /** lucide icon name; unsupported names fall back to square-pen. */
   icon?: string;
+  /**
+   * Host chrome around the rendered HTML. `"default"` (also when omitted) draws the
+   * shared title bar (icon, title, close button). `"none"` draws no title bar: the
+   * panel's own markup owns the top row and closes the panel with an element
+   * carrying `data-web-action="close-panel"`, which the host handles itself.
+   */
+  chrome?: "default" | "none";
   render: (event?: PiWebPanelEvent) => Promise<PiWebPanelView> | PiWebPanelView;
 };
 
