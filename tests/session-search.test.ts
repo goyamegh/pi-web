@@ -416,8 +416,9 @@ describe("panel rendering", () => {
     expect(html).toContain("<span>Search · SIMPLE</span>");
     expect(html).toContain("<span>0.6s</span>");
     expect(html.match(/class="ssxAnswer"/g)).toHaveLength(1);
-    // Newest turn first in the DOM (column-reverse timeline opens at the bottom).
-    expect(timeline(html).indexOf("plain list")).toBeLessThan(timeline(html).indexOf(longQuestion));
+    // Oldest turn first in the DOM; the trailing anchor image scrolls the timeline to the newest turn on load.
+    expect(timeline(html).indexOf("plain list")).toBeGreaterThan(timeline(html).indexOf(longQuestion));
+    expect(timeline(html)).toMatch(/<img class="ssxAnchor" alt="" aria-hidden="true" src="data:image\/gif;base64,[A-Za-z0-9+/=]+" onload="var t=this\.parentElement,f=function\(\)\{t\.scrollTop=t\.scrollHeight\};f\(\);setTimeout\(f,250\);setTimeout\(f,700\)"><\/div><form/);
     // Thread picker lists the thread as current; composer is live with Ask selected.
     expect(html).toContain('aria-current="true"');
     expect(html).toContain("1 turns · 30 min ago".replace("1 turns", "2 turns"));
@@ -427,7 +428,9 @@ describe("panel rendering", () => {
     expect(html).not.toContain("Continue conversation");
     expect(html).not.toContain("Synthesize");
     expect(html).not.toContain("javascript:");
-    expect(html).not.toContain("<img");
+    // The only image is the scroll anchor; hostile titles never become markup.
+    expect(html.match(/<img/g)).toHaveLength(1);
+    expect(html).not.toContain("onerror");
   });
 
   it("hides the traces link without a template and shows an empty thread with a disabled-free composer", () => {
@@ -455,8 +458,8 @@ describe("panel rendering", () => {
     expect(running).toContain('<input type="radio" name="kind" value="ask" checked disabled>');
     expect(running).toContain('data-web-action="send" disabled>Send</button>');
     expect(running).toContain('data-web-action="new" disabled>New thread</button>');
-    // The live turn sits at the bottom (first in DOM), after the stored turns.
-    expect(running.indexOf("what engine version")).toBeLessThan(running.indexOf("plain list"));
+    // The live turn sits at the bottom, after the stored turns.
+    expect(timeline(running).indexOf("what engine version did it confirm?</div>")).toBeGreaterThan(timeline(running).indexOf("plain list"));
 
     const error = renderPanel({ threadId: THREAD, threads: [thread], kind: "ask", job: { ...job, state: "error", error: new SearchError("creds <expired>", "credentials", "req-err") } }, now).html;
     expect(error).toContain('<div class="ssxError" role="alert">creds &lt;expired&gt;</div>');
