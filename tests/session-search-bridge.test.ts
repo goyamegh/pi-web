@@ -194,7 +194,7 @@ describe("session-search extension through the pi-web contribution bridge", () =
     expect(agentic.html).not.toContain('aria-label="Answer"');
     expect(agentic.html).not.toContain("should not be shown");
     expect(agentic.html).toContain('<input type="radio" name="mode" value="agentic" checked>');
-    expect(agentic.html).toContain("started just now · 2 turns");
+    expect(agentic.html).toContain("started just now · </span>2 turns");
   });
 
   it("Ask turns: one conversation id per thread, a new one after New thread, answer + citations + sessions + footer rendered, threads persisted and reloaded by a fresh host", async () => {
