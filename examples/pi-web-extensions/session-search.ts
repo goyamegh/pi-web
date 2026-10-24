@@ -645,13 +645,17 @@ function formatRelative(iso: string, now = Date.now()) {
 const panelStyles = `
 <style>
 .ssx { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; height: 100%; min-height: 320px; font-size: 13.5px; }
-.ssx .ssxBar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.ssx .ssxThreads { position: relative; min-width: 0; }
-.ssx .ssxThreads summary { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 6px 10px; border: 1px solid var(--border); border-radius: 9px; color: var(--text); font-size: 12px; cursor: pointer; list-style: none; }
+.ssx .ssxHead { display: flex; align-items: center; gap: 8px; padding: 0 0 8px; border-bottom: 1px solid var(--border); }
+.ssx .ssxHeadMain { display: grid; gap: 2px; flex: 1 1 auto; min-width: 0; }
+.ssx .ssxHeadTitle { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; line-height: 1.3; }
+.ssx .ssxHeadMeta { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ssx .ssxThreads { position: relative; flex: none; }
+.ssx .ssxThreads summary { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; box-sizing: border-box; padding: 4px 9px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; list-style: none; }
+.ssx .ssxThreads summary:hover { color: var(--text); border-color: var(--accent); }
 .ssx .ssxThreads summary::-webkit-details-marker { display: none; }
-.ssx .ssxThreads summary::after { content: "▾"; color: var(--muted); }
+.ssx .ssxThreads summary::after { content: "▾"; }
 .ssx .ssxThreads[open] summary::after { content: "▴"; }
-.ssx .ssxThreadList { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; display: grid; gap: 2px; width: min(360px, 80vw); max-height: 320px; margin: 0; padding: 6px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.35); list-style: none; }
+.ssx .ssxThreadList { position: absolute; z-index: 5; top: calc(100% + 4px); right: 0; display: grid; gap: 2px; width: min(360px, 80vw); max-height: 320px; margin: 0; padding: 6px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.35); list-style: none; }
 .ssx .ssxThreadList li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
 .ssx .ssxThreadItem { display: grid; gap: 2px; width: 100%; height: auto; min-height: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
 .ssx .ssxThreadItem:hover { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
@@ -660,20 +664,25 @@ const panelStyles = `
 .ssx .ssxThreadMeta { font-size: 10.5px; color: var(--muted); }
 .ssx .ssxThreadDelete { height: auto; min-height: 0; padding: 4px 6px; border: 0; background: none; color: var(--muted); font: inherit; cursor: pointer; }
 .ssx .ssxThreadDelete:hover { color: var(--danger); }
-.ssx .ssxNew { min-height: 32px; padding: 5px 10px; font-size: 12px; }
-.ssx .ssxTimeline { display: grid; align-content: start; gap: 12px; min-height: 0; overflow: auto; padding: 2px 2px 4px; overscroll-behavior: contain; }
-.ssx .ssxAnchor { display: block; width: 1px; height: 1px; margin-top: -12px; opacity: 0; }
-.ssx .ssxTurn { display: grid; gap: 8px; }
-.ssx .ssxUser { justify-self: end; max-width: 92%; padding: 9px 12px; border-radius: 14px 14px 4px 14px; background: color-mix(in srgb, var(--accent) 22%, var(--panel-2)); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
-.ssx .ssxUserMeta { justify-self: end; margin-top: -4px; font-size: 10.5px; color: var(--muted); }
-.ssx .ssxAssistant { display: grid; gap: 10px; justify-self: start; width: 100%; box-sizing: border-box; padding: 11px 13px; border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; background: color-mix(in srgb, var(--panel-2) 55%, transparent); line-height: 1.5; }
+.ssx .ssxNew { flex: none; min-height: 30px; padding: 4px 10px; font-size: 12px; white-space: nowrap; }
+.ssx .ssxTimeline { display: grid; align-content: start; min-height: 0; overflow: auto; padding: 2px 2px 4px; overscroll-behavior: contain; }
+.ssx .ssxAnchor { display: block; width: 1px; height: 1px; opacity: 0; }
+.ssx .ssxTurn { padding: 0 0 14px; }
+.ssx .ssxTurn + .ssxTurn { padding-top: 14px; border-top: 1px solid var(--border); }
+.ssx .ssxCard { display: grid; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--panel-2) 55%, transparent); overflow: hidden; }
+.ssx .ssxAsked { display: grid; gap: 4px; padding: 10px 13px 11px; background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); border-bottom: 1px solid var(--border); }
+.ssx .ssxLabel { display: flex; align-items: baseline; gap: 8px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.ssx .ssxLabel .ssxLabelText { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.ssx .ssxWhen { font-weight: 400; letter-spacing: 0; text-transform: none; font-size: 10.5px; }
+.ssx .ssxQuestion { margin: 0; width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; color: var(--text); }
+.ssx .ssxReply { display: grid; gap: 10px; padding: 11px 13px 10px; line-height: 1.5; }
+.ssx .ssxSection { display: grid; gap: 6px; }
 .ssx .ssxAnswer p, .ssx .ssxAnswer pre { margin: 0 0 6px; }
 .ssx .ssxAnswer > :last-child { margin-bottom: 0; }
 .ssx .ssxAnswer ul, .ssx .ssxAnswer ol { margin: 0 0 6px; padding-left: 18px; }
 .ssx .ssxAnswer pre { padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--panel-2) 80%, black); overflow: auto; font-size: 12px; }
 .ssx .ssxAnswer code { font-size: 12.5px; }
 .ssx .ssxCite { font-size: 10px; color: var(--accent); margin-left: 1px; }
-.ssx .ssxSessionsLabel { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .ssx ol, .ssx ul { margin: 0; padding: 0; }
 .ssx .ssxSessions { display: grid; gap: 6px; list-style: none; }
 .ssx .ssxHit { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel) 60%, transparent); }
@@ -682,7 +691,7 @@ const panelStyles = `
 .ssx .ssxMeta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11.5px; color: var(--muted); }
 .ssx .ssxProject { color: var(--text); }
 .ssx .ssxMeta a, .ssx .ssxFooter a { color: var(--accent); text-decoration: underline dotted; }
-.ssx .ssxFooter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 11px; color: var(--muted); }
+.ssx .ssxFooter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 11px; color: var(--muted); }
 .ssx .ssxReqId { user-select: all; font-size: 10.5px; }
 .ssx .ssxCopy { height: auto; min-height: 0; padding: 1px 7px; border: 1px solid var(--border); border-radius: 6px; background: none; color: var(--muted); font: inherit; font-size: 10.5px; cursor: pointer; }
 .ssx .ssxCopy:hover { color: var(--text); border-color: var(--accent); }
@@ -691,6 +700,7 @@ const panelStyles = `
 @keyframes ssxSpin { to { transform: rotate(360deg); } }
 .ssx .ssxCancel { margin-left: auto; min-height: 30px; padding: 4px 10px; font-size: 12px; }
 .ssx .ssxError { color: var(--danger); overflow-wrap: anywhere; }
+.ssx .ssxNone { color: var(--muted); }
 .ssx .ssxEmpty { padding: 18px 8px; color: var(--muted); text-align: center; align-self: center; }
 .ssx .ssxComposer { display: grid; gap: 8px; margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: 14px; background: color-mix(in srgb, var(--panel-2) 82%, black); }
 .ssx .ssxComposer:focus-within { border-color: var(--accent); }
@@ -707,30 +717,52 @@ const panelStyles = `
 .ssx .ssxSend:disabled { opacity: .55; cursor: default; }
 </style>`;
 
-function renderThreadBar(state: PanelState, now: number) {
+const KIND_HELP: Record<TurnKind, string> = {
+  ask: "Ask: the API answers your question from your sessions and cites them as [n] (agentic retrieval, usually 30–90 s).",
+  search: "Search: lists the sessions that match, without an answer (plain retrieval, a few seconds).",
+};
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** Sticky header: the thread's title (its first question), when it started, its turn count, the thread switcher, and "+ New thread". */
+function renderThreadHeader(state: PanelState, thread: Thread | undefined, now: number) {
   const running = state.job?.state === "running";
-  const items = state.threads.map((thread) => {
-    const payload = escapeHtml(JSON.stringify({ id: thread.id }));
-    const first = thread.turns[0];
+  const liveQuery = state.job && state.job.threadId === state.threadId && state.job.state !== "done" ? state.job.query : "";
+  const title = thread?.turns[0]?.query || liveQuery;
+  const startedAt = thread?.createdAt || (liveQuery && state.job ? new Date(state.job.startedAt).toISOString() : "");
+  const turnCount = (thread?.turns.length ?? 0) + (liveQuery ? 1 : 0);
+  const meta = title
+    ? `started ${escapeHtml(formatRelative(startedAt, now))} · ${plural(turnCount, "turn")}`
+    : "nothing asked yet";
+  const items = state.threads.map((candidate) => {
+    const payload = escapeHtml(JSON.stringify({ id: candidate.id }));
+    const first = candidate.turns[0];
     return `<li>
-      <button type="button" class="ssxThreadItem" data-web-action="thread-open" data-web-payload='${payload}'${thread.id === state.threadId ? ' aria-current="true"' : ""} title="${escapeHtml(first.query)}">
+      <button type="button" class="ssxThreadItem" data-web-action="thread-open" data-web-payload='${payload}'${candidate.id === state.threadId ? ' aria-current="true"' : ""} title="${escapeHtml(first.query)}">
         <span class="ssxThreadQ">${escapeHtml(first.query)}</span>
-        <span class="ssxThreadMeta">${thread.turns.length} turn${thread.turns.length === 1 ? "" : "s"} · ${escapeHtml(formatRelative(thread.updatedAt, now))}</span>
+        <span class="ssxThreadMeta">${escapeHtml(formatRelative(candidate.updatedAt, now))} · ${plural(candidate.turns.length, "turn")}</span>
       </button>
       <button type="button" class="ssxThreadDelete" data-web-action="thread-delete" data-web-payload='${payload}' aria-label="Delete thread" title="Delete thread">×</button>
     </li>`;
   });
-  const list = items.length
-    ? `<details class="ssxThreads"><summary aria-label="Threads">Threads <span>(${items.length})</span></summary><ol class="ssxThreadList" aria-label="Thread list">${items.join("")}</ol></details>`
-    : `<span class="ssxThreadMeta">No threads yet</span>`;
-  return `<div class="ssxBar">${list}<button class="webPanelButton ssxNew" type="button" data-web-action="new"${running ? " disabled" : ""}>New thread</button></div>`;
+  const switcher = items.length
+    ? `<details class="ssxThreads"><summary aria-label="Switch thread" title="${plural(items.length, "saved thread")}">Switch thread</summary><ol class="ssxThreadList" aria-label="Thread list">${items.join("")}</ol></details>`
+    : "";
+  return `<header class="ssxHead" aria-label="Current thread">
+    <div class="ssxHeadMain">
+      <div class="ssxHeadTitle" title="${escapeHtml(title || "New thread")}">${title ? escapeHtml(title) : "New thread"}</div>
+      <div class="ssxHeadMeta"${startedAt ? ` title="started ${escapeHtml(formatDate(startedAt))}"` : ""}>${meta}</div>
+    </div>
+    ${switcher}
+    <button class="webPanelButton ssxNew" type="button" data-web-action="new" title="Start a new thread: the next question will not see this thread's earlier turns"${running ? " disabled" : ""}>+ New thread</button>
+  </header>`;
 }
 
 function renderHit(hit: SessionHit, index: number) {
   const meta = [
     hit.project ? `<span class="ssxProject">${escapeHtml(hit.project)}</span>` : "",
     `<span>${escapeHtml(formatDate(hit.startedAt))}</span>`,
-    `<span>${hit.passageCount} passage${hit.passageCount === 1 ? "" : "s"}</span>`,
+    `<span>${plural(hit.passageCount, "passage")}</span>`,
     hit.sessionUrl ? `<a href="${escapeHtml(hit.sessionUrl)}">Open session</a>` : `<span>no session link</span>`,
   ].filter(Boolean).join("<span aria-hidden=\"true\">·</span>");
   return `<li class="ssxHit"><span class="ssxIndex" aria-label="Session ${index + 1}">${index + 1}</span><div class="ssxTitle">${escapeHtml(hit.title)}</div><div class="ssxMeta">${meta}</div></li>`;
@@ -747,12 +779,17 @@ function renderRequestId(requestId: string, tracesUrl: string | undefined) {
     + (traces ? `<a href="${escapeHtml(traces)}" target="_blank" rel="noopener noreferrer">Open traces</a>` : "");
 }
 
-function renderAssistant(turn: Turn, tracesUrl: string | undefined) {
+/** The reply half of a finished turn: an "Answer" section (Ask) or a `Results for "…"` heading (Search), the numbered sessions, and the footer. */
+function renderReply(turn: Turn, tracesUrl: string | undefined) {
   const { result } = turn;
-  const answer = turn.kind === "ask" && result.answer ? `<div class="ssxAnswer">${renderAnswerMarkdown(result.answer, result.documents)}</div>` : "";
-  const sessions = result.documents.length
-    ? `<div><div class="ssxSessionsLabel">Sessions</div><ol class="ssxSessions">${result.documents.map(renderHit).join("")}</ol></div>`
-    : `<div class="ssxEmpty">No sessions matched.</div>`;
+  const isAsk = turn.kind === "ask";
+  const answer = isAsk
+    ? `<section class="ssxSection" aria-label="Answer"><div class="ssxLabel">Answer</div>${result.answer ? `<div class="ssxAnswer">${renderAnswerMarkdown(result.answer, result.documents)}</div>` : `<div class="ssxNone">The API returned no answer for this question.</div>`}</section>`
+    : "";
+  const sessionsLabel = isAsk
+    ? `Matching sessions (${result.documents.length})`
+    : `Results for <span class="ssxLabelText">“${escapeHtml(turn.query)}”</span> (${result.documents.length})`;
+  const sessions = `<section class="ssxSection" aria-label="${isAsk ? "Matching sessions" : "Results"}"><div class="ssxLabel ssxSessionsLabel">${sessionsLabel}</div>${result.documents.length ? `<ol class="ssxSessions">${result.documents.map(renderHit).join("")}</ol>` : `<div class="ssxNone">No sessions matched.</div>`}</section>`;
   const usage = result.usage;
   const footer = [
     `<span>${TURN_PLANS[turn.kind].label} · ${result.retrievalMode}</span>`,
@@ -760,14 +797,19 @@ function renderAssistant(turn: Turn, tracesUrl: string | undefined) {
     `<span>tokens ${usage.totalTokens}${usage.planningTokens || usage.synthesisTokens ? ` (planning ${usage.planningTokens}, synthesis ${usage.synthesisTokens})` : ""}</span>`,
     renderRequestId(result.requestId, tracesUrl),
   ].filter(Boolean).join('<span aria-hidden="true">·</span>');
-  return `<div class="ssxAssistant" role="group" aria-label="Answer">${answer}${sessions}<div class="ssxFooter">${footer}</div></div>`;
+  return `<div class="ssxReply" role="group" aria-label="${isAsk ? "Answer" : "Results"}">${answer}${sessions}<div class="ssxFooter">${footer}</div></div>`;
 }
 
-function renderUser(query: string, at: string, now: number) {
-  return `<div class="ssxUser" role="group" aria-label="Question">${escapeHtml(query)}</div><div class="ssxUserMeta" title="${escapeHtml(formatDate(at))}">${escapeHtml(formatRelative(at, now))}</div>`;
+/** The "You asked" header of a turn card: label, relative time, then the full question (wrapping, never clipped). */
+function renderAsked(query: string, at: string, now: number) {
+  return `<div class="ssxAsked" role="group" aria-label="You asked"><div class="ssxLabel">You asked<span class="ssxWhen" title="${escapeHtml(formatDate(at))}">${escapeHtml(formatRelative(at, now))}</span></div><p class="ssxQuestion">${escapeHtml(query)}</p></div>`;
 }
 
-function renderJob(job: SearchJob, tracesUrl: string | undefined, now: number) {
+function renderTurn(index: number, asked: string, reply: string, live = false) {
+  return `<article class="ssxTurn${live ? " ssxLive" : ""}" aria-label="Turn ${index + 1}"><div class="ssxCard">${asked}${reply}</div></article>`;
+}
+
+function renderJob(job: SearchJob, index: number, tracesUrl: string | undefined, now: number) {
   let body = "";
   if (job.state === "running") {
     const payload = escapeHtml(JSON.stringify({ jobId: job.id }));
@@ -782,17 +824,17 @@ function renderJob(job: SearchJob, tracesUrl: string | undefined, now: number) {
   } else {
     body = `<div class="ssxStatus" role="status">Cancelled.</div>`;
   }
-  return `<div class="ssxTurn ssxLive">${renderUser(job.query, new Date(job.startedAt).toISOString(), now)}<div class="ssxAssistant">${body}</div></div>`;
+  return renderTurn(index, renderAsked(job.query, new Date(job.startedAt).toISOString(), now), `<div class="ssxReply">${body}</div>`, true);
 }
 
 function renderComposer(state: PanelState) {
   const running = state.job?.state === "running";
   const lock = running ? " disabled" : "";
-  const radio = (kind: TurnKind) => `<label><input type="radio" name="kind" value="${kind}"${state.kind === kind ? " checked" : ""}${lock}>${TURN_PLANS[kind].label}</label>`;
+  const radio = (kind: TurnKind) => `<label title="${escapeHtml(KIND_HELP[kind])}"><input type="radio" name="kind" value="${kind}"${state.kind === kind ? " checked" : ""}${lock}>${TURN_PLANS[kind].label}</label>`;
   return `<form class="ssxComposer" role="search" aria-label="Composer">
-    <input type="search" name="query" placeholder="Search or ask your sessions…" maxlength="${MAX_QUERY_CHARS}" aria-label="Search or ask your sessions" autocomplete="off"${running ? " disabled" : " autofocus"}>
+    <input type="search" name="query" placeholder="Ask a question or search your sessions…" maxlength="${MAX_QUERY_CHARS}" aria-label="Ask a question or search your sessions" autocomplete="off"${running ? " disabled" : " autofocus"}>
     <div class="ssxComposerRow">
-      <div class="ssxKind" role="radiogroup" aria-label="Mode">${radio("ask")}${radio("search")}</div>
+      <div class="ssxKind" role="radiogroup" aria-label="Mode" title="Ask answers your question with citations; Search only lists matching sessions.">${radio("ask")}${radio("search")}</div>
       <button class="webPanelButton ssxSend" type="submit" data-web-action="send"${lock}>Send</button>
     </div>
   </form>`;
@@ -800,19 +842,19 @@ function renderComposer(state: PanelState) {
 
 export function renderPanel(state: PanelState, now = Date.now()): PiWebPanelView {
   const thread = state.threads.find((candidate) => candidate.id === state.threadId);
-  const turns = (thread?.turns ?? []).map((turn) => `<div class="ssxTurn">${renderUser(turn.query, turn.at, now)}${renderAssistant(turn, state.tracesUrl)}</div>`);
-  const job = state.job && state.job.threadId === state.threadId && state.job.state !== "done" ? renderJob(state.job, state.tracesUrl, now) : "";
+  const turns = (thread?.turns ?? []).map((turn, index) => renderTurn(index, renderAsked(turn.query, turn.at, now), renderReply(turn, state.tracesUrl)));
+  const job = state.job && state.job.threadId === state.threadId && state.job.state !== "done" ? renderJob(state.job, turns.length, state.tracesUrl, now) : "";
   const items = [...turns, job].filter(Boolean);
-  // Oldest turn first. Panel HTML cannot run <script>, so a 1×1 image at the end scrolls the timeline to the
-  // newest turn when it loads (Chrome cannot scroll a column-reverse flex box to its overflowing start side).
+  // Oldest turn first. Panel HTML cannot run <script>, so a 1×1 image at the end scrolls the timeline when it
+  // loads, so the newest turn's "You asked" header sits at the top of the view (not the bottom of its answer).
   // The scroll repeats briefly because the host may still be animating the panel open when the image loads.
-  const anchor = `<img class="ssxAnchor" alt="" aria-hidden="true" src="${SCROLL_ANCHOR_GIF}" onload="var t=this.parentElement,f=function(){t.scrollTop=t.scrollHeight};f();setTimeout(f,250);setTimeout(f,700)">`;
+  const anchor = `<img class="ssxAnchor" alt="" aria-hidden="true" src="${SCROLL_ANCHOR_GIF}" onload="var t=this.parentElement,f=function(){var l=t.querySelector('.ssxTurn:last-of-type');if(l)t.scrollTop+=l.getBoundingClientRect().top-t.getBoundingClientRect().top-2};f();setTimeout(f,250);setTimeout(f,700)">`;
   const timeline = items.length
     ? items.join("") + anchor
-    : `<div class="ssxEmpty">Ask a question about your indexed pi-web sessions, or switch to Search for a plain list of matching sessions. Follow-ups in the same thread can refer back to earlier answers.</div>`;
+    : `<div class="ssxEmpty">Ask a question about your sessions — follow-ups in this thread keep the context.</div>`;
   return {
     title: "Session search",
-    html: `${panelStyles}<div class="ssx">${renderThreadBar(state, now)}<div class="ssxTimeline" aria-label="Conversation" aria-live="polite">${timeline}</div>${renderComposer(state)}</div>`,
+    html: `${panelStyles}<div class="ssx">${renderThreadHeader(state, thread, now)}<div class="ssxTimeline" aria-label="Conversation" aria-live="polite">${timeline}</div>${renderComposer(state)}</div>`,
   };
 }
 

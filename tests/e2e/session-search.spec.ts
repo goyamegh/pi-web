@@ -119,8 +119,24 @@ async function openPanel(page: Page) {
   return panel;
 }
 
+/**
+ * The timeline must be scrolled so the latest turn's "You asked" header is fully in view, at the top of the
+ * timeline — or, when the turn is too short to reach the top, with the timeline scrolled to its end.
+ */
+async function expectLatestHeaderInView(panel: ReturnType<Page["locator"]>) {
+  await expect.poll(() => panel.locator(".ssxTimeline").evaluate((timeline) => {
+    const asked = timeline.querySelector(".ssxTurn:last-of-type .ssxAsked")!;
+    const t = timeline.getBoundingClientRect();
+    const a = asked.getBoundingClientRect();
+    const fullyVisible = a.top >= t.top - 1 && a.bottom <= t.bottom + 1;
+    const atTop = a.top - t.top < 40;
+    const atEnd = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight <= 1;
+    return { fullyVisible, placed: atTop || atEnd };
+  })).toEqual({ fullyVisible: true, placed: true });
+}
+
 const composer = (panel: ReturnType<Page["locator"]>) => ({
-  input: panel.getByRole("searchbox", { name: "Search or ask your sessions" }),
+  input: panel.getByRole("searchbox", { name: "Ask a question or search your sessions" }),
   ask: panel.getByRole("radio", { name: "Ask" }),
   search: panel.getByRole("radio", { name: "Search" }),
   send: panel.getByRole("button", { name: "Send" }),
@@ -130,7 +146,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
 });
 
-test("an Ask turn renders the full question, the answer with citations, the sessions, and the footer; a Search turn renders the list only", async ({ page }) => {
+test("an Ask turn is one labelled card: 'You asked' + the full question, 'Answer' with citations, 'Matching sessions (n)', footer; a Search turn shows 'Results for' and no Answer", async ({ page }) => {
   const { invocations, requests } = await installExtension(page);
 
   // The launcher is the top-right control of the header and carries the extension's own logo.
@@ -155,15 +171,24 @@ test("an Ask turn renders the full question, the answer with citations, the sess
   await expect(panel.locator("h2")).toHaveText("Session search");
   const { input, ask, search, send } = composer(panel);
   await expect(input).toBeVisible();
-  await expect(input).toHaveAttribute("placeholder", "Search or ask your sessions…");
+  await expect(input).toHaveAttribute("placeholder", "Ask a question or search your sessions…");
   await expect(ask).toBeChecked();
   await expect(search).not.toBeChecked();
+  // The mode control explains itself on hover.
+  await expect(panel.locator(".ssxKind label").nth(0)).toHaveAttribute("title", /^Ask: .*answers your question/);
+  await expect(panel.locator(".ssxKind label").nth(1)).toHaveAttribute("title", /^Search: .*lists the sessions/);
+  // Empty thread: the header says so, and the hint explains what a thread is.
+  const header = panel.locator(".ssxHead");
+  await expect(header.locator(".ssxHeadTitle")).toHaveText("New thread");
+  await expect(header.locator(".ssxHeadMeta")).toHaveText("nothing asked yet");
+  await expect(header.getByRole("button", { name: "+ New thread" })).toBeVisible();
+  await expect(header.locator("summary")).toHaveCount(0);
   // The old controls are gone.
   await expect(panel.getByRole("checkbox")).toHaveCount(0);
   await expect(panel.getByRole("combobox")).toHaveCount(0);
   await expect(panel.getByText("Continue conversation")).toHaveCount(0);
   await expect(panel.getByText("Synthesize answer")).toHaveCount(0);
-  await expect(panel.locator(".ssxEmpty")).toContainText("Ask a question about your indexed pi-web sessions");
+  await expect(panel.locator(".ssxEmpty")).toHaveText("Ask a question about your sessions — follow-ups in this thread keep the context.");
 
   // Composer pinned at the bottom, Send right-aligned, even while the thread is empty.
   const body = panel.locator(".webPanelBody");
@@ -176,31 +201,50 @@ test("an Ask turn renders the full question, the answer with citations, the sess
   expect(g.formRight - g.sendRight).toBeLessThanOrEqual(16);
   expect(g.sendX).toBeGreaterThan(g.inputX);
 
-  // Ask: the full question shows in a user bubble, then the answer bubble.
+  // Ask: one card. Its header is labelled "You asked" and carries the whole question, left-aligned, full width, wrapped, unclipped.
   await input.fill(LONG_QUESTION);
   await input.press("Enter");
-  const question = panel.getByRole("group", { name: "Question" });
-  await expect(question).toHaveCount(1);
+  const turns = panel.locator(".ssxTurn");
+  const asked = panel.getByRole("group", { name: "You asked" });
+  const question = panel.locator(".ssxQuestion");
+  await expect(turns).toHaveCount(1);
+  await expect(turns.first()).toHaveAttribute("aria-label", "Turn 1");
+  await expect(asked).toHaveCount(1);
+  await expect(asked.locator(".ssxLabel")).toContainText("You asked");
+  await expect(asked.locator(".ssxWhen")).toHaveText("just now");
   await expect(question).toHaveText(LONG_QUESTION);
   const untruncated = await question.evaluate((element) => {
     const style = getComputedStyle(element);
-    return { overflowHidden: style.overflow === "hidden" || style.textOverflow === "ellipsis", clipped: element.scrollHeight > element.clientHeight + 1 || element.scrollWidth > element.clientWidth + 1, lineClamp: (style as any).webkitLineClamp, nowrap: style.whiteSpace === "nowrap" };
+    const range = document.createRange(); range.selectNodeContents(element);
+    const lines = range.getClientRects().length;
+    return { overflowHidden: style.overflow === "hidden" || style.textOverflow === "ellipsis", clipped: element.scrollHeight > element.clientHeight + 1 || element.scrollWidth > element.clientWidth + 1, lineClamp: (style as any).webkitLineClamp, nowrap: style.whiteSpace === "nowrap", wrapped: lines > 1 };
   });
-  expect(untruncated).toEqual({ overflowHidden: false, clipped: false, lineClamp: "none", nowrap: false });
+  expect(untruncated).toEqual({ overflowHidden: false, clipped: false, lineClamp: "none", nowrap: false, wrapped: true });
   const questionBox = (await question.boundingBox())!;
-  const bodyBox = (await body.boundingBox())!;
-  expect(questionBox.x + questionBox.width).toBeGreaterThan(bodyBox.x + bodyBox.width * 0.6); // right-aligned
-  await expect(panel.locator(".ssxUserMeta")).toHaveText("just now");
+  const cardBox = (await panel.locator(".ssxCard").first().boundingBox())!;
+  const timelineBox0 = (await panel.locator(".ssxTimeline").boundingBox())!;
+  expect(questionBox.x - cardBox.x).toBeLessThanOrEqual(20); // left-aligned…
+  expect(questionBox.width).toBeGreaterThan(cardBox.width * 0.85); // …and full width
+  expect(questionBox.y).toBeGreaterThanOrEqual(timelineBox0.y - 1); // the first word is in view, not scrolled off the top
+  expect(questionBox.y + questionBox.height).toBeLessThanOrEqual(timelineBox0.y + timelineBox0.height + 1);
+  // The thread header now titles the thread by this question (one line, full text on hover) and counts its turns.
+  await expect(header.locator(".ssxHeadTitle")).toHaveText(LONG_QUESTION);
+  await expect(header.locator(".ssxHeadTitle")).toHaveAttribute("title", LONG_QUESTION);
+  const oneLine = await header.locator(".ssxHeadTitle").evaluate((element) => ({ ellipsis: getComputedStyle(element).textOverflow === "ellipsis", nowrap: getComputedStyle(element).whiteSpace === "nowrap", height: element.getBoundingClientRect().height }));
+  expect(oneLine.ellipsis).toBe(true); expect(oneLine.nowrap).toBe(true); expect(oneLine.height).toBeLessThan(28);
+  await expect(header.locator(".ssxHeadMeta")).toHaveText("started just now · 1 turn");
+  await expect(header.locator("summary")).toHaveText("Switch thread");
 
   const answer = panel.getByRole("group", { name: "Answer" });
   await expect(answer).toHaveCount(1);
+  await expect(answer.locator("section[aria-label='Answer'] > .ssxLabel")).toHaveText("Answer");
   const markdown = answer.locator(".ssxAnswer");
   await expect(markdown).toContainText("created the OpenSearch domain for pi sessions");
   await expect(markdown.locator("strong")).toHaveText("OpenSearch domain");
   await expect(markdown.locator("code")).toHaveText("01a13ce5");
   await expect(markdown.locator(".ssxCite")).toHaveText(["[1]", "[2]"]);
   await expect(markdown.locator(".ssxCite").first()).toHaveAttribute("title", "Create the pi sessions OpenSearch domain");
-  await expect(answer.locator(".ssxSessionsLabel")).toHaveText("Sessions");
+  await expect(answer.locator(".ssxSessionsLabel")).toHaveText("Matching sessions (3)");
   const hits = answer.locator(".ssxHit");
   await expect(hits).toHaveCount(3);
   await expect(hits.nth(0)).toContainText("Create the pi sessions OpenSearch domain");
@@ -226,22 +270,27 @@ test("an Ask turn renders the full question, the answer with citations, the sess
   g = await geometry();
   expect(g.bodyBottom - g.formBottom).toBeLessThanOrEqual(24);
 
-  // Search: a list only, in the same thread, under the same conversation id.
+  // Search: `Results for "…"` and the list only — no Answer section — in the same thread, under the same conversation id.
   await search.check();
   await input.fill("index pi sessions");
   await send.click();
-  await expect(question).toHaveCount(2);
+  await expect(turns).toHaveCount(2);
   await expect(question.last()).toHaveText("index pi sessions"); // newest turn last, drawn below the earlier one…
   const positions = await question.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().y));
   expect(positions[1]).toBeGreaterThan(positions[0]);
-  // …and the timeline is scrolled so the newest turn's answer is in view.
-  const latest = answer.last();
-  await expect(latest.locator(".ssxFooter")).toBeInViewport();
-  const timelineBox = (await panel.locator(".ssxTimeline").boundingBox())!;
-  const latestFooterBox = (await latest.locator(".ssxFooter").boundingBox())!;
-  expect(latestFooterBox.y + latestFooterBox.height).toBeLessThanOrEqual(timelineBox.y + timelineBox.height + 1);
+  // …separated by a divider, and the timeline is scrolled so the newest turn's "You asked" header is at the top of the view.
+  expect(await turns.nth(1).evaluate((element) => getComputedStyle(element).borderTopWidth)).toBe("1px");
+  const latest = turns.nth(1);
+  await expect(latest.locator(".ssxAsked")).toBeInViewport();
+  await expectLatestHeaderInView(panel);
+  await expect(latest.getByRole("group", { name: "Results" })).toHaveCount(1);
+  await expect(latest.getByRole("group", { name: "Answer" })).toHaveCount(0);
   await expect(latest.locator(".ssxAnswer")).toHaveCount(0);
+  await expect(latest.locator("section[aria-label='Answer']")).toHaveCount(0);
+  await expect(latest.locator(".ssxSessionsLabel")).toHaveText("Results for “index pi sessions” (3)");
   await expect(latest.locator(".ssxHit")).toHaveCount(3);
+  await expect(header.locator(".ssxHeadTitle")).toHaveText(LONG_QUESTION); // the title stays the FIRST question
+  await expect(header.locator(".ssxHeadMeta")).toHaveText("started just now · 2 turns");
   await expect(latest.locator(".ssxFooter")).toContainText("Search · SIMPLE");
   await expect(latest.locator(".ssxFooter")).toContainText("tokens 33");
   expect(requests.at(-1)).toEqual({ query: { intent: "index pi sessions" }, retrieval: "SIMPLE", sessionId: requests[0].sessionId, maxResults: 10 });
@@ -250,7 +299,8 @@ test("an Ask turn renders the full question, the answer with citations, the sess
   // Empty and error turns stay in the thread with their question.
   await input.fill("nothing like this");
   await input.press("Enter");
-  await expect(answer.last()).toContainText("No sessions matched.");
+  await expect(turns.last().locator(".ssxReply")).toContainText("No sessions matched.");
+  await expect(turns.last().locator(".ssxSessionsLabel")).toHaveText("Results for “nothing like this” (0)");
   await input.fill("expired credentials please");
   await input.press("Enter");
   const alert = panel.getByRole("alert");
@@ -265,7 +315,8 @@ test("follow-ups reuse the thread's conversation id, New thread mints another, a
   const { requests } = await installExtension(page);
   const panel = await openPanel(page);
   const { input, send } = composer(panel);
-  const question = panel.getByRole("group", { name: "Question" });
+  const question = panel.locator(".ssxQuestion");
+  const header = panel.locator(".ssxHead");
 
   await input.fill("which session created the OpenSearch domain for pi sessions");
   await input.press("Enter");
@@ -277,19 +328,23 @@ test("follow-ups reuse the thread's conversation id, New thread mints another, a
   expect(requests).toHaveLength(2);
   expect(requests[0].sessionId).toMatch(/^[0-9a-f-]{36}$/);
   expect(requests[1].sessionId).toBe(requests[0].sessionId);
-  const threads = panel.locator("summary", { hasText: "Threads" });
-  await expect(threads).toContainText("(1)");
+  const threads = panel.locator("summary", { hasText: "Switch thread" });
+  await expect(threads).toHaveAttribute("title", "1 saved thread");
+  await expect(header.locator(".ssxHeadTitle")).toHaveText("which session created the OpenSearch domain for pi sessions");
+  await expect(header.locator(".ssxHeadMeta")).toHaveText("started just now · 2 turns");
 
-  await panel.getByRole("button", { name: "New thread" }).click();
+  await panel.getByRole("button", { name: "+ New thread" }).click();
   await expect(question).toHaveCount(0);
-  await expect(panel.locator(".ssxEmpty")).toContainText("Ask a question");
+  await expect(header.locator(".ssxHeadTitle")).toHaveText("New thread");
+  await expect(panel.locator(".ssxEmpty")).toContainText("Ask a question about your sessions");
   await input.fill("unrelated question in a new thread");
   await input.press("Enter");
   await expect(question).toHaveCount(1);
   expect(requests).toHaveLength(3);
   expect(requests[2].sessionId).toMatch(/^[0-9a-f-]{36}$/);
   expect(requests[2].sessionId).not.toBe(requests[0].sessionId);
-  await expect(threads).toContainText("(2)");
+  await expect(threads).toHaveAttribute("title", "2 saved threads");
+  await expect(header.locator(".ssxHeadTitle")).toHaveText("unrelated question in a new thread");
 
   // Close and reopen: the most recent thread, with its turns, is what comes back — never a lone stale result.
   await panel.getByRole("button", { name: "Close panel" }).click();
@@ -300,16 +355,17 @@ test("follow-ups reuse the thread's conversation id, New thread mints another, a
   await expect(question).toHaveText("unrelated question in a new thread");
   expect(requests).toHaveLength(3);
 
-  // Switch to the older thread from the picker and continue it under its original conversation id; then delete it.
+  // Switch to the older thread from the dropdown (first question + relative time) and continue it under its original conversation id; then delete it.
   await threads.click();
   const items = panel.locator(".ssxThreadItem");
   await expect(items).toHaveCount(2);
-  await expect(items.nth(0)).toContainText("unrelated question in a new thread");
+  await expect(items.nth(0).locator(".ssxThreadQ")).toHaveText("unrelated question in a new thread");
   await expect(items.nth(0)).toHaveAttribute("aria-current", "true");
-  await expect(items.nth(1)).toContainText("which session created the OpenSearch domain");
-  await expect(items.nth(1)).toContainText("2 turns");
+  await expect(items.nth(1).locator(".ssxThreadQ")).toHaveText("which session created the OpenSearch domain for pi sessions");
+  await expect(items.nth(1).locator(".ssxThreadMeta")).toHaveText("just now · 2 turns");
   await items.nth(1).click();
   await expect(question).toHaveCount(2);
+  await expect(header.locator(".ssxHeadTitle")).toHaveText("which session created the OpenSearch domain for pi sessions");
   await expect(question.first()).toHaveText("which session created the OpenSearch domain for pi sessions");
   await input.fill("and the instance type?");
   await input.press("Enter");
@@ -321,14 +377,18 @@ test("follow-ups reuse the thread's conversation id, New thread mints another, a
   await page.locator('#headerActions .webHeaderActionButton[title="Session search"]').click();
   await expect(question).toHaveCount(3);
   await expect(question.last()).toHaveText("and the instance type?");
-  // …scrolled to the newest turn: its footer is in view (on a short viewport the tall answer fills it).
-  await expect(panel.getByRole("group", { name: "Answer" }).last().locator(".ssxFooter")).toBeInViewport();
+  // …scrolled so the newest turn's "You asked" header is at the top of the timeline (not the bottom of its answer).
+  const latestAsked = panel.locator(".ssxTurn").last().locator(".ssxAsked");
+  await expect(latestAsked).toBeInViewport();
+  await expect(latestAsked.locator(".ssxLabel")).toContainText("You asked");
+  await expectLatestHeaderInView(panel);
+  await expect(header.locator(".ssxHeadMeta")).toHaveText("started just now · 3 turns");
 
   await threads.click();
   await panel.getByRole("button", { name: "Delete thread" }).nth(0).click();
   await expect(question).toHaveCount(1);
   await expect(question).toHaveText("unrelated question in a new thread");
-  await expect(threads).toContainText("(1)");
+  await expect(threads).toHaveAttribute("title", "1 saved thread");
   expect(requests).toHaveLength(4);
 });
 
@@ -336,7 +396,7 @@ test("while an Ask turn is in flight the composer is locked, Cancel ends it, and
   const { invocations, requests, releaseSlow } = await installExtension(page);
   const panel = await openPanel(page);
   const { input, ask, search, send } = composer(panel);
-  const question = panel.getByRole("group", { name: "Question" });
+  const question = panel.locator(".ssxQuestion");
 
   await input.fill("slow agentic question");
   await input.press("Enter");
@@ -349,7 +409,8 @@ test("while an Ask turn is in flight the composer is locked, Cancel ends it, and
   await expect(send).toBeDisabled();
   await expect(ask).toBeDisabled();
   await expect(search).toBeDisabled();
-  await expect(panel.getByRole("button", { name: "New thread" })).toBeDisabled();
+  await expect(panel.getByRole("button", { name: "+ New thread" })).toBeDisabled();
+  await expect(panel.locator(".ssxHead .ssxHeadTitle")).toHaveText("slow agentic question");
   const sends = () => invocations.filter((call) => call.event?.action === "send").length;
   expect(sends()).toBe(1);
   expect(requests).toHaveLength(1);
