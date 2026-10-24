@@ -1,18 +1,20 @@
 /**
  * session-search — installable pi-web extension (opt-in)
  *
- * Adds a "Session search" panel that queries an AI Search application over your
- * indexed pi-web session history and links each hit back to its session.
+ * Adds a chat-shaped "Session search" panel that asks an AI Search application
+ * about your indexed pi-web session history. Each thread is a conversation:
+ * your question, then the API's answer with the sessions it cites. Every turn
+ * of a thread is sent under the same API conversation id, so follow-ups like
+ * "what engine version did it confirm?" resolve against the earlier turns.
  *
  * The browser never sees AWS credentials or raw search passages: the panel is
  * server-rendered HTML, the upstream request is SigV4-signed here on the
  * server from a named profile in ~/.aws/credentials, and only the compact
- * per-session fields (title, project, date, session link, counts, usage) plus
- * the API's synthesized answer and citations are returned to the page.
+ * per-session fields (title, project, date, session link, counts, usage,
+ * request id) plus the API's synthesized answer and citations reach the page.
  *
- * Past searches (question, mode, normalized results, answer) are kept in a
- * small JSON file owned by the server user — like the notepad example — so a
- * previous answer can be reopened without another upstream call.
+ * Threads persist in a small JSON file owned by the server user (like the
+ * notepad example), newest first, bounded to MAX_THREADS.
  *
  * Configuration lives in pi-web Settings ("Session search"), seeded from
  * environment variables on first use:
@@ -21,9 +23,11 @@
  *   PI_WEB_SESSION_SEARCH_REGION        signing region (default: "us-east-1")
  *   PI_WEB_SESSION_SEARCH_SERVICE       signing service name (default: "aisearch")
  *   PI_WEB_SESSION_SEARCH_REFRESH_HINT  command shown when credentials expire (optional)
- *   PI_WEB_SESSION_SEARCH_HISTORY_FILE  where past searches are stored
- *                                       (default: PI_WEB_HOME/session-search-history.json
- *                                        or ~/.pi/agent/session-search-history.json)
+ *   PI_WEB_SESSION_SEARCH_TRACES_URL    "Open traces" link; `{requestId}` is substituted (optional)
+ *   PI_WEB_SESSION_SEARCH_HISTORY_FILE  where threads are stored
+ *                                       (default: PI_WEB_HOME/session-search-threads.json
+ *                                        or ~/.pi/agent/session-search-threads.json; a legacy
+ *                                        session-search-history.json next to it is migrated once)
  */
 
 import { createHash, createHmac, randomUUID } from "node:crypto";
@@ -35,15 +39,23 @@ import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebPanelEvent, PiWebPa
 export const PANEL_KEY = "session-search";
 export const SETTINGS_ID = "session-search.settings";
 export const SEARCH_TIMEOUT_MS = 180_000;
-export const MAX_HISTORY_ENTRIES = 50;
-/** SIMPLE searches usually answer well inside this window; longer ones render a spinner and finish via update(). */
+export const MAX_THREADS = 50;
+/** Search turns usually answer well inside this window; longer ones render a spinner and finish via update(). */
 const INLINE_WAIT_MS = 1_500;
-const MAX_QUERY_CHARS = 500;
+/** While a turn runs, the panel repaints this often so the elapsed time keeps moving. */
+const RUNNING_TICK_MS = 5_000;
+const MAX_QUERY_CHARS = 2_000;
 const MAX_ANSWER_CHARS = 8_000;
-const MAX_RESULTS = 5;
 const SYNTHESIS_OPTIONS = { maxTokens: 600, temperature: 0, responseFormat: "MARKDOWN" } as const;
 
 export type RetrievalMode = "SIMPLE" | "AGENTIC";
+/** What the composer's segmented control offers: Ask answers, Search only lists sessions. */
+export type TurnKind = "ask" | "search";
+
+export const TURN_PLANS: Record<TurnKind, { mode: RetrievalMode; synthesize: boolean; maxResults: number; maxTurns?: number; label: string }> = {
+  ask: { mode: "AGENTIC", synthesize: true, maxResults: 5, maxTurns: 6, label: "Ask" },
+  search: { mode: "SIMPLE", synthesize: false, maxResults: 10, label: "Search" },
+};
 
 export type SearchConfig = {
   endpoint: string;
@@ -51,6 +63,8 @@ export type SearchConfig = {
   region: string;
   service: string;
   refreshHint: string;
+  /** Template for the "Open traces" link; `{requestId}` is substituted (appended when absent). Empty hides the link. */
+  tracesUrl: string;
 };
 
 export type AwsCredentials = { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
@@ -76,18 +90,23 @@ export type SearchResult = {
   citations: number[];
   usage: SearchUsage;
   elapsedMs: number;
+  /** The API's `x-amzn-RequestId` ("" when absent). */
+  requestId: string;
 };
 
-/** What the request asks the API for, beyond the question itself. */
-export type SearchOptions = {
-  synthesize?: boolean;
-  /** API conversation id: turns that share it let the API resolve references like "that session". */
-  threadId?: string;
-  maxResults?: number;
+export type SearchInput = {
+  intent: string;
+  kind: TurnKind;
+  /** API conversation id: every turn of a thread sends the same one so follow-ups resolve. */
+  threadId: string;
 };
 
 export class SearchError extends Error {
-  constructor(message: string, readonly kind: "config" | "credentials" | "upstream" | "timeout" | "cancelled" | "network") {
+  constructor(
+    message: string,
+    readonly kind: "config" | "credentials" | "upstream" | "timeout" | "cancelled" | "network",
+    readonly requestId = "",
+  ) {
     super(message);
     this.name = "SearchError";
   }
@@ -102,6 +121,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): SearchConfi
     region: (env.PI_WEB_SESSION_SEARCH_REGION || "us-east-1").trim(),
     service: (env.PI_WEB_SESSION_SEARCH_SERVICE || "aisearch").trim(),
     refreshHint: (env.PI_WEB_SESSION_SEARCH_REFRESH_HINT || "").trim(),
+    tracesUrl: (env.PI_WEB_SESSION_SEARCH_TRACES_URL || "").trim(),
   };
 }
 
@@ -110,12 +130,27 @@ export function normalizeConfig(values: Record<string, unknown> | undefined, fal
     const value = values?.[key];
     return typeof value === "string" && value.trim() ? value.trim() : fallback[key];
   };
-  return { endpoint: text("endpoint"), profile: text("profile"), region: text("region"), service: text("service"), refreshHint: text("refreshHint") };
+  return { endpoint: text("endpoint"), profile: text("profile"), region: text("region"), service: text("service"), refreshHint: text("refreshHint"), tracesUrl: text("tracesUrl") };
 }
 
-export function historyFilePath(env: NodeJS.ProcessEnv = process.env) {
-  if (env.PI_WEB_SESSION_SEARCH_HISTORY_FILE) return env.PI_WEB_SESSION_SEARCH_HISTORY_FILE;
-  return env.PI_WEB_HOME ? join(env.PI_WEB_HOME, "session-search-history.json") : join(homedir(), ".pi", "agent", "session-search-history.json");
+function storageDirectory(env: NodeJS.ProcessEnv) {
+  return env.PI_WEB_HOME || join(homedir(), ".pi", "agent");
+}
+
+export function threadsFilePath(env: NodeJS.ProcessEnv = process.env) {
+  return env.PI_WEB_SESSION_SEARCH_HISTORY_FILE || join(storageDirectory(env), "session-search-threads.json");
+}
+
+/** The previous version of this extension kept a flat list of searches here; it is read once to seed the thread store. */
+export function legacyHistoryFilePath(env: NodeJS.ProcessEnv = process.env) {
+  return join(storageDirectory(env), "session-search-history.json");
+}
+
+/** Builds the "Open traces" link for a request id, or "" when no template is configured. */
+export function tracesLink(template: string, requestId: string) {
+  if (!template || !requestId) return "";
+  const url = template.includes("{requestId}") ? template.replaceAll("{requestId}", encodeURIComponent(requestId)) : `${template}${encodeURIComponent(requestId)}`;
+  return /^https?:\/\//i.test(url) ? url : "";
 }
 
 // --- AWS credentials file -----------------------------------------------------
@@ -216,26 +251,31 @@ export function signRequest(input: SignInput): Record<string, string> {
 
 // --- Request / response shaping ----------------------------------------------
 
-export function buildSearchRequest(endpoint: string, intent: string, mode: RetrievalMode, options: SearchOptions = {}) {
+export function buildSearchRequest(endpoint: string, input: SearchInput) {
+  const plan = TURN_PLANS[input.kind];
   return {
     url: endpoint,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      query: { intent },
-      retrieval: mode,
-      ...(options.threadId ? { sessionId: options.threadId } : {}),
-      ...(options.synthesize ? { synthesize: true, synthesisOptions: SYNTHESIS_OPTIONS } : {}),
-      maxResults: options.maxResults ?? MAX_RESULTS,
+      query: { intent: input.intent },
+      retrieval: plan.mode,
+      sessionId: input.threadId,
+      ...(plan.synthesize ? { synthesize: true, synthesisOptions: SYNTHESIS_OPTIONS } : {}),
+      ...(plan.maxTurns ? { retrievalOptions: { maxTurns: plan.maxTurns } } : {}),
+      maxResults: plan.maxResults,
     }),
   };
 }
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{3,127}$/;
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 
 function text(value: unknown, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
+
+const requestIdText = (value: unknown) => (REQUEST_ID_PATTERN.test(text(value)) ? text(value) : "");
 
 /** The API returns `source` either as an object or as a JSON-encoded string of that object. */
 function parseSource(value: unknown): Record<string, unknown> {
@@ -245,27 +285,34 @@ function parseSource(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function normalizeHit(fields: Record<string, unknown>, fallbackId: string): SessionHit {
+  const sessionIdFromUrl = /^\/\?sessionId=([^&#]+)/.exec(text(fields.session_url ?? fields.sessionUrl))?.[1];
+  const sessionId = text(fields.session_id ?? fields.sessionId) || (sessionIdFromUrl ? decodeURIComponent(sessionIdFromUrl) : "");
+  const safeSessionId = SESSION_ID_PATTERN.test(sessionId) ? sessionId : "";
+  const passageCount = Number(fields.passage_count ?? fields.passageCount);
+  return {
+    id: text(fields.id, fallbackId),
+    title: text(fields.title, "Untitled session"),
+    project: text(fields.project),
+    startedAt: text(fields.started_at ?? fields.startedAt),
+    sessionId: safeSessionId,
+    sessionUrl: safeSessionId ? `/?sessionId=${encodeURIComponent(safeSessionId)}` : "",
+    passageCount: Number.isFinite(passageCount) && passageCount >= 0 ? Math.floor(passageCount) : 0,
+  };
+}
+
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
 /** Keeps only the fields the panel shows; passages, vectors and anything unknown are dropped here. */
-export function normalizeSearchResponse(raw: unknown, elapsedMs = 0): SearchResult {
+export function normalizeSearchResponse(raw: unknown, elapsedMs = 0, requestId = ""): SearchResult {
   const root = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const rawDocuments = Array.isArray(root.documents) ? root.documents : [];
   const documents = rawDocuments.flatMap((entry, index): SessionHit[] => {
     if (!entry || typeof entry !== "object") return [];
     const document = entry as Record<string, unknown>;
     const source = parseSource(document.source);
-    const sessionIdFromUrl = /^\/\?sessionId=([^&#]+)/.exec(text(source.session_url))?.[1];
-    const sessionId = text(source.session_id) || (sessionIdFromUrl ? decodeURIComponent(sessionIdFromUrl) : "");
-    const safeSessionId = SESSION_ID_PATTERN.test(sessionId) ? sessionId : "";
-    const passageCount = Number(source.passage_count);
-    return [{
-      id: text(document.documentId, sessionId || `doc-${index}`),
-      title: text(source.title, "Untitled session"),
-      project: text(source.project),
-      startedAt: text(source.started_at),
-      sessionId: safeSessionId,
-      sessionUrl: safeSessionId ? `/?sessionId=${encodeURIComponent(safeSessionId)}` : "",
-      passageCount: Number.isFinite(passageCount) && passageCount >= 0 ? Math.floor(passageCount) : 0,
-    }];
+    const hit = normalizeHit(source, "");
+    return [{ ...hit, id: text(document.documentId, hit.sessionId || `doc-${index}`) }];
   });
   // Observed shape (synthesize=true): `answer` is a Markdown string with `[n]` markers and
   // `citations` is `[{ documentIndex: 0 }, …]`; both are absent when nothing was retrieved.
@@ -274,25 +321,25 @@ export function normalizeSearchResponse(raw: unknown, elapsedMs = 0): SearchResu
     return typeof index === "number" && Number.isInteger(index) && index >= 0 && index < documents.length ? [index] : [];
   });
   const rawUsage = root.usage && typeof root.usage === "object" ? root.usage as Record<string, unknown> : {};
-  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
   return {
     retrievalMode: root.retrievalMode === "AGENTIC" ? "AGENTIC" : "SIMPLE",
     documents,
     answer: text(root.answer).slice(0, MAX_ANSWER_CHARS),
     citations: [...new Set(citations)],
     usage: { planningTokens: count(rawUsage.planningTokens), synthesisTokens: count(rawUsage.synthesisTokens), totalTokens: count(rawUsage.totalTokens) },
-    elapsedMs,
+    elapsedMs: count(elapsedMs),
+    requestId: requestIdText(requestId),
   };
 }
 
-export function classifyUpstreamError(status: number, bodyText: string, config: Pick<SearchConfig, "profile" | "refreshHint">): SearchError {
+export function classifyUpstreamError(status: number, bodyText: string, config: Pick<SearchConfig, "profile" | "refreshHint">, requestId = ""): SearchError {
   const credentialSignals = /ExpiredToken|InvalidSignature|UnrecognizedClient|InvalidClientTokenId|security token/i;
   if (status === 403 || status === 401 || credentialSignals.test(bodyText)) {
     const hint = config.refreshHint ? ` Refresh them and retry: ${config.refreshHint}` : " Refresh them (for example with `ada credentials update … --once`) and retry.";
-    return new SearchError(`AWS credentials for profile "${config.profile}" were rejected (HTTP ${status}) — they have probably expired.${hint}`, "credentials");
+    return new SearchError(`AWS credentials for profile "${config.profile}" were rejected (HTTP ${status}) — they have probably expired.${hint}`, "credentials", requestId);
   }
   const snippet = bodyText.replace(/\s+/g, " ").trim().slice(0, 200);
-  return new SearchError(`Search API answered HTTP ${status}${snippet ? `: ${snippet}` : ""}`, "upstream");
+  return new SearchError(`Search API answered HTTP ${status}${snippet ? `: ${snippet}` : ""}`, "upstream", requestId);
 }
 
 // --- Search client -----------------------------------------------------------
@@ -310,7 +357,7 @@ export function createSearchClient(options: SearchClientOptions = {}) {
   const now = options.now || (() => new Date());
   const timeoutMs = options.timeoutMs ?? SEARCH_TIMEOUT_MS;
 
-  return async function search(config: SearchConfig, intent: string, mode: RetrievalMode, signal?: AbortSignal, searchOptions: SearchOptions = {}): Promise<SearchResult> {
+  return async function search(config: SearchConfig, input: SearchInput, signal?: AbortSignal): Promise<SearchResult> {
     if (!config.endpoint) throw new SearchError("No search endpoint is configured. Set PI_WEB_SESSION_SEARCH_ENDPOINT or fill in Settings → Session search.", "config");
     let endpoint: URL;
     try { endpoint = new URL(config.endpoint); } catch { throw new SearchError(`The configured search endpoint is not a valid URL: ${config.endpoint}`, "config"); }
@@ -319,7 +366,7 @@ export function createSearchClient(options: SearchClientOptions = {}) {
     }
 
     const credentials = await loadCredentials(config.profile);
-    const request = buildSearchRequest(endpoint.toString(), intent, mode, searchOptions);
+    const request = buildSearchRequest(endpoint.toString(), input);
     const headers = signRequest({ ...request, service: config.service, region: config.region, credentials, date: now() });
     const timeout = AbortSignal.timeout(timeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -329,73 +376,100 @@ export function createSearchClient(options: SearchClientOptions = {}) {
       if (combined.aborted) throw combined.reason;
       response = await doFetch(request.url, { method: request.method, headers, body: request.body, signal: combined });
     } catch (error) {
-      if (signal?.aborted) throw new SearchError("Search cancelled.", "cancelled");
-      if (timeout.aborted) throw new SearchError(`Search timed out after ${Math.round(timeoutMs / 1000)}s.`, "timeout");
+      if (signal?.aborted) throw new SearchError("Cancelled.", "cancelled");
+      if (timeout.aborted) throw new SearchError(`Timed out after ${Math.round(timeoutMs / 1000)}s.`, "timeout");
       throw new SearchError(`Could not reach the search API: ${error instanceof Error ? error.message : String(error)}`, "network");
     }
+    const requestId = requestIdText(response.headers.get("x-amzn-requestid") ?? response.headers.get("x-amz-request-id") ?? "");
     const bodyText = await response.text();
-    if (!response.ok) throw classifyUpstreamError(response.status, bodyText, config);
+    if (!response.ok) throw classifyUpstreamError(response.status, bodyText, config, requestId);
     let parsed: unknown;
-    try { parsed = JSON.parse(bodyText); } catch { throw new SearchError("Search API returned a non-JSON body.", "upstream"); }
-    return normalizeSearchResponse(parsed, Date.now() - startedAt);
+    try { parsed = JSON.parse(bodyText); } catch { throw new SearchError("Search API returned a non-JSON body.", "upstream", requestId); }
+    return normalizeSearchResponse(parsed, Date.now() - startedAt, requestId);
   };
 }
 
-// --- Search history (server-side, per server user, like the notepad example) --
+// --- Thread store (server-side, per server user, like the notepad example) ----
 
-export type HistoryEntry = {
+export type Turn = {
   id: string;
-  /** ISO timestamp of when the search finished. */
+  /** ISO timestamp of when the turn finished. */
   at: string;
+  kind: TurnKind;
   query: string;
-  mode: RetrievalMode;
-  synthesize: boolean;
-  /** API conversation id this turn was asked under; turns sharing it form a conversation. */
-  threadId?: string;
   result: SearchResult;
+};
+
+export type Thread = {
+  /** Also the API conversation id (`sessionId`) every turn of the thread is sent under. */
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  turns: Turn[];
 };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
-/** Re-validates a stored entry so a hand-edited or stale file can never smuggle extra fields or markup into the panel. */
-export function normalizeHistoryEntry(raw: unknown): HistoryEntry | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const entry = raw as Record<string, unknown>;
-  const result = entry.result && typeof entry.result === "object" ? entry.result as Record<string, unknown> : undefined;
-  const id = text(entry.id);
-  const query = text(entry.query).slice(0, MAX_QUERY_CHARS);
-  if (!id || !query || !result || !ISO_DATE.test(text(entry.at))) return undefined;
-  const documents = (Array.isArray(result.documents) ? result.documents : []).flatMap((hit): SessionHit[] => {
-    if (!hit || typeof hit !== "object") return [];
-    const h = hit as Record<string, unknown>;
-    const sessionId = SESSION_ID_PATTERN.test(text(h.sessionId)) ? text(h.sessionId) : "";
-    const passageCount = Number(h.passageCount);
-    return [{
-      id: text(h.id, "doc"), title: text(h.title, "Untitled session"), project: text(h.project), startedAt: text(h.startedAt),
-      sessionId, sessionUrl: sessionId ? `/?sessionId=${encodeURIComponent(sessionId)}` : "",
-      passageCount: Number.isFinite(passageCount) && passageCount >= 0 ? Math.floor(passageCount) : 0,
-    }];
-  });
-  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+function normalizeStoredResult(raw: unknown): SearchResult {
+  const result = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const documents = (Array.isArray(result.documents) ? result.documents : []).flatMap((hit): SessionHit[] =>
+    hit && typeof hit === "object" ? [normalizeHit(hit as Record<string, unknown>, "doc")] : []);
   const usage = result.usage && typeof result.usage === "object" ? result.usage as Record<string, unknown> : {};
-  const threadId = text(entry.threadId);
   return {
-    id, at: text(entry.at), query,
-    mode: entry.mode === "AGENTIC" ? "AGENTIC" : "SIMPLE",
-    synthesize: entry.synthesize === true,
-    ...(SESSION_ID_PATTERN.test(threadId) ? { threadId } : {}),
-    result: {
-      retrievalMode: result.retrievalMode === "AGENTIC" ? "AGENTIC" : "SIMPLE",
-      documents,
-      answer: text(result.answer).slice(0, MAX_ANSWER_CHARS),
-      citations: [...new Set((Array.isArray(result.citations) ? result.citations : []).filter((index): index is number => typeof index === "number" && Number.isInteger(index) && index >= 0 && index < documents.length))],
-      usage: { planningTokens: count(usage.planningTokens), synthesisTokens: count(usage.synthesisTokens), totalTokens: count(usage.totalTokens) },
-      elapsedMs: count(result.elapsedMs),
-    },
+    retrievalMode: result.retrievalMode === "AGENTIC" ? "AGENTIC" : "SIMPLE",
+    documents,
+    answer: text(result.answer).slice(0, MAX_ANSWER_CHARS),
+    citations: [...new Set((Array.isArray(result.citations) ? result.citations : []).filter((index): index is number => typeof index === "number" && Number.isInteger(index) && index >= 0 && index < documents.length))],
+    usage: { planningTokens: count(usage.planningTokens), synthesisTokens: count(usage.synthesisTokens), totalTokens: count(usage.totalTokens) },
+    elapsedMs: count(result.elapsedMs),
+    requestId: requestIdText(result.requestId),
   };
 }
 
-export function createHistoryStore(path: string, limit = MAX_HISTORY_ENTRIES) {
+/** Re-validates a stored turn so a hand-edited or stale file can never smuggle extra fields or markup into the panel. */
+export function normalizeTurn(raw: unknown): Turn | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const entry = raw as Record<string, unknown>;
+  const id = text(entry.id);
+  const query = text(entry.query).slice(0, MAX_QUERY_CHARS);
+  if (!id || !query || !ISO_DATE.test(text(entry.at)) || !entry.result || typeof entry.result !== "object") return undefined;
+  // Legacy entries carried `mode` instead of `kind`: AGENTIC searches were answers, SIMPLE ones lists.
+  const kind: TurnKind = entry.kind === "search" || (entry.kind === undefined && entry.mode === "SIMPLE") ? "search" : "ask";
+  return { id, at: text(entry.at), kind, query, result: normalizeStoredResult(entry.result) };
+}
+
+export function normalizeThread(raw: unknown): Thread | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const entry = raw as Record<string, unknown>;
+  const id = text(entry.id);
+  if (!SESSION_ID_PATTERN.test(id)) return undefined;
+  const turns = (Array.isArray(entry.turns) ? entry.turns : []).map(normalizeTurn).filter((turn): turn is Turn => Boolean(turn)).sort((a, b) => a.at.localeCompare(b.at));
+  if (!turns.length) return undefined;
+  const createdAt = ISO_DATE.test(text(entry.createdAt)) ? text(entry.createdAt) : turns[0].at;
+  const updatedAt = ISO_DATE.test(text(entry.updatedAt)) ? text(entry.updatedAt) : turns[turns.length - 1].at;
+  return { id, createdAt, updatedAt, turns };
+}
+
+/** Turns the previous flat "past searches" list into threads: entries sharing a conversation id form one thread, the rest become single-turn threads. */
+export function migrateLegacyEntries(raw: unknown): Thread[] {
+  const root = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const entries = Array.isArray(root.entries) ? root.entries : [];
+  const grouped = new Map<string, unknown[]>();
+  for (const entry of entries) {
+    const threadId = entry && typeof entry === "object" ? text((entry as Record<string, unknown>).threadId) : "";
+    const key = SESSION_ID_PATTERN.test(threadId) ? threadId : randomUUID();
+    grouped.set(key, [...(grouped.get(key) ?? []), entry]);
+  }
+  return [...grouped.entries()]
+    .map(([id, turns]) => normalizeThread({ id, turns }))
+    .filter((thread): thread is Thread => Boolean(thread))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export type ThreadStoreOptions = { legacyPath?: string; limit?: number };
+
+export function createThreadStore(path: string, options: ThreadStoreOptions = {}) {
+  const limit = options.limit ?? MAX_THREADS;
   let queue: Promise<unknown> = Promise.resolve();
   /** Serialises writes from concurrent sessions of this server; readers never wait. */
   const serial = <T>(task: () => Promise<T>) => {
@@ -404,42 +478,66 @@ export function createHistoryStore(path: string, limit = MAX_HISTORY_ENTRIES) {
     return next;
   };
 
-  async function load(): Promise<HistoryEntry[]> {
-    let raw: unknown;
-    try { raw = JSON.parse(await readFile(path, "utf8")); } catch { return []; }
-    const entries = raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).entries) ? (raw as Record<string, unknown>).entries as unknown[] : [];
-    return entries.map(normalizeHistoryEntry).filter((entry): entry is HistoryEntry => Boolean(entry)).slice(0, limit);
+  async function readJson(file: string): Promise<unknown> {
+    try { return JSON.parse(await readFile(file, "utf8")); } catch { return undefined; }
   }
 
-  async function save(entries: HistoryEntry[]) {
+  function normalizeAll(raw: unknown): Thread[] {
+    const root = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+    const threads = (Array.isArray(root.threads) ? root.threads : []).map(normalizeThread).filter((thread): thread is Thread => Boolean(thread));
+    return threads.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
+  }
+
+  async function save(threads: Thread[]) {
     await mkdir(dirname(path), { recursive: true });
     const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
     try {
-      await writeFile(temporary, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+      await writeFile(temporary, `${JSON.stringify({ version: 2, threads }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
       await rename(temporary, path);
     } finally {
       await rm(temporary, { force: true }).catch(() => undefined);
     }
   }
 
+  let migration: Promise<Thread[]> | undefined;
+  /** Newest first. The first load with no thread file seeds it from the legacy flat history, which is left untouched. */
+  async function load(): Promise<Thread[]> {
+    const own = await readJson(path);
+    if (own !== undefined || !options.legacyPath) return normalizeAll(own);
+    const legacy = await readJson(options.legacyPath);
+    if (legacy === undefined) return [];
+    // Not serialised through `serial` (load() runs inside it); concurrent migrations write identical content.
+    migration ??= (async () => {
+      const migrated = migrateLegacyEntries(legacy).slice(0, limit);
+      await save(migrated);
+      return migrated;
+    })();
+    return migration;
+  }
+
   return {
     path,
     load,
-    /** Newest first; drops the oldest entries beyond the limit. */
-    add: (entry: HistoryEntry) => serial(async () => {
-      const entries = [entry, ...(await load()).filter((existing) => existing.id !== entry.id)].slice(0, limit);
-      await save(entries);
-      return entries;
+    /** Appends a finished turn, creating the thread if needed, and moves the thread to the front; drops the oldest beyond the limit. */
+    addTurn: (threadId: string, turn: Turn) => serial(async () => {
+      const threads = await load();
+      const existing = threads.find((thread) => thread.id === threadId);
+      const thread: Thread = existing
+        ? { ...existing, updatedAt: turn.at, turns: [...existing.turns.filter((candidate) => candidate.id !== turn.id), turn] }
+        : { id: threadId, createdAt: turn.at, updatedAt: turn.at, turns: [turn] };
+      const next = [thread, ...threads.filter((candidate) => candidate.id !== threadId)].slice(0, limit);
+      await save(next);
+      return next;
     }),
-    remove: (id: string) => serial(async () => {
-      const entries = (await load()).filter((entry) => entry.id !== id);
-      await save(entries);
-      return entries;
+    remove: (threadId: string) => serial(async () => {
+      const threads = (await load()).filter((thread) => thread.id !== threadId);
+      await save(threads);
+      return threads;
     }),
   };
 }
 
-export type HistoryStore = ReturnType<typeof createHistoryStore>;
+export type ThreadStore = ReturnType<typeof createThreadStore>;
 
 // --- Answer rendering (safe Markdown subset; the answer is model output, not trusted markup) --
 
@@ -455,7 +553,7 @@ function renderInline(escaped: string, hits: SessionHit[]) {
     .replace(/(^|[\s(])_([^_\n]+)_/g, "$1<em>$2</em>")
     // Markdown links keep their text only: model output never becomes a clickable URL here.
     .replace(/\[([^\]\n]+)\]\((?:[^)\n]*)\)/g, "$1")
-    // Citation markers `[n]` point at the numbered results below the answer.
+    // Citation markers `[n]` point at the numbered sessions below the answer.
     .replace(/\[(\d{1,2})\]/g, (marker, digits: string) => {
       const hit = hits[Number(digits) - 1];
       return hit ? `<sup class="ssxCite" title="${escapeHtml(hit.title)}">[${digits}]</sup>` : marker;
@@ -504,32 +602,25 @@ export function renderAnswerMarkdown(markdown: string, hits: SessionHit[] = []):
 
 export type SearchJob = {
   id: string;
+  threadId: string;
+  kind: TurnKind;
   query: string;
-  mode: RetrievalMode;
   startedAt: number;
   controller: AbortController;
   state: "running" | "done" | "error" | "cancelled";
   /** True while the originating render() is still waiting inline; its own return paints the result. */
   inlineWait?: boolean;
-  result?: SearchResult;
   error?: SearchError;
 };
 
-export type Thread = { id: string; turns: HistoryEntry[] };
-
 export type PanelState = {
+  /** Thread shown in the timeline; also the API conversation id for the next turn. */
+  threadId: string;
+  threads: Thread[];
+  /** Segmented-control position for the next turn. */
+  kind: TurnKind;
   job?: SearchJob;
-  query: string;
-  mode: RetrievalMode;
-  /** "Synthesize answer" toggle; only honoured for AGENTIC searches. */
-  synthesize?: boolean;
-  /** "Continue conversation": the next search reuses the thread's API conversation id. */
-  continueThread?: boolean;
-  thread?: Thread;
-  history?: HistoryEntry[];
-  /** History entry whose results are currently shown (restored without a request). */
-  activeHistoryId?: string;
-  notice?: string;
+  tracesUrl?: string;
 };
 
 function formatDate(iso: string) {
@@ -553,80 +644,85 @@ function formatRelative(iso: string, now = Date.now()) {
 
 const panelStyles = `
 <style>
-.ssx { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; font-size: 13.5px; }
-.ssx.ssxWithHistory { grid-template-columns: minmax(120px, 150px) minmax(0, 1fr); }
-.ssx .ssxMain { display: grid; gap: 12px; min-width: 0; }
-.ssx form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin: 0; }
-.ssx .ssxOptions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12px; color: var(--muted); }
-.ssx .ssxOptions label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
-.ssx .ssxOptions label:has(:disabled) { cursor: default; opacity: .6; }
-.ssx form:has(select[name="mode"] option[value="SIMPLE"]:checked) .ssxSynth { display: none; }
-.ssx input[type="search"], .ssx select { box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: color-mix(in srgb, var(--panel-2) 82%, black); color: var(--text); font: inherit; }
-.ssx select { width: auto; height: auto; min-height: 0; padding: 5px 6px; font-size: 12px; }
-.ssx input:focus, .ssx select:focus { outline: none; border-color: var(--accent); }
-.ssx .ssxStatus { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); outline: none; }
-.ssx .ssxSpinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: ssxSpin 0.9s linear infinite; flex: none; }
-@keyframes ssxSpin { to { transform: rotate(360deg); } }
-.ssx .ssxError { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 60%, var(--border)); border-radius: 10px; color: var(--danger); overflow-wrap: anywhere; }
-.ssx .ssxEmpty { padding: 18px 4px; color: var(--muted); text-align: center; }
+.ssx { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; height: 100%; min-height: 320px; font-size: 13.5px; }
+.ssx .ssxBar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ssx .ssxThreads { position: relative; min-width: 0; }
+.ssx .ssxThreads summary { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 6px 10px; border: 1px solid var(--border); border-radius: 9px; color: var(--text); font-size: 12px; cursor: pointer; list-style: none; }
+.ssx .ssxThreads summary::-webkit-details-marker { display: none; }
+.ssx .ssxThreads summary::after { content: "▾"; color: var(--muted); }
+.ssx .ssxThreads[open] summary::after { content: "▴"; }
+.ssx .ssxThreadList { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; display: grid; gap: 2px; width: min(360px, 80vw); max-height: 320px; margin: 0; padding: 6px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 8px 24px rgba(0,0,0,.35); list-style: none; }
+.ssx .ssxThreadList li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
+.ssx .ssxThreadItem { display: grid; gap: 2px; width: 100%; height: auto; min-height: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.ssx .ssxThreadItem:hover { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
+.ssx .ssxThreadItem[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.ssx .ssxThreadQ { display: block; max-height: 2.7em; line-height: 1.35; overflow: hidden; overflow-wrap: anywhere; }
+.ssx .ssxThreadMeta { font-size: 10.5px; color: var(--muted); }
+.ssx .ssxThreadDelete { height: auto; min-height: 0; padding: 4px 6px; border: 0; background: none; color: var(--muted); font: inherit; cursor: pointer; }
+.ssx .ssxThreadDelete:hover { color: var(--danger); }
+.ssx .ssxNew { min-height: 32px; padding: 5px 10px; font-size: 12px; }
+.ssx .ssxTimeline { display: flex; flex-direction: column-reverse; justify-content: flex-end; gap: 12px; min-height: 0; overflow: auto; padding: 2px 2px 4px; overscroll-behavior: contain; }
+.ssx .ssxTurn { display: grid; gap: 8px; }
+.ssx .ssxUser { justify-self: end; max-width: 92%; padding: 9px 12px; border-radius: 14px 14px 4px 14px; background: color-mix(in srgb, var(--accent) 22%, var(--panel-2)); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.ssx .ssxUserMeta { justify-self: end; margin-top: -4px; font-size: 10.5px; color: var(--muted); }
+.ssx .ssxAssistant { display: grid; gap: 10px; justify-self: start; width: 100%; box-sizing: border-box; padding: 11px 13px; border: 1px solid var(--border); border-radius: 4px 14px 14px 14px; background: color-mix(in srgb, var(--panel-2) 55%, transparent); line-height: 1.5; }
+.ssx .ssxAnswer p, .ssx .ssxAnswer pre { margin: 0 0 6px; }
+.ssx .ssxAnswer > :last-child { margin-bottom: 0; }
+.ssx .ssxAnswer ul, .ssx .ssxAnswer ol { margin: 0 0 6px; padding-left: 18px; }
+.ssx .ssxAnswer pre { padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--panel-2) 80%, black); overflow: auto; font-size: 12px; }
+.ssx .ssxAnswer code { font-size: 12.5px; }
+.ssx .ssxCite { font-size: 10px; color: var(--accent); margin-left: 1px; }
+.ssx .ssxSessionsLabel { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .ssx ol, .ssx ul { margin: 0; padding: 0; }
-.ssx .ssxResults { display: grid; gap: 6px; list-style: none; }
-.ssx .ssxHit { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
+.ssx .ssxSessions { display: grid; gap: 6px; list-style: none; }
+.ssx .ssxHit { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel) 60%, transparent); }
 .ssx .ssxIndex { grid-row: 1 / span 2; align-self: start; min-width: 18px; padding: 1px 5px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-size: 11px; font-weight: 600; text-align: center; }
 .ssx .ssxTitle { font-weight: 600; overflow-wrap: anywhere; }
 .ssx .ssxMeta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11.5px; color: var(--muted); }
 .ssx .ssxProject { color: var(--text); }
-.ssx .ssxMeta a { color: var(--accent); text-decoration: underline dotted; }
-.ssx .ssxUsage { font-size: 11.5px; color: var(--muted); }
-.ssx .ssxCancel { margin-left: auto; }
-.ssx .ssxAnswer { display: grid; gap: 8px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 12px; background: color-mix(in srgb, var(--accent) 7%, transparent); line-height: 1.5; }
-.ssx .ssxAnswerLabel { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); }
-.ssx .ssxAnswerBody p, .ssx .ssxAnswerBody pre { margin: 0 0 6px; }
-.ssx .ssxAnswerBody ul, .ssx .ssxAnswerBody ol { margin: 0 0 6px; padding-left: 18px; }
-.ssx .ssxAnswerBody pre { padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--panel-2) 80%, black); overflow: auto; font-size: 12px; }
-.ssx .ssxAnswerBody code { font-size: 12.5px; }
-.ssx .ssxCite { font-size: 10px; color: var(--accent); margin-left: 1px; }
-.ssx .ssxCitations { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11.5px; color: var(--muted); }
-.ssx .ssxCitations a { color: var(--accent); text-decoration: underline dotted; }
-.ssx .ssxThread { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; }
-.ssx .ssxThreadLabel { font-size: 11px; font-weight: 600; color: var(--muted); }
-.ssx .ssxTurn { display: grid; gap: 1px; padding: 4px 0; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
-.ssx .ssxTurn:first-of-type { border-top: 0; }
-.ssx .ssxTurnQ { font-weight: 600; overflow-wrap: anywhere; }
-.ssx .ssxTurnA { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ssx .ssxHistory { display: grid; gap: 6px; align-content: start; min-width: 0; padding-right: 10px; border-right: 1px solid var(--border); }
-.ssx .ssxHistoryLabel { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
-.ssx .ssxHistoryList { display: grid; gap: 4px; list-style: none; }
-.ssx .ssxHistoryList li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
-.ssx .ssxHistoryItem { display: grid; gap: 2px; width: 100%; height: auto; min-height: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
-.ssx .ssxHistoryItem:hover { background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
-.ssx .ssxHistoryItem[aria-current="true"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.ssx .ssxHistoryQ { display: block; max-height: 2.7em; line-height: 1.35; overflow: hidden; overflow-wrap: anywhere; }
-.ssx .ssxHistoryMeta { font-size: 10.5px; color: var(--muted); }
-.ssx .ssxHistoryDelete { height: auto; min-height: 0; padding: 4px 6px; border: 0; background: none; color: var(--muted); font: inherit; cursor: pointer; opacity: 0; }
-.ssx .ssxHistoryList li:hover .ssxHistoryDelete, .ssx .ssxHistoryDelete:focus-visible { opacity: 1; }
+.ssx .ssxMeta a, .ssx .ssxFooter a { color: var(--accent); text-decoration: underline dotted; }
+.ssx .ssxFooter { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 11px; color: var(--muted); }
+.ssx .ssxReqId { user-select: all; font-size: 10.5px; }
+.ssx .ssxCopy { height: auto; min-height: 0; padding: 1px 7px; border: 1px solid var(--border); border-radius: 6px; background: none; color: var(--muted); font: inherit; font-size: 10.5px; cursor: pointer; }
+.ssx .ssxCopy:hover { color: var(--text); border-color: var(--accent); }
+.ssx .ssxStatus { display: flex; align-items: center; gap: 10px; color: var(--muted); outline: none; }
+.ssx .ssxSpinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: ssxSpin 0.9s linear infinite; flex: none; }
+@keyframes ssxSpin { to { transform: rotate(360deg); } }
+.ssx .ssxCancel { margin-left: auto; min-height: 30px; padding: 4px 10px; font-size: 12px; }
+.ssx .ssxError { color: var(--danger); overflow-wrap: anywhere; }
+.ssx .ssxEmpty { padding: 18px 8px; color: var(--muted); text-align: center; align-self: center; }
+.ssx .ssxComposer { display: grid; gap: 8px; margin: 0; padding: 10px; border: 1px solid var(--border); border-radius: 14px; background: color-mix(in srgb, var(--panel-2) 82%, black); }
+.ssx .ssxComposer:focus-within { border-color: var(--accent); }
+.ssx .ssxComposer input[type="search"] { box-sizing: border-box; width: 100%; padding: 6px 4px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 14px; outline: none; }
+.ssx .ssxComposer input:disabled { opacity: .55; }
+.ssx .ssxComposerRow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ssx .ssxKind { display: inline-flex; padding: 2px; border: 1px solid var(--border); border-radius: 9px; font-size: 12px; }
+.ssx .ssxKind label { position: relative; display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 7px; color: var(--muted); cursor: pointer; }
+.ssx .ssxKind input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.ssx .ssxKind label:has(input:checked) { background: color-mix(in srgb, var(--accent) 22%, var(--panel-2)); color: var(--text); font-weight: 600; }
+.ssx .ssxKind label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ssx .ssxKind label:has(input:disabled) { cursor: default; opacity: .6; }
+.ssx .ssxSend { min-height: 32px; padding: 5px 14px; }
+.ssx .ssxSend:disabled { opacity: .55; cursor: default; }
 </style>`;
 
-function renderForm(state: PanelState) {
+function renderThreadBar(state: PanelState, now: number) {
   const running = state.job?.state === "running";
-  const synthesize = state.synthesize !== false;
-  const canContinue = Boolean(state.thread) || state.job?.state === "done";
-  const lock = running ? " disabled" : "";
-  // While a request is in flight the mode/synthesis controls are locked; hidden copies keep a
-  // superseding search on the same settings instead of silently changing them.
-  return `<form role="search">
-    <input type="search" name="query" placeholder="Search your sessions…" maxlength="${MAX_QUERY_CHARS}" value="${escapeHtml(state.query)}" aria-label="Session search query"${running ? "" : " autofocus"}>
-    <button class="webPanelButton" type="submit" data-web-action="search">Search</button>
-    <div class="ssxOptions">
-      <label>Mode <select name="mode" aria-label="Retrieval mode"${lock}>
-        <option value="SIMPLE"${state.mode === "SIMPLE" ? " selected" : ""}>SIMPLE</option>
-        <option value="AGENTIC"${state.mode === "AGENTIC" ? " selected" : ""}>AGENTIC</option>
-      </select></label>
-      <label class="ssxSynth"><input type="checkbox" name="synthesize" value="1"${synthesize ? " checked" : ""}${lock}> Synthesize answer</label>
-      ${canContinue ? `<label class="ssxContinue"><input type="checkbox" name="continue" value="1"${state.continueThread ? " checked" : ""}${lock}> Continue conversation</label>` : ""}
-      ${running ? `<input type="hidden" name="mode" value="${state.mode}">${synthesize ? `<input type="hidden" name="synthesize" value="1">` : ""}${state.continueThread ? `<input type="hidden" name="continue" value="1">` : ""}` : ""}
-    </div>
-  </form>`;
+  const items = state.threads.map((thread) => {
+    const payload = escapeHtml(JSON.stringify({ id: thread.id }));
+    const first = thread.turns[0];
+    return `<li>
+      <button type="button" class="ssxThreadItem" data-web-action="thread-open" data-web-payload='${payload}'${thread.id === state.threadId ? ' aria-current="true"' : ""} title="${escapeHtml(first.query)}">
+        <span class="ssxThreadQ">${escapeHtml(first.query)}</span>
+        <span class="ssxThreadMeta">${thread.turns.length} turn${thread.turns.length === 1 ? "" : "s"} · ${escapeHtml(formatRelative(thread.updatedAt, now))}</span>
+      </button>
+      <button type="button" class="ssxThreadDelete" data-web-action="thread-delete" data-web-payload='${payload}' aria-label="Delete thread" title="Delete thread">×</button>
+    </li>`;
+  });
+  const list = items.length
+    ? `<details class="ssxThreads"><summary aria-label="Threads">Threads <span>(${items.length})</span></summary><ol class="ssxThreadList" aria-label="Thread list">${items.join("")}</ol></details>`
+    : `<span class="ssxThreadMeta">No threads yet</span>`;
+  return `<div class="ssxBar">${list}<button class="webPanelButton ssxNew" type="button" data-web-action="new"${running ? " disabled" : ""}>New thread</button></div>`;
 }
 
 function renderHit(hit: SessionHit, index: number) {
@@ -636,78 +732,83 @@ function renderHit(hit: SessionHit, index: number) {
     `<span>${hit.passageCount} passage${hit.passageCount === 1 ? "" : "s"}</span>`,
     hit.sessionUrl ? `<a href="${escapeHtml(hit.sessionUrl)}">Open session</a>` : `<span>no session link</span>`,
   ].filter(Boolean).join("<span aria-hidden=\"true\">·</span>");
-  return `<li class="ssxHit"><span class="ssxIndex" aria-label="Result ${index + 1}">${index + 1}</span><div class="ssxTitle">${escapeHtml(hit.title)}</div><div class="ssxMeta">${meta}</div></li>`;
+  return `<li class="ssxHit"><span class="ssxIndex" aria-label="Session ${index + 1}">${index + 1}</span><div class="ssxTitle">${escapeHtml(hit.title)}</div><div class="ssxMeta">${meta}</div></li>`;
 }
 
-function renderAnswer(result: SearchResult) {
-  if (!result.answer) return "";
-  const citations = result.citations.map((index) => {
-    const hit = result.documents[index];
-    const label = `[${index + 1}] ${escapeHtml(hit.title)}`;
-    return hit.sessionUrl ? `<a href="${escapeHtml(hit.sessionUrl)}">${label}</a>` : `<span>${label}</span>`;
-  });
-  return `<section class="ssxAnswer" aria-label="Synthesized answer">
-    <div class="ssxAnswerLabel">Answer</div>
-    <div class="ssxAnswerBody">${renderAnswerMarkdown(result.answer, result.documents)}</div>
-    ${citations.length ? `<div class="ssxCitations"><span>Sources:</span>${citations.join("")}</div>` : ""}
-  </section>`;
+function renderRequestId(requestId: string, tracesUrl: string | undefined) {
+  if (!requestId) return "";
+  const id = escapeHtml(requestId);
+  const traces = tracesLink(tracesUrl || "", requestId);
+  // Panel HTML cannot run <script>, but inline handlers on trusted extension markup do; the id is
+  // also user-select:all so one click selects it when the clipboard is unavailable.
+  return `<span>request <code class="ssxReqId" title="Request id">${id}</code></span>`
+    + `<button type="button" class="ssxCopy" data-copy="${id}" aria-label="Copy request id" onclick="navigator.clipboard&&navigator.clipboard.writeText(this.dataset.copy).then(()=>{this.textContent='Copied';setTimeout(()=>{this.textContent='Copy'},1200)})">Copy</button>`
+    + (traces ? `<a href="${escapeHtml(traces)}" target="_blank" rel="noopener noreferrer">Open traces</a>` : "");
 }
 
-function renderThread(thread: Thread | undefined) {
-  if (!thread || thread.turns.length < 2) return "";
-  const turns = thread.turns.map((turn) => {
-    const answer = turn.result.answer.replace(/[`*_#>]/g, "").replace(/\s+/g, " ").trim();
-    return `<div class="ssxTurn"><div class="ssxTurnQ">${escapeHtml(turn.query)}</div><div class="ssxTurnA">${answer ? escapeHtml(answer.slice(0, 160)) : `${turn.result.documents.length} result${turn.result.documents.length === 1 ? "" : "s"}`}</div></div>`;
-  });
-  return `<section class="ssxThread" aria-label="Conversation turns"><div class="ssxThreadLabel">Conversation · ${thread.turns.length} turn${thread.turns.length === 1 ? "" : "s"}</div>${turns.join("")}</section>`;
+function renderAssistant(turn: Turn, tracesUrl: string | undefined) {
+  const { result } = turn;
+  const answer = turn.kind === "ask" && result.answer ? `<div class="ssxAnswer">${renderAnswerMarkdown(result.answer, result.documents)}</div>` : "";
+  const sessions = result.documents.length
+    ? `<div><div class="ssxSessionsLabel">Sessions</div><ol class="ssxSessions">${result.documents.map(renderHit).join("")}</ol></div>`
+    : `<div class="ssxEmpty">No sessions matched.</div>`;
+  const usage = result.usage;
+  const footer = [
+    `<span>${TURN_PLANS[turn.kind].label} · ${result.retrievalMode}</span>`,
+    `<span>${formatSeconds(result.elapsedMs)}</span>`,
+    `<span>tokens ${usage.totalTokens}${usage.planningTokens || usage.synthesisTokens ? ` (planning ${usage.planningTokens}, synthesis ${usage.synthesisTokens})` : ""}</span>`,
+    renderRequestId(result.requestId, tracesUrl),
+  ].filter(Boolean).join('<span aria-hidden="true">·</span>');
+  return `<div class="ssxAssistant" role="group" aria-label="Answer">${answer}${sessions}<div class="ssxFooter">${footer}</div></div>`;
 }
 
-function renderHistory(history: HistoryEntry[], activeId: string | undefined, now: number) {
-  if (!history.length) return "";
-  const items = history.map((entry) => {
-    const payload = escapeHtml(JSON.stringify({ id: entry.id }));
-    return `<li>
-      <button type="button" class="ssxHistoryItem" data-web-action="history-open" data-web-payload='${payload}'${entry.id === activeId ? ' aria-current="true"' : ""} title="${escapeHtml(entry.query)}">
-        <span class="ssxHistoryQ">${escapeHtml(entry.query)}</span>
-        <span class="ssxHistoryMeta">${entry.mode} · ${escapeHtml(formatRelative(entry.at, now))}</span>
-      </button>
-      <button type="button" class="ssxHistoryDelete" data-web-action="history-delete" data-web-payload='${payload}' aria-label="Remove from history" title="Remove from history">×</button>
-    </li>`;
-  });
-  return `<aside class="ssxHistory" aria-label="Past searches">
-    <button class="webPanelButton" type="button" data-web-action="new">New search</button>
-    <div class="ssxHistoryLabel">Past searches</div>
-    <ol class="ssxHistoryList">${items.join("")}</ol>
-  </aside>`;
+function renderUser(query: string, at: string, now: number) {
+  return `<div class="ssxUser" role="group" aria-label="Question">${escapeHtml(query)}</div><div class="ssxUserMeta" title="${escapeHtml(formatDate(at))}">${escapeHtml(formatRelative(at, now))}</div>`;
+}
+
+function renderJob(job: SearchJob, tracesUrl: string | undefined, now: number) {
+  let body = "";
+  if (job.state === "running") {
+    const payload = escapeHtml(JSON.stringify({ jobId: job.id }));
+    const elapsed = Math.max(0, Math.round((now - job.startedAt) / 1000));
+    body = `<div class="ssxStatus" role="status" tabindex="-1" autofocus>
+      <span class="ssxSpinner" aria-hidden="true"></span>
+      <span>${job.kind === "ask" ? "Thinking" : "Searching"}… <span class="ssxElapsed">${elapsed}s</span>${job.kind === "ask" ? " <span class=\"ssxThreadMeta\">(answers usually take 30–90 s)</span>" : ""}</span>
+      <button class="webPanelButton ssxCancel" type="button" data-web-action="cancel" data-web-payload='${payload}'>Cancel</button>
+    </div>`;
+  } else if (job.state === "error" && job.error) {
+    body = `<div class="ssxError" role="alert">${escapeHtml(job.error.message)}</div>${job.error.requestId ? `<div class="ssxFooter">${renderRequestId(job.error.requestId, tracesUrl)}</div>` : ""}`;
+  } else {
+    body = `<div class="ssxStatus" role="status">Cancelled.</div>`;
+  }
+  return `<div class="ssxTurn ssxLive">${renderUser(job.query, new Date(job.startedAt).toISOString(), now)}<div class="ssxAssistant">${body}</div></div>`;
+}
+
+function renderComposer(state: PanelState) {
+  const running = state.job?.state === "running";
+  const lock = running ? " disabled" : "";
+  const radio = (kind: TurnKind) => `<label><input type="radio" name="kind" value="${kind}"${state.kind === kind ? " checked" : ""}${lock}>${TURN_PLANS[kind].label}</label>`;
+  return `<form class="ssxComposer" role="search" aria-label="Composer">
+    <input type="search" name="query" placeholder="Search or ask your sessions…" maxlength="${MAX_QUERY_CHARS}" aria-label="Search or ask your sessions" autocomplete="off"${running ? " disabled" : " autofocus"}>
+    <div class="ssxComposerRow">
+      <div class="ssxKind" role="radiogroup" aria-label="Mode">${radio("ask")}${radio("search")}</div>
+      <button class="webPanelButton ssxSend" type="submit" data-web-action="send"${lock}>Send</button>
+    </div>
+  </form>`;
 }
 
 export function renderPanel(state: PanelState, now = Date.now()): PiWebPanelView {
-  const job = state.job;
-  let body = "";
-  if (job?.state === "running") {
-    const payload = escapeHtml(JSON.stringify({ jobId: job.id }));
-    body = `<div class="ssxStatus" role="status" tabindex="-1" autofocus>
-      <span class="ssxSpinner" aria-hidden="true"></span>
-      <span>Searching (${job.mode})… ${job.mode === "AGENTIC" ? "agentic retrieval can take 1–2 minutes." : ""}</span>
-      <button class="webPanelButton ssxCancel" type="button" data-web-action="cancel" data-web-payload='${payload}'>Cancel</button>
-    </div>`;
-  } else if (job?.state === "error" && job.error) {
-    body = `<div class="ssxError" role="alert">${escapeHtml(job.error.message)}</div>`;
-  } else if (job?.state === "cancelled") {
-    body = `<div class="ssxEmpty" role="status">Search cancelled.</div>`;
-  } else if (job?.state === "done" && job.result) {
-    const { result } = job;
-    const usage = `${result.retrievalMode} · ${result.documents.length} result${result.documents.length === 1 ? "" : "s"} in ${formatSeconds(result.elapsedMs)} · tokens: planning ${result.usage.planningTokens}, synthesis ${result.usage.synthesisTokens}, total ${result.usage.totalTokens}`;
-    body = renderThread(state.thread) + renderAnswer(result) + (result.documents.length
-      ? `<ol class="ssxResults">${result.documents.map(renderHit).join("")}</ol><div class="ssxUsage" role="status">${escapeHtml(usage)}</div>`
-      : `<div class="ssxEmpty" role="status">No sessions matched “${escapeHtml(job.query)}”.</div><div class="ssxUsage">${escapeHtml(usage)}</div>`);
-  } else {
-    body = `<div class="ssxEmpty">${escapeHtml(state.notice || "Search the indexed history of your pi-web sessions. SIMPLE answers in about a second; AGENTIC plans a deeper retrieval and can synthesize an answer.")}</div>`;
-  }
-  const history = renderHistory(state.history ?? [], state.activeHistoryId, now);
+  const thread = state.threads.find((candidate) => candidate.id === state.threadId);
+  const turns = (thread?.turns ?? []).map((turn) => `<div class="ssxTurn">${renderUser(turn.query, turn.at, now)}${renderAssistant(turn, state.tracesUrl)}</div>`);
+  const job = state.job && state.job.threadId === state.threadId && state.job.state !== "done" ? renderJob(state.job, state.tracesUrl, now) : "";
+  const items = [...turns, job].filter(Boolean);
+  // The timeline is a column-reverse flex box so it opens scrolled to the newest turn; DOM order is newest first.
+  const timeline = items.length
+    ? items.reverse().join("")
+    : `<div class="ssxEmpty">Ask a question about your indexed pi-web sessions, or switch to Search for a plain list of matching sessions. Follow-ups in the same thread can refer back to earlier answers.</div>`;
   return {
     title: "Session search",
-    html: `${panelStyles}<div class="ssx${history ? " ssxWithHistory" : ""}">${history}<div class="ssxMain">${renderForm(state)}${body}</div></div>`,
+    html: `${panelStyles}<div class="ssx">${renderThreadBar(state, now)}<div class="ssxTimeline" aria-label="Conversation" aria-live="polite">${timeline}</div>${renderComposer(state)}</div>`,
   };
 }
 
@@ -728,16 +829,18 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 export type SessionSearchExtensionOptions = SearchClientOptions & {
   env?: NodeJS.ProcessEnv;
-  /** Overrides the history file location (defaults to historyFilePath(env)). */
+  /** Overrides the thread file location (defaults to threadsFilePath(env)); disables legacy migration. */
   historyFile?: string;
-  /** Conversation ids sent as the API's `sessionId`; injectable for tests. */
+  /** Thread ids, sent as the API's `sessionId`; injectable for tests. */
   newThreadId?: () => string;
 };
 
 export function createSessionSearchExtension(options: SessionSearchExtensionOptions = {}) {
   const search = createSearchClient(options);
   const envConfig = configFromEnv(options.env);
-  const history = createHistoryStore(options.historyFile || historyFilePath(options.env));
+  const store = options.historyFile
+    ? createThreadStore(options.historyFile)
+    : createThreadStore(threadsFilePath(options.env), { legacyPath: legacyHistoryFilePath(options.env) });
   const newThreadId = options.newThreadId || (() => randomUUID());
 
   return function sessionSearch(pi: PiWebExtensionAPI) {
@@ -761,6 +864,7 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
             { key: "region", type: "text", label: "Signing region", default: envConfig.region },
             { key: "service", type: "text", label: "Signing service name", default: envConfig.service },
             { key: "refreshHint", type: "text", label: "Credential refresh command", description: "Shown verbatim when the API rejects expired credentials.", default: envConfig.refreshHint },
+            { key: "tracesUrl", type: "text", label: "Traces URL", description: "\"Open traces\" link for each answer; {requestId} is substituted (appended when absent). Leave empty to hide the link.", default: envConfig.tracesUrl },
           ],
         });
       } catch {
@@ -773,37 +877,47 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
         catch { return envConfig; }
       }
 
-      const state: PanelState = { query: "", mode: "SIMPLE", synthesize: true, history: [] };
+      const state: PanelState = { threadId: "", threads: [], kind: "ask", tracesUrl: envConfig.tracesUrl };
+      /** A thread the user started with "New thread" in this session; kept current even while it has no turns. */
+      let freshThreadId = "";
       let jobCounter = 0;
 
-      async function refreshHistory(entries?: HistoryEntry[]) {
-        try { state.history = entries ?? await history.load(); } catch { /* history is best effort */ }
+      async function refreshThreads(threads?: Thread[]) {
+        try { state.threads = threads ?? await store.load(); } catch { /* threads are best effort */ }
+        try { state.tracesUrl = (await currentConfig()).tracesUrl; } catch { /* keep the previous value */ }
+        // Never resurrect a stale view: without a running turn or an explicit fresh thread, show the latest thread.
+        const current = state.threads.some((thread) => thread.id === state.threadId);
+        const keepFresh = state.threadId && state.threadId === freshThreadId;
+        const keepRunning = state.job?.state === "running" && state.job.threadId === state.threadId;
+        if (!current && !keepFresh && !keepRunning) state.threadId = state.threads[0]?.id ?? startFreshThread();
       }
 
-      function startJob(query: string, mode: RetrievalMode, synthesize: boolean, threadId: string): SearchJob {
-        state.job?.controller.abort();
-        const job: SearchJob = { id: `job-${++jobCounter}`, query, mode, startedAt: Date.now(), controller: new AbortController(), state: "running" };
+      function startFreshThread() {
+        freshThreadId = newThreadId();
+        return freshThreadId;
+      }
+
+      function startJob(query: string, kind: TurnKind, threadId: string): SearchJob {
+        const job: SearchJob = { id: `job-${++jobCounter}`, threadId, kind, query, startedAt: Date.now(), controller: new AbortController(), state: "running" };
         state.job = job;
-        state.activeHistoryId = undefined;
+        const tick = setInterval(() => { if (job.state === "running" && !job.inlineWait) web.update(PANEL_KEY); }, RUNNING_TICK_MS);
         void (async () => {
           try {
-            const result = await search(await currentConfig(), query, mode, job.controller.signal, { synthesize, threadId });
+            const result = await search(await currentConfig(), { intent: query, kind, threadId }, job.controller.signal);
             if (!job.controller.signal.aborted) {
-              // Record the turn before the job reads as done, so the view that paints the
-              // result (inline or via update()) already lists it under past searches.
-              const entry: HistoryEntry = { id: randomUUID(), at: new Date().toISOString(), query, mode, synthesize, threadId, result };
-              if (state.thread?.id === threadId) state.thread.turns.push(entry);
-              if (state.job === job) state.activeHistoryId = entry.id;
-              try { await refreshHistory(await history.add(entry)); } catch { /* history is best effort */ }
+              // Persist the turn before the job reads as done, so the view that paints it already lists it.
+              const turn: Turn = { id: randomUUID(), at: new Date().toISOString(), kind, query, result };
+              try { await refreshThreads(await store.addTurn(threadId, turn)); } catch { /* best effort */ }
+              if (freshThreadId === threadId) freshThreadId = "";
             }
-            job.result = result;
             job.state = job.controller.signal.aborted ? "cancelled" : "done";
           } catch (error) {
             if (job.controller.signal.aborted) job.state = "cancelled";
             else { job.state = "error"; job.error = error instanceof SearchError ? error : new SearchError(error instanceof Error ? error.message : String(error), "network"); }
+          } finally {
+            clearInterval(tick);
           }
-          // Skip the repaint when the result is painted by the originating render(), when the cancel
-          // action already repainted, or when a newer search superseded this job.
+          // Skip the repaint when the result is painted by the originating render() or the cancel action already repainted.
           if (state.job === job && job.state !== "cancelled" && !job.inlineWait) web.update(PANEL_KEY);
         })();
         return job;
@@ -817,20 +931,15 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
         icon: "session-search",
         async render(event) {
           const action = event?.action || "view";
-          if (action === "search") {
+          await refreshThreads();
+          if (action === "send") {
+            // In-flight guard: one turn at a time; a second submit while running changes nothing.
+            if (state.job?.state === "running") return renderPanel(state);
             const query = firstField(event, "query").trim().slice(0, MAX_QUERY_CHARS);
-            const mode: RetrievalMode = firstField(event, "mode") === "AGENTIC" ? "AGENTIC" : "SIMPLE";
-            const synthesize = firstField(event, "synthesize") === "1";
-            const continueThread = firstField(event, "continue") === "1";
-            state.query = query;
-            state.mode = mode;
-            state.synthesize = synthesize;
-            state.continueThread = continueThread;
-            if (!query) { state.job = undefined; state.activeHistoryId = undefined; return renderPanel({ ...state, notice: "Type a question about your sessions first." }); }
-            // Every search carries an API conversation id so it can be continued later; "Continue
-            // conversation" reuses the current one and the API resolves references to earlier turns.
-            if (!(continueThread && state.thread)) state.thread = { id: newThreadId(), turns: [] };
-            const job = startJob(query, mode, mode === "AGENTIC" && synthesize, state.thread.id);
+            const kind: TurnKind = firstField(event, "kind") === "search" ? "search" : "ask";
+            state.kind = kind;
+            if (!query) return renderPanel(state);
+            const job = startJob(query, kind, state.threadId);
             job.inlineWait = true;
             const deadline = Date.now() + INLINE_WAIT_MS;
             while (job.state === "running" && Date.now() < deadline) await sleep(25);
@@ -846,48 +955,25 @@ export function createSessionSearchExtension(options: SessionSearchExtensionOpti
             return renderPanel(state);
           }
           if (action === "new") {
-            state.job?.controller.abort();
+            if (state.job?.state === "running") { state.job.controller.abort(); state.job.state = "cancelled"; }
             state.job = undefined;
-            state.query = "";
-            state.thread = undefined;
-            state.continueThread = false;
-            state.activeHistoryId = undefined;
-            await refreshHistory();
+            state.threadId = startFreshThread();
             return renderPanel(state);
           }
-          if (action === "history-open") {
-            await refreshHistory();
-            const entry = state.history?.find((candidate) => candidate.id === payloadString(event, "id"));
-            if (entry) {
-              if (state.job?.state === "running") state.job.controller.abort();
-              state.query = entry.query;
-              state.mode = entry.mode;
-              state.synthesize = entry.mode === "AGENTIC" ? entry.synthesize : state.synthesize;
-              state.activeHistoryId = entry.id;
-              state.job = { id: `history-${entry.id}`, query: entry.query, mode: entry.mode, startedAt: Date.parse(entry.at), controller: new AbortController(), state: "done", result: entry.result };
-              if (entry.threadId) {
-                // The thread is restored so the user can pick it up; "Continue conversation" is only
-                // pre-ticked when the entry was already part of a multi-turn conversation.
-                const turns = (state.history ?? []).filter((turn) => turn.threadId === entry.threadId).sort((a, b) => a.at.localeCompare(b.at));
-                state.thread = { id: entry.threadId, turns };
-                state.continueThread = turns.length > 1;
-              } else {
-                state.thread = undefined;
-                state.continueThread = false;
-              }
-            }
+          if (action === "thread-open") {
+            const id = payloadString(event, "id");
+            if (state.threads.some((thread) => thread.id === id)) state.threadId = id;
             return renderPanel(state);
           }
-          if (action === "history-delete") {
+          if (action === "thread-delete") {
             const id = payloadString(event, "id");
             if (id) {
-              try { await refreshHistory(await history.remove(id)); } catch { /* best effort */ }
-              if (state.activeHistoryId === id) { state.activeHistoryId = undefined; state.job = undefined; }
-              if (state.thread) state.thread.turns = state.thread.turns.filter((turn) => turn.id !== id);
+              if (state.job?.threadId === id && state.job.state === "running") { state.job.controller.abort(); state.job.state = "cancelled"; }
+              try { await refreshThreads(await store.remove(id)); } catch { /* best effort */ }
+              if (state.threadId === id) state.threadId = state.threads[0]?.id ?? startFreshThread();
             }
             return renderPanel(state);
           }
-          await refreshHistory();
           return renderPanel(state);
         },
       });

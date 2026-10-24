@@ -539,35 +539,44 @@ rm ~/.pi/web/extensions/github-repo-panel.ts
 ## Example: session search over indexed history
 
 [`examples/pi-web-extensions/session-search.ts`](../examples/pi-web-extensions/session-search.ts)
-adds a **Session search** panel that queries an AI Search application over your
-indexed pi-web session history and links every hit back to its session. Its
-launcher is the top-right header icon (the `session-search` glyph — a magnifying
-glass peeking out of a chat bubble — which is also listed in the FAB menu).
+adds a chat-shaped **Session search** panel that asks an AI Search application
+about your indexed pi-web session history and links every cited session back to
+its page. Its launcher is the top-right header icon (the `session-search` glyph —
+a magnifying glass peeking out of a chat bubble — also listed in the FAB menu).
+
+The panel is a **thread**: a scrolling timeline of turns with the composer pinned
+at the bottom. Each turn shows your full question in a user bubble, then an
+assistant bubble with the API's Markdown answer (rendered through a sanitizing
+subset, with inline `[n]` citations), a **Sessions** list (title · project · date ·
+passage count · *Open session*), and a muted footer: mode, elapsed time, token
+usage, and the upstream request id (`x-amzn-RequestId`) with a copy button and an
+optional **Open traces** link. The composer has one input and a two-way control:
+**Ask** (default — `AGENTIC` retrieval with synthesis, `retrievalOptions.maxTurns`
+6, five sessions) or **Search** (`SIMPLE`, ten sessions, list only, sub-second).
+Every turn of a thread is sent under the same API conversation id
+(`sessionId`), so a follow-up such as "what engine version did it confirm?" is
+resolved against the earlier answers; **New thread** mints a fresh id. While a
+turn runs, the user bubble appears immediately, the assistant bubble shows a
+spinner, elapsed time and **Cancel**, and the composer is locked until it
+finishes (180 s upper bound). Expired credentials render an explicit error with
+the refresh command you configure.
+
 Requests are SigV4-signed on the server from a named profile in
 `~/.aws/credentials`; the browser only receives titles, projects, dates, session
-links, passage counts, the API's token usage, and — for `AGENTIC` searches with
-**Synthesize answer** on (the default) — the API's Markdown answer and its
-citations, rendered through a sanitizing Markdown subset above the numbered
-results. `SIMPLE` searches render inline when they answer quickly; slower
-`AGENTIC` searches show a cancellable spinner and repaint through
-`ctx.ui.web.update()` when they finish (180 s upper bound). While a request is
-in flight the mode and synthesis controls are locked, so changing them can
-neither start a second request nor change the one running. Expired credentials
-render an explicit error with the refresh command you configure.
-
-Finished searches (question, mode, normalized results, answer) are kept in
-`PI_WEB_SESSION_SEARCH_HISTORY_FILE` (default `PI_WEB_HOME/session-search-history.json`
-or `~/.pi/agent/session-search-history.json`, owner-only, last 50) and listed in
-a **Past searches** column; opening one restores it without an upstream call and
-**New search** clears the panel. Every search carries an API conversation id;
-ticking **Continue conversation** reuses it for the next question so the API can
-resolve references such as "that session", and the panel lists the turns.
+links, passage counts, usage, request ids, and the answer text — never
+credentials, passages, or vectors. Threads persist in
+`PI_WEB_SESSION_SEARCH_HISTORY_FILE` (default `PI_WEB_HOME/session-search-threads.json`
+or `~/.pi/agent/session-search-threads.json`, owner-only, newest 50), with a
+one-time migration from the previous version's flat `session-search-history.json`.
+Reopening the panel shows the most recent thread with all of its turns; the
+**Threads** picker switches between threads and deletes them.
 
 Configure it in Settings → **Session search**, or seed those values with
 `PI_WEB_SESSION_SEARCH_ENDPOINT`, `PI_WEB_SESSION_SEARCH_PROFILE`,
-`PI_WEB_SESSION_SEARCH_REGION`, `PI_WEB_SESSION_SEARCH_SERVICE`, and
-`PI_WEB_SESSION_SEARCH_REFRESH_HINT` before starting the server. Install it
-like the other examples:
+`PI_WEB_SESSION_SEARCH_REGION`, `PI_WEB_SESSION_SEARCH_SERVICE`,
+`PI_WEB_SESSION_SEARCH_REFRESH_HINT`, and `PI_WEB_SESSION_SEARCH_TRACES_URL`
+(`{requestId}` is substituted; leave empty to hide the link) before starting the
+server. Install it like the other examples:
 
 ```sh
 mkdir -p .pi/web/extensions
