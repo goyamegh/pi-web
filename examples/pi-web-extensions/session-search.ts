@@ -665,10 +665,12 @@ function formatRelative(iso: string, now = Date.now()) {
 const panelStyles = `
 <style>
 .ssx { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; height: 100%; min-height: 320px; font-size: 13.5px; }
-.ssx .ssxHead { position: relative; display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 44px; padding: 6px 0 7px; border-bottom: 1px solid var(--border); }
+.ssx .ssxHead { position: relative; container-type: inline-size; display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 44px; padding: 6px 0 7px; border-bottom: 1px solid var(--border); }
 .ssx .ssxHeadMain { display: flex; align-items: baseline; gap: 8px; flex: 1 1 auto; min-width: 0; }
 .ssx .ssxHeadTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; line-height: 1.3; }
 .ssx .ssxHeadMeta { flex: none; font-size: 11px; color: var(--muted); white-space: nowrap; }
+/* Narrow panels keep the title legible: the "started …" half of the meta yields first, the turn count stays. */
+@container (max-width: 520px) { .ssx .ssxHeadStarted { display: none; } }
 .ssx .ssxThreads { position: static; flex: none; }
 .ssx .ssxThreads summary { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; box-sizing: border-box; padding: 4px 9px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; list-style: none; }
 .ssx .ssxThreads summary:hover { color: var(--text); border-color: var(--accent); }
@@ -753,7 +755,7 @@ function renderThreadHeader(state: PanelState, thread: Thread | undefined, now: 
   const startedAt = thread?.createdAt || (liveQuery && state.job ? new Date(state.job.startedAt).toISOString() : "");
   const turnCount = (thread?.turns.length ?? 0) + (liveQuery ? 1 : 0);
   const meta = title
-    ? `started ${escapeHtml(formatRelative(startedAt, now))} · ${plural(turnCount, "turn")}`
+    ? `<span class="ssxHeadStarted">started ${escapeHtml(formatRelative(startedAt, now))} · </span>${plural(turnCount, "turn")}`
     : "nothing asked yet";
   const items = state.threads.map((candidate) => {
     const payload = escapeHtml(JSON.stringify({ id: candidate.id }));

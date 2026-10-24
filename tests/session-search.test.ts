@@ -418,7 +418,9 @@ describe("panel rendering", () => {
     expect(html).toContain(".ssx .ssxTurn + .ssxTurn::before { content: \"\";");
     // The one header row: title and meta side by side, the switcher, "+ New thread", and the host-handled close action.
     expect(html).toContain(`<span class="ssxHeadTitle" title="${longQuestion}">${longQuestion}</span>`);
-    expect(html).toContain('<span class="ssxHeadMeta" title="started 2026-10-23 01:00 UTC">started 2 h ago · 3 turns</span>');
+    expect(html).toContain('<span class="ssxHeadMeta" title="started 2026-10-23 01:00 UTC"><span class="ssxHeadStarted">started 2 h ago · </span>3 turns</span>');
+    // Narrow headers drop the "started …" half (container query) so the title keeps room; the turn count always stays.
+    expect(html).toContain("@container (max-width: 520px) { .ssx .ssxHeadStarted { display: none; } }");
     expect(html).toMatch(/<button class="webPanelButton ssxNew" type="button" data-web-action="new" title="[^"]+">\+ New thread<\/button>/);
     expect(html).toContain('<button class="ssxClose" type="button" data-web-action="close-panel" aria-label="Close panel" title="Close panel">×</button>');
     expect(html).toContain('<summary aria-label="Switch thread" title="1 saved thread">Switch thread</summary>');
@@ -494,7 +496,7 @@ describe("panel rendering", () => {
     const job = { id: "job-1", threadId: THREAD, mode: "agentic-answer" as const, query: "what engine version did it confirm?", startedAt: now - 12_000, controller, state: "running" as const };
     const running = renderPanel({ threadId: THREAD, threads: [thread], mode: "agentic-answer", job }, now).html;
     expect(running).toContain('<article class="ssxTurn ssxLive" aria-label="Turn 4"><div class="ssxAsked" role="group" aria-label="You asked"><div class="ssxLabel">You asked<span class="ssxWhen" title="2026-10-23 02:29 UTC">just now</span></div><p class="ssxQuestion">what engine version did it confirm?</p></div>');
-    expect(running).toContain("started 2 h ago · 4 turns");
+    expect(running).toContain("started 2 h ago · </span>4 turns");
     expect(running).toContain("Thinking…");
     expect(running).toContain("answers usually take 30–90 s");
     expect(running).toContain('data-web-action="cancel"');
